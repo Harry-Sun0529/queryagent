@@ -13,13 +13,20 @@ human's v0.2.0 agent design.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import sys
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from pathlib import Path
 
 from queryagent.agent import run_agent
-from queryagent.config import load_config
+from queryagent.config import AppConfig, LLMConfig, load_config
 from queryagent.connectors import make_connector
+from queryagent.connectors.base import Connector
+from queryagent.connectors.sqlite import SQLiteConnector
 from queryagent.context import ContextBuilder
+from queryagent.evals.cases import EvalCase, load_cases
+from queryagent.evals.public import load_subset
+from queryagent.evals.runner import CaseResult, RunQuestion, render_report, run_case
 from queryagent.events import (
     AgentEvent,
     AnswerEvent,
@@ -31,7 +38,6 @@ from queryagent.events import (
     ToolCallEvent,
 )
 from queryagent.llm import make_backend
-from queryagent.llm.base import LLMBackend
 from queryagent.schema import render_schema
 from queryagent.tools import ToolRegistry, make_default_tools
 
@@ -40,32 +46,65 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Entry point for the ``queryagent`` console script."""
     parser = argparse.ArgumentParser(prog="queryagent")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
     chat = subparsers.add_parser("chat", help="interactive Q&A against the configured database")
     chat.add_argument("--config", default="config.yaml", help="path to config.yaml")
     chat.add_argument("--verbose", action="store_true", help="show the full agent trace")
     chat.add_argument("--max-turns", type=int, default=8)
+
+    evalp = subparsers.add_parser("eval", help="run the eval suite and write a markdown report")
+    evalp.add_argument("--config", default="config.yaml", help="path to config.yaml")
+    evalp.add_argument("--cases", default="eval/cases.yaml", help="self-built cases YAML")
+    evalp.add_argument("--public", help="public subset JSON (overrides --cases)")
+    evalp.add_argument("--db-dir", help="databases dir for --public (dir/<db_id>/<db_id>.sqlite)")
+    evalp.add_argument("--backend", choices=["anthropic", "openai_compatible"])
+    evalp.add_argument("--model", help="override llm.model (dual-model reports, spec §三)")
+    evalp.add_argument("--base-url", help="override llm.base_url")
+    evalp.add_argument("--output", default="eval_report.md")
+    evalp.add_argument("--max-turns", type=int, default=8)
+
     args = parser.parse_args(argv)
     if args.command == "chat":
         return _cmd_chat(args)
+    if args.command == "eval":
+        return _cmd_eval(args)
     return 2
+
+
+def _make_run_question(
+    connector: Connector, config: AppConfig, max_turns: int
+) -> RunQuestion:
+    """Wire backend + context + tools for one data source; return the seam."""
+    backend = make_backend(config.llm)
+    builder = ContextBuilder(
+        schema_text=render_schema(connector.get_schema()),
+        dialect=connector.dialect,
+    )
+    registry = ToolRegistry(
+        make_default_tools(
+            connector,
+            timeout_s=config.safety.timeout_s,
+            max_rows=config.safety.max_rows,
+        )
+    )
+
+    def run_question(question: str) -> Iterator[AgentEvent]:
+        return run_agent(
+            question,
+            backend=backend,
+            registry=registry,
+            context_builder=builder,
+            max_turns=max_turns,
+        )
+
+    return run_question
 
 
 def _cmd_chat(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     connector = make_connector(config.database)
     try:
-        backend = make_backend(config.llm)
-        builder = ContextBuilder(
-            schema_text=render_schema(connector.get_schema()),
-            dialect=connector.dialect,
-        )
-        registry = ToolRegistry(
-            make_default_tools(
-                connector,
-                timeout_s=config.safety.timeout_s,
-                max_rows=config.safety.max_rows,
-            )
-        )
+        run_question = _make_run_question(connector, config, args.max_turns)
         print(
             f"QueryAgent · {config.database.type} · {config.llm.model} "
             "(输入 exit 或 Ctrl-D 退出)"
@@ -79,14 +118,7 @@ def _cmd_chat(args: argparse.Namespace) -> int:
                 break
             if not question:
                 continue
-            _run_question(
-                question,
-                backend=backend,
-                registry=registry,
-                builder=builder,
-                max_turns=args.max_turns,
-                verbose=args.verbose,
-            )
+            _chat_one_question(question, run_question, verbose=args.verbose)
     except NotImplementedError as exc:
         print(f"\n[BLOCKED] {exc}", file=sys.stderr)
         print(
@@ -99,25 +131,11 @@ def _cmd_chat(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run_question(
-    question: str,
-    *,
-    backend: LLMBackend,
-    registry: ToolRegistry,
-    builder: ContextBuilder,
-    max_turns: int,
-    verbose: bool,
-) -> None:
+def _chat_one_question(question: str, run_question: RunQuestion, *, verbose: bool) -> None:
     pending = question
     while True:
         clarify: ClarifyEvent | None = None
-        for event in run_agent(
-            pending,
-            backend=backend,
-            registry=registry,
-            context_builder=builder,
-            max_turns=max_turns,
-        ):
+        for event in run_question(pending):
             if isinstance(event, ClarifyEvent):
                 clarify = event
             _render_event(event, verbose)
@@ -132,6 +150,76 @@ def _run_question(
         if not reply:
             return
         pending = f"{pending}\n(用户补充说明: {reply})"
+
+
+def _cmd_eval(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    if args.backend or args.model or args.base_url:
+        config = dataclasses.replace(
+            config,
+            llm=LLMConfig(
+                backend=args.backend or config.llm.backend,
+                model=args.model or config.llm.model,
+                base_url=args.base_url or config.llm.base_url,
+            ),
+        )
+    try:
+        if args.public:
+            if not args.db_dir:
+                print("--public requires --db-dir", file=sys.stderr)
+                return 2
+            results = _eval_public(args.public, Path(args.db_dir), config, args.max_turns)
+            title = "QueryAgent Eval Report — public subset"
+        else:
+            results = _eval_self_built(args.cases, config, args.max_turns)
+            title = "QueryAgent Eval Report — self-built cases"
+    except NotImplementedError as exc:
+        print(f"\n[BLOCKED] {exc}", file=sys.stderr)
+        print(
+            "eval 需要 agent.py / safety.py（HUMAN-OWNED）实现后才能运行。",
+            file=sys.stderr,
+        )
+        return 1
+    report = render_report(results, title=title, model_label=config.llm.model)
+    Path(args.output).write_text(report, encoding="utf-8")
+    passed = sum(1 for r in results if r.passed)
+    print(f"{passed}/{len(results)} cases passed; report -> {args.output}")
+    return 0 if passed == len(results) else 3
+
+
+def _eval_self_built(
+    cases_path: str, config: AppConfig, max_turns: int
+) -> list[CaseResult]:
+    cases = load_cases(cases_path)
+    connector = make_connector(config.database)
+    try:
+        run_question = _make_run_question(connector, config, max_turns)
+        return [
+            run_case(case, run_question=run_question, connector=connector) for case in cases
+        ]
+    finally:
+        connector.close()
+
+
+def _eval_public(
+    subset_path: str, db_dir: Path, config: AppConfig, max_turns: int
+) -> list[CaseResult]:
+    """Public-benchmark mode: one SQLite database (and runtime) per db_id."""
+    cases = load_subset(subset_path)
+    results: list[CaseResult] = []
+    by_db: dict[str, list[EvalCase]] = {}
+    for case in cases:
+        by_db.setdefault(case.db_id, []).append(case)
+    for db_id, db_cases in by_db.items():
+        connector = SQLiteConnector(path=str(db_dir / db_id / f"{db_id}.sqlite"))
+        try:
+            run_question = _make_run_question(connector, config, max_turns)
+            for case in db_cases:
+                results.append(run_case(case, run_question=run_question, connector=connector))
+        finally:
+            connector.close()
+    results.sort(key=lambda r: r.case.id)
+    return results
 
 
 def _render_event(event: AgentEvent, verbose: bool) -> None:
