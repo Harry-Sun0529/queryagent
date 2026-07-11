@@ -13,4 +13,9 @@ dist/
 
 # Generated demo data (make demo-data)
 examples/demo_ecommerce/initdb/10_demo_shop.sql
+examples/demo_ecommerce/initdb_clickhouse/
 examples/demo_ecommerce/demo_shop.db
+
+# Public benchmark databases (large; subset.json IS committed)
+eval/public/databases/
+eval_report.md

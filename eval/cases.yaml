@@ -1,0 +1,51 @@
+# Self-built eval cases (spec §三 v0.2.0).
+#
+# TODO(HUMAN): 内容为 HUMAN 所有——扩充到 20 条，四类：简单查询 / 需口径查询 /
+# 多步查询 / 应当追问的歧义查询(2-3 条) + 不应追问的对照查询(2-3 条)。
+# 下面 5 条是可直接对 demo_shop 运行的格式示例（也可保留）。
+#
+# 字段：id(唯一) question kind(simple|metric|multistep|clarify|no_clarify)
+#       expected_sql(除 clarify 外必填，参考实现，跑出期望结果集)
+#       expected_metrics(clarify: ClarifyEvent 必须提及的口径名;
+#                        metric: 最终回答必须出现的字符串)
+#       tags(预留，按能力维度切分报告用)
+
+cases:
+  - id: simple_total_users
+    kind: simple
+    question: 一共有多少注册用户？
+    expected_sql: SELECT count(*) FROM users
+    tags: [count]
+
+  - id: simple_paid_orders_last_30d
+    kind: simple
+    question: 最近30天有多少笔已支付订单？
+    expected_sql: >
+      SELECT count(*) FROM orders
+      WHERE status = 'paid' AND created_at >= date('now', '-30 day')
+    tags: [count, date]
+
+  - id: metric_new_users_registration
+    kind: metric
+    question: 按注册口径，上个月总共新增了多少用户？
+    expected_sql: >
+      SELECT count(*) FROM users
+      WHERE strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now', '-1 month')
+        AND channel <> 'internal_test'
+    expected_metrics: [新增用户]
+    tags: [metric, date]
+
+  - id: clarify_new_users_ambiguous
+    kind: clarify
+    question: 上个月新增用户有多少？
+    expected_metrics: [new_users]
+    tags: [clarify]
+
+  - id: no_clarify_order_amount
+    kind: no_clarify
+    question: 上个月所有已支付订单的总金额是多少？
+    expected_sql: >
+      SELECT sum(amount) FROM orders
+      WHERE status = 'paid'
+        AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now', '-1 month')
+    tags: [clarify-control, aggregate]

@@ -1,9 +1,12 @@
-.PHONY: test lint typecheck unit demo-data demo-up demo-down
+.PHONY: test lint typecheck unit eval demo-data demo-up demo-down
 
 test: lint typecheck unit
 
 lint:
 	ruff check queryagent tests examples
+
+eval:
+	queryagent eval --config examples/demo_ecommerce/config.sqlite.yaml --cases eval/cases.yaml
 
 typecheck:
 	mypy queryagent
@@ -17,5 +20,8 @@ demo-data:
 demo-up: demo-data
 	docker compose -f examples/demo_ecommerce/docker-compose.yml up -d
 
+demo-up-ch: demo-data
+	docker compose -f examples/demo_ecommerce/docker-compose.yml --profile clickhouse up -d
+
 demo-down:
-	docker compose -f examples/demo_ecommerce/docker-compose.yml down -v
+	docker compose -f examples/demo_ecommerce/docker-compose.yml --profile clickhouse down -v
