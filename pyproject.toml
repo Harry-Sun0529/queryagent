@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "queryagent"
+version = "0.1.0.dev0"
+description = "Zero-infrastructure Text-to-SQL agent: schema-injected ReAct loop with YAML-declared business metrics."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Sun Weizhuo" }]
+dependencies = [
+    "anthropic>=0.40",
+    "sqlparse>=0.5",
+    "PyMySQL>=1.1",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "mypy>=1.10",
+    "ruff>=0.5",
+    "types-PyMySQL",
+    "types-PyYAML",
+]
+
+[tool.setuptools.packages.find]
+include = ["queryagent*"]
+
+[tool.setuptools.package-data]
+queryagent = ["py.typed"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["queryagent", "tests"]
+
+[tool.mypy]
+python_version = "3.10"
+disallow_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = "sqlparse.*"
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

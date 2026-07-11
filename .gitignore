@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+dist/
+*.egg-info/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Secrets / local env
+.env
+
+# Generated demo data (make demo-data)
+examples/demo_ecommerce/initdb/10_demo_shop.sql
+examples/demo_ecommerce/demo_shop.db
