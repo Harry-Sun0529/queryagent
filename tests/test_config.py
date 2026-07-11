@@ -108,3 +108,20 @@ def test_sqlite_config_requires_path(tmp_path: Path) -> None:
     text = VALID.split("database:")[0] + "database:\n  type: sqlite\n"
     with pytest.raises(ValueError, match="path"):
         load_config(write(tmp_path, text))
+
+
+CLICKHOUSE_DB_SECTION = """\
+database:
+  type: clickhouse
+  host: 127.0.0.1
+  database: demo_shop
+"""
+
+
+def test_clickhouse_config_defaults(tmp_path: Path) -> None:
+    text = VALID.split("database:")[0] + CLICKHOUSE_DB_SECTION
+    config = load_config(write(tmp_path, text))
+    assert config.database.type == "clickhouse"
+    assert config.database.port == 9000  # native protocol default
+    assert config.database.user == "default"
+    assert config.database.password == ""  # CH default user has no password

@@ -17,7 +17,7 @@ import yaml
 
 _FORBIDDEN_LLM_KEYS = {"api_key", "apikey", "key", "token", "secret"}
 _SUPPORTED_LLM_BACKENDS = {"anthropic", "openai_compatible"}
-_SUPPORTED_DB_TYPES = {"mysql", "sqlite"}  # clickhouse pending (extra, spec §八 first cut)
+_SUPPORTED_DB_TYPES = {"mysql", "sqlite", "clickhouse"}
 _DB_PASSWORD_ENV = "QUERYAGENT_DB_PASSWORD"
 
 
@@ -115,6 +115,17 @@ def _load_database(section: dict[str, Any]) -> DatabaseConfig:
         )
     if db_type == "sqlite":
         return DatabaseConfig(type=db_type, path=_req_str(section, "path", "database"))
+    if db_type == "clickhouse":
+        # ClickHouse's default user ships with an empty password, so unlike
+        # mysql a missing password is not an error here.
+        return DatabaseConfig(
+            type=db_type,
+            host=_req_str(section, "host", "database"),
+            port=_pos_int(section, "port", 9000, "database"),
+            user=_opt_str(section, "user") or "default",
+            password=_opt_str(section, "password") or os.environ.get(_DB_PASSWORD_ENV) or "",
+            database=_req_str(section, "database", "database"),
+        )
     password = _opt_str(section, "password") or os.environ.get(_DB_PASSWORD_ENV)
     if password is None:
         raise ValueError(

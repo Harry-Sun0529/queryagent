@@ -20,4 +20,16 @@ def make_connector(config: DatabaseConfig) -> Connector:
         )
     if config.type == "sqlite":
         return SQLiteConnector(path=config.path)
+    if config.type == "clickhouse":
+        # Lazy import: clickhouse-driver is an optional extra
+        # (pip install queryagent[clickhouse]).
+        from queryagent.connectors.clickhouse import ClickHouseConnector
+
+        return ClickHouseConnector(
+            host=config.host,
+            port=config.port,
+            user=config.user,
+            password=config.password,
+            database=config.database,
+        )
     raise ValueError(f"unsupported database type: {config.type}")
