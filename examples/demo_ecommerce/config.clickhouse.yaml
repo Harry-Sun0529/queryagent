@@ -1,0 +1,17 @@
+# QueryAgent demo config — ClickHouse path (make demo-up-ch).
+# Requires the extra driver: pip install -e ".[clickhouse]"
+llm:
+  backend: anthropic
+  model: claude-sonnet-5
+
+database:
+  type: clickhouse
+  host: 127.0.0.1
+  port: 9001          # host port mapped in docker-compose (native protocol)
+  database: demo_shop
+  user: demo
+  password: demo_ch_password   # local demo default, matches docker-compose.yml
+
+safety:
+  timeout_s: 10
+  max_rows: 200

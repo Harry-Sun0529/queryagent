@@ -19,3 +19,25 @@ services:
       interval: 5s
       timeout: 3s
       retries: 30
+
+  clickhouse:
+    # Optional third dialect (spec §三 v0.1.1): started only with
+    # `docker compose --profile clickhouse up` / `make demo-up-ch`.
+    image: clickhouse/clickhouse-server:24.8
+    container_name: queryagent-demo-clickhouse
+    profiles: [clickhouse]
+    environment:
+      CLICKHOUSE_DB: demo_shop
+      # The image's `default` user is localhost-only; CLICKHOUSE_USER creates
+      # a user that may connect from the published port (local demo creds).
+      CLICKHOUSE_USER: demo
+      CLICKHOUSE_PASSWORD: demo_ch_password
+    ports:
+      - "9001:9000"   # native protocol; 9001 on the host to avoid clashes
+    volumes:
+      - ./initdb_clickhouse:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
