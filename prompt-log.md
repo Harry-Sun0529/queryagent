@@ -41,3 +41,25 @@
   在 backend 内 json.loads 消化，坏 JSON 抛 LLMParseError；SQLite 用
   set_progress_handler 做 deadline 中断（SQLite 无原生查询超时）；CJK
   匹配用字符 bigram 做零依赖分词替代。
+
+## 2026-07-11 · v0.2.0 eval 体系预推进 + 三方言真实验证（同日晚）
+
+- **动机**：继续利用 Fable 5 窗口，把"可信"做实——能测的全部真测。
+- **eval 体系**（规格 §三 v0.2.0 AI 侧）：queryagent/evals 包
+  （compare/cases/runner/public）+ `queryagent eval` 子命令
+  （--backend/--model 双模型、--public 公开子集模式）+ make eval。
+  runner 只消费事件流（不 import agent.py），所以在 agent 落地前就有
+  31 个单测覆盖。eval 代码进包（pip install 后可用）、数据留 repo 根
+  eval/ 目录——对规格路径的偏差，理由是打包需求。
+- **真实验证**（Docker）：MySQL demo 容器端到端 5 项集成测试全过——
+  含只读账号拦 INSERT（SECURITY.md 第三层防御的实证）与 v0.1.0 验收
+  问题的非平凡答案；ClickHouse connector 落地并对 24.8 容器 4 项全过
+  （§八 第一砍单项在没有占用周末预算的情况下提前完成）。集成测试探测
+  不到容器时自动 skip，CI 不受影响。
+- **踩坑记录**（面试素材，§七 数据轨第 11 条）：CH 官方镜像 default
+  用户仅限容器内 localhost，宿主机连接需 CLICKHOUSE_USER 建用户；
+  PyMySQL ping(reconnect=True) 已弃用，改 ping(False)+换新连接；CH 行数
+  截断用 result_overflow_mode='break' 服务端截断 + 客户端精确 re-cap。
+- **cases.yaml 双关**：内容（20 条）仍归人类；已放 5 条可直接对
+  demo_shop 跑的格式示例。CHANGELOG.md 与 SECURITY.md 草稿一并就位
+  （SECURITY 是 v0.3.0 项，提前起草，等人类 review）。
