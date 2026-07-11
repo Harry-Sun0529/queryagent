@@ -1,0 +1,23 @@
+# Business metric definitions ("口径") — the whole point of this project:
+# metrics live in one YAML file that goes into git; reviewing a metric change
+# is just reviewing a PR.
+#
+# Required fields (frozen at v0.1.1): name, definition. Everything else is
+# optional and may grow, but required fields never change (spec §三).
+#
+# TODO(HUMAN): 内容为 HUMAN 所有（规格 §三）——把实习案例脱敏改写成电商语境，
+# 补到 5-8 条。建议方向：GMV（paid 口径 vs 含退款）、复购率、客单价、
+# 渠道 ROI、活跃用户。下面的 new_users 是规格钦定的演示钩子，caution 字段
+# 是 v0.2.0 追问功能的燃料，必须保留。
+
+metrics:
+  - name: new_users
+    display_name: 新增用户
+    aliases: [新用户, 新增, new users]
+    definition: >
+      按 users.created_at 的日期计数；不含 channel='internal_test' 的测试账号。
+    caution: >
+      运营口径按 users.first_order_at（首单口径）计数；如问题涉及运营报表，
+      需与用户确认采用哪种口径。
+    tables: [users]
+    sql_hint: "COUNT(*) FROM users WHERE date(created_at) = ... AND channel <> 'internal_test'"
