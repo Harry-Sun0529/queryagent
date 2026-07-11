@@ -22,3 +22,22 @@
   - 配置校验错误用 ValueError，不扩充规格 §二 冻结的异常层级。
   - 造数脚本日期相对"今天"滚动、RNG 固定种子：demo 问题永远非平凡，
     数据形状可复现。
+
+## 2026-07-11 · v0.1.1 AI 侧预推进（同日下午）
+
+- **动机**：用户要求在 Fable 5 可用窗口内尽量多推进 AI 侧工作。
+- **产出**（按规格 §三 v0.1.1 版本内优先级）：metrics/base.py +
+  yaml_store.py（AI-ASSISTED-R 初版，3 个 REVIEW-ME）、examples/metrics.yaml
+  格式脚手架（内容 TODO 归人类）、SQLite connector（progress-handler 超时）、
+  OpenAICompatibleBackend（httpx 手写，不引 openai 包）、cli.py（含
+  ClarifyEvent 预留分支）、造数脚本 SQLite 发射器、connector/backend 工厂、
+  docs/handwriting-guide.md（HUMAN 文件伪代码级引导，v0.3.0 冻结时删）。
+- **刻意没做**：context.py 预算裁剪（AI-ASSISTED-R 规则：人类重构 commit
+  之前不叠加改动）；agent.py 自修正与追问（HUMAN-OWNED）；ClickHouse
+  connector（§八 第一砍单项，且无环境无法验证，不写未经测试的代码）；
+  eval runner（依赖 agent 语义定稿）；metrics 注入 context 的接线（同受
+  R 规则阻塞，等人类重构后进行）。
+- **关键决定**：OpenAI 兼容协议 tool-call 的 arguments 是 JSON 字符串，
+  在 backend 内 json.loads 消化，坏 JSON 抛 LLMParseError；SQLite 用
+  set_progress_handler 做 deadline 中断（SQLite 无原生查询超时）；CJK
+  匹配用字符 bigram 做零依赖分词替代。

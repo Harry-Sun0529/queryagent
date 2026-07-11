@@ -16,7 +16,7 @@ from collections.abc import Sequence
 
 from queryagent.agent import run_agent
 from queryagent.config import load_config
-from queryagent.connectors.mysql import MySQLConnector
+from queryagent.connectors import make_connector
 from queryagent.context import ContextBuilder
 from queryagent.events import (
     AgentEvent,
@@ -28,7 +28,7 @@ from queryagent.events import (
     ThinkEvent,
     ToolCallEvent,
 )
-from queryagent.llm.anthropic_backend import AnthropicBackend
+from queryagent.llm import make_backend
 from queryagent.schema import render_schema
 from queryagent.tools import ToolRegistry, make_default_tools
 
@@ -42,19 +42,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     config = load_config(args.config)
-    if config.llm.backend != "anthropic":
-        print("v0.1.0 implements the anthropic backend only", file=sys.stderr)
-        return 2
-
-    connector = MySQLConnector(
-        host=config.database.host,
-        port=config.database.port,
-        user=config.database.user,
-        password=config.database.password,
-        database=config.database.database,
-    )
+    connector = make_connector(config.database)
     try:
-        backend = AnthropicBackend(model=config.llm.model)
+        backend = make_backend(config.llm)
         schema_text = render_schema(connector.get_schema())
         builder = ContextBuilder(schema_text=schema_text, dialect=connector.dialect)
         registry = ToolRegistry(
