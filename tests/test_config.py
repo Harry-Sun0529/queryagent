@@ -88,3 +88,23 @@ def test_missing_password_everywhere_rejected(
     monkeypatch.delenv("QUERYAGENT_DB_PASSWORD", raising=False)
     with pytest.raises(ValueError, match="password"):
         load_config(write(tmp_path, text))
+
+
+SQLITE_DB_SECTION = """\
+database:
+  type: sqlite
+  path: examples/demo_ecommerce/demo_shop.db
+"""
+
+
+def test_sqlite_config_needs_only_path(tmp_path: Path) -> None:
+    text = VALID.split("database:")[0] + SQLITE_DB_SECTION
+    config = load_config(write(tmp_path, text))
+    assert config.database.type == "sqlite"
+    assert config.database.path.endswith("demo_shop.db")
+
+
+def test_sqlite_config_requires_path(tmp_path: Path) -> None:
+    text = VALID.split("database:")[0] + "database:\n  type: sqlite\n"
+    with pytest.raises(ValueError, match="path"):
+        load_config(write(tmp_path, text))
