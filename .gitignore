@@ -11,6 +11,9 @@ dist/
 # Secrets / local env
 .env
 
+# macOS
+.DS_Store
+
 # Generated demo data (make demo-data)
 examples/demo_ecommerce/initdb/10_demo_shop.sql
 examples/demo_ecommerce/initdb_clickhouse/
