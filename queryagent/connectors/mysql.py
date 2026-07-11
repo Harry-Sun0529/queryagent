@@ -122,10 +122,22 @@ class MySQLConnector:
 
     @contextmanager
     def _connection(self) -> Iterator[pymysql.connections.Connection]:
-        """Borrow a pooled connection; ping-with-reconnect heals dead ones."""
+        """Borrow a pooled connection; dead ones are replaced transparently.
+
+        PyMySQL deprecated ping(reconnect=True), so liveness is checked with
+        ping(False) and a failed connection is swapped for a fresh one (the
+        pool's created-count is unchanged: one out, one in).
+        """
         conn = self._acquire()
         try:
-            conn.ping(reconnect=True)
+            conn.ping(False)
+        except pymysql.MySQLError:
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001 - already broken, best effort
+                pass
+            conn = pymysql.connect(**self._params)
+        try:
             yield conn
         finally:
             self._pool.put(conn)
