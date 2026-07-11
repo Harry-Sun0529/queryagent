@@ -17,7 +17,7 @@ import yaml
 
 _FORBIDDEN_LLM_KEYS = {"api_key", "apikey", "key", "token", "secret"}
 _SUPPORTED_LLM_BACKENDS = {"anthropic", "openai_compatible"}
-_SUPPORTED_DB_TYPES = {"mysql"}  # v0.1.1 adds sqlite; clickhouse behind an extra
+_SUPPORTED_DB_TYPES = {"mysql", "sqlite"}  # clickhouse pending (extra, spec §八 first cut)
 _DB_PASSWORD_ENV = "QUERYAGENT_DB_PASSWORD"
 
 
@@ -32,14 +32,19 @@ class LLMConfig:
 
 @dataclass(frozen=True)
 class DatabaseConfig:
-    """Active data source. v0.1.0 supports a single source per config."""
+    """Active data source; one source per config, switch by editing the file.
+
+    Server databases (mysql) use host/port/user/password/database;
+    file databases (sqlite) use ``path`` only.
+    """
 
     type: str
-    host: str
-    port: int
-    user: str
-    password: str
-    database: str
+    host: str = ""
+    port: int = 0
+    user: str = ""
+    password: str = ""
+    database: str = ""
+    path: str = ""
 
 
 @dataclass(frozen=True)
@@ -106,9 +111,10 @@ def _load_database(section: dict[str, Any]) -> DatabaseConfig:
     db_type = _req_str(section, "type", "database")
     if db_type not in _SUPPORTED_DB_TYPES:
         raise ValueError(
-            f"database.type must be one of {sorted(_SUPPORTED_DB_TYPES)} in v0.1.0, "
-            f"got '{db_type}'"
+            f"database.type must be one of {sorted(_SUPPORTED_DB_TYPES)}, got '{db_type}'"
         )
+    if db_type == "sqlite":
+        return DatabaseConfig(type=db_type, path=_req_str(section, "path", "database"))
     password = _opt_str(section, "password") or os.environ.get(_DB_PASSWORD_ENV)
     if password is None:
         raise ValueError(
