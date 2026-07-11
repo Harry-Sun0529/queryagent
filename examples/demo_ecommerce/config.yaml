@@ -1,0 +1,21 @@
+# QueryAgent demo config — demo_ecommerce (MySQL via docker-compose).
+# API keys are NEVER put in config files; export ANTHROPIC_API_KEY instead (spec §二).
+llm:
+  backend: anthropic
+  model: claude-sonnet-5
+
+database:
+  type: mysql
+  host: 127.0.0.1
+  port: 3307
+  user: queryagent_ro
+  # Local demo default only — matches initdb/00_init.sql. For real databases,
+  # omit `password` and set the QUERYAGENT_DB_PASSWORD environment variable.
+  password: demo_ro_password
+  database: demo_shop
+
+safety:
+  timeout_s: 10
+  max_rows: 200
+
+# metrics_path: examples/metrics.yaml   # v0.1.1

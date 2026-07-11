@@ -1,0 +1,21 @@
+# Local demo database only — throwaway credentials, never used anywhere else.
+# Run `make demo-data` first to generate initdb/10_demo_shop.sql.
+services:
+  mysql:
+    # 8.0 keeps the mysql_native_password plugin available, which lets PyMySQL
+    # authenticate without pulling in the `cryptography` package (spec §四:
+    # dependency minimalism).
+    image: mysql:8.0
+    container_name: queryagent-demo-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: demo_root_password
+      MYSQL_DATABASE: demo_shop
+    ports:
+      - "3307:3306"
+    volumes:
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-pdemo_root_password"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
