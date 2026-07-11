@@ -1,0 +1,22 @@
+# QueryAgent demo config — SQLite path (no Docker needed).
+# Run `make demo-data` first to produce demo_shop.db.
+# API keys are NEVER put in config files (spec §二):
+#   anthropic         -> export ANTHROPIC_API_KEY=...
+#   openai_compatible -> export OPENAI_API_KEY=...   (DeepSeek keys go here too)
+llm:
+  backend: anthropic
+  model: claude-sonnet-5
+  # 开发迭代推荐用 DeepSeek（成本约 1/10-1/20，规格 §八）：
+  # backend: openai_compatible
+  # model: deepseek-chat
+  # base_url: https://api.deepseek.com
+
+database:
+  type: sqlite
+  path: examples/demo_ecommerce/demo_shop.db
+
+safety:
+  timeout_s: 10
+  max_rows: 200
+
+# metrics_path: examples/metrics.yaml   # 等 context.py 完成人类重构后接线

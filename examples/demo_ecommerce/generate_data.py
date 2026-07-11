@@ -1,9 +1,9 @@
 """Generate the fictional ``demo_shop`` dataset (spec §五, AI-OWNED).
 
 Rows are built in a dialect-agnostic intermediate representation (IR) and
-handed to per-dialect emitters. v0.1.0 ships the MySQL emitter; v0.1.1 reuses
-the same IR for the SQLite file (``demo_shop.db``) and, schedule permitting,
-a ClickHouse replica.
+handed to per-dialect emitters: MySQL init SQL (v0.1.0, docker path) and a
+SQLite file ``demo_shop.db`` (v0.1.1, the Docker-free demo path). A
+ClickHouse replica reuses the same IR if it survives the schedule cut.
 
 The RNG is seeded (deterministic data shape), but dates are generated
 relative to *today* so demo questions like "上个月每天的新增用户数" always
@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import random
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -235,23 +236,81 @@ def emit_mysql(data: dict[str, list[Row]], out_path: Path) -> None:
                 f.write(f"INSERT INTO `{table.name}` ({col_list}) VALUES\n{values};\n")
 
 
+# --- SQLite emitter --------------------------------------------------------
+
+SQLITE_TYPES = {
+    "id": "INTEGER",
+    "int": "INTEGER",
+    "decimal": "REAL",
+    "varchar": "TEXT",
+    "datetime": "TEXT",  # ISO 'YYYY-MM-DD HH:MM:SS'; sqlite date() works on it
+    "bool": "INTEGER",
+}
+
+
+def _sqlite_value(value: Value) -> int | float | str | None:
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    return value
+
+
+def _sqlite_ddl(table: Table) -> str:
+    lines = [
+        f'  "{column.name}" {SQLITE_TYPES[column.ir_type]}'
+        + ("" if column.nullable else " NOT NULL")
+        for column in table.columns
+    ]
+    if table.primary_key:
+        keys = ", ".join(f'"{k}"' for k in table.primary_key)
+        lines.append(f"  PRIMARY KEY ({keys})")
+    body = ",\n".join(lines)
+    return f'CREATE TABLE "{table.name}" (\n{body}\n);'
+
+
+def emit_sqlite(data: dict[str, list[Row]], db_path: Path) -> None:
+    """Write the dataset as a single SQLite file (Docker-free demo path)."""
+    if db_path.exists():
+        db_path.unlink()
+    conn = sqlite3.connect(db_path)
+    try:
+        for table in TABLES:
+            conn.execute(_sqlite_ddl(table))
+            placeholders = ", ".join("?" for _ in table.columns)
+            conn.executemany(
+                f'INSERT INTO "{table.name}" VALUES ({placeholders})',
+                (tuple(_sqlite_value(v) for v in row) for row in data[table.name]),
+            )
+        for table in TABLES:  # indexes after bulk insert: faster load
+            for index in table.indexes:
+                cols = ", ".join(f'"{c}"' for c in index)
+                name = f"idx_{table.name}_{'_'.join(index)}"
+                conn.execute(f'CREATE INDEX "{name}" ON "{table.name}" ({cols})')
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def main() -> None:
-    """Generate the dataset and emit the MySQL init script."""
+    """Generate the dataset and emit MySQL init SQL + the SQLite file."""
     parser = argparse.ArgumentParser(description="Generate the demo_shop dataset")
     parser.add_argument("--out", type=Path, default=Path(__file__).parent / "initdb")
+    parser.add_argument(
+        "--sqlite-out", type=Path, default=Path(__file__).parent / "demo_shop.db"
+    )
     args = parser.parse_args()
     rng = random.Random(SEED)
     now = datetime.now().replace(microsecond=0)
     data = generate(rng, now)
-    args.out.mkdir(parents=True, exist_ok=True)
-    out_file = args.out / "10_demo_shop.sql"
-    emit_mysql(data, out_file)
-    size_mb = out_file.stat().st_size / 1e6
     print(
         f"users={len(data['users'])} orders={len(data['orders'])} "
         f"order_items={len(data['order_items'])}"
     )
-    print(f"wrote {out_file} ({size_mb:.1f} MB)")
+    args.out.mkdir(parents=True, exist_ok=True)
+    out_file = args.out / "10_demo_shop.sql"
+    emit_mysql(data, out_file)
+    print(f"wrote {out_file} ({out_file.stat().st_size / 1e6:.1f} MB)")
+    emit_sqlite(data, args.sqlite_out)
+    print(f"wrote {args.sqlite_out} ({args.sqlite_out.stat().st_size / 1e6:.1f} MB)")
 
 
 if __name__ == "__main__":
