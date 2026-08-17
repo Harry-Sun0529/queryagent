@@ -1,13 +1,6 @@
-"""Acceptance tests for the four agent termination paths (spec §三 v0.1.0).
-
-The agent loop is HUMAN-OWNED; these tests pin the *contract* (the loop
-terminates, and how it signals why) while leaving the internal design free.
-Remove the module-level skip once queryagent/agent.py is implemented.
-"""
+"""Acceptance tests for the four agent termination paths (spec §三 v0.1.0)."""
 
 from __future__ import annotations
-
-import pytest
 
 from queryagent.agent import run_agent
 from queryagent.context import ContextBuilder
@@ -15,10 +8,6 @@ from queryagent.errors import SafetyViolation
 from queryagent.events import AnswerEvent, ErrorEvent, ToolCallEvent
 from queryagent.tools import ToolRegistry, ToolSpec
 from tests.fakes import FakeLLMBackend, answer, tool_call
-
-pytestmark = pytest.mark.skip(
-    reason="agent.py is HUMAN-OWNED and not implemented yet; remove once run_agent lands"
-)
 
 
 def make_registry(handler=None) -> ToolRegistry:

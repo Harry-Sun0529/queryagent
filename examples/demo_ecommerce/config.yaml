@@ -18,4 +18,4 @@ safety:
   timeout_s: 10
   max_rows: 200
 
-# metrics_path: examples/metrics.yaml   # v0.1.1
+metrics_path: examples/metrics.yaml

@@ -1,7 +1,5 @@
 # Security Model
 
-> Draft for human review (spec §三 v0.3.0 item, drawn forward).
-
 QueryAgent turns natural language into SQL and executes it. The security
 design assumes **the model's output is untrusted input** — the same stance
 you would take toward user-supplied SQL.

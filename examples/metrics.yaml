@@ -1,23 +1,65 @@
-# Business metric definitions ("口径") — the whole point of this project:
-# metrics live in one YAML file that goes into git; reviewing a metric change
-# is just reviewing a PR.
+# Business metric definitions ("口径") for the demo_shop dataset — the whole
+# point of this project: metrics live in one YAML file that goes into git;
+# reviewing a metric change is just reviewing a PR.
 #
-# Required fields (frozen at v0.1.1): name, definition. Everything else is
-# optional and may grow, but required fields never change (spec §三).
+# Required fields (frozen at v0.1.1): name, definition. Optional fields may
+# grow, but required fields never change (spec §三).
 #
-# TODO(HUMAN): 内容为 HUMAN 所有（规格 §三）——把实习案例脱敏改写成电商语境，
-# 补到 5-8 条。建议方向：GMV（paid 口径 vs 含退款）、复购率、客单价、
-# 渠道 ROI、活跃用户。下面的 new_users 是规格钦定的演示钩子，caution 字段
-# 是 v0.2.0 追问功能的燃料，必须保留。
+# `caution` marks metrics with competing definitions: when a matched metric
+# carries one and the question doesn't disambiguate, the agent asks instead
+# of guessing (ClarifyEvent).
 
 metrics:
   - name: new_users
     display_name: 新增用户
     aliases: [新用户, 新增, new users]
     definition: >
-      按 users.created_at 的日期计数；不含 channel='internal_test' 的测试账号。
+      按 users.created_at 的日期计数（注册口径）；不含 channel='internal_test'
+      的测试账号。
     caution: >
-      运营口径按 users.first_order_at（首单口径）计数；如问题涉及运营报表，
-      需与用户确认采用哪种口径。
+      运营口径按 users.first_order_at（首单口径）计数，两种口径数字差异很大；
+      如问题未指明口径且涉及报表，需与用户确认采用哪种。
     tables: [users]
     sql_hint: "COUNT(*) FROM users WHERE date(created_at) = ... AND channel <> 'internal_test'"
+
+  - name: gmv
+    display_name: 成交额
+    aliases: [GMV, 交易额, 成交金额]
+    definition: >
+      status='paid' 订单的 amount 求和（支付口径），按 orders.created_at 归属日期。
+    caution: >
+      财务口径需扣除 status='refunded' 的退款单；如问题涉及财务对账，
+      需与用户确认用支付口径还是净额口径。
+    tables: [orders]
+    sql_hint: "SUM(amount) FROM orders WHERE status = 'paid'"
+
+  - name: aov
+    display_name: 客单价
+    aliases: [平均订单金额, average order value]
+    definition: >
+      status='paid' 订单的 amount 平均值。
+    tables: [orders]
+    sql_hint: "AVG(amount) FROM orders WHERE status = 'paid'"
+
+  - name: repurchase_rate
+    display_name: 复购率
+    aliases: [复购, 回购率]
+    definition: >
+      下过 2 单及以上（status='paid'）的用户数，除以下过至少 1 单的用户数。
+    tables: [users, orders]
+
+  - name: refund_rate
+    display_name: 退款率
+    aliases: [退款占比]
+    definition: >
+      status='refunded' 的订单数除以同期全部订单数（按订单数计，非金额）。
+    tables: [orders]
+    sql_hint: "SUM(status = 'refunded') * 1.0 / COUNT(*) FROM orders"
+
+  - name: active_buyers
+    display_name: 活跃购买用户
+    aliases: [活跃买家, 下单用户数]
+    definition: >
+      统计周期内产生过 status='paid' 订单的去重用户数。
+    tables: [orders]
+    sql_hint: "COUNT(DISTINCT user_id) FROM orders WHERE status = 'paid'"

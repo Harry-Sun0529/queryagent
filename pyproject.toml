@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "queryagent"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "Zero-infrastructure Text-to-SQL agent: schema-injected ReAct loop with YAML-declared business metrics."
 readme = "README.md"
 requires-python = ">=3.10"

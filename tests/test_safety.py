@@ -1,10 +1,7 @@
 """Table-driven acceptance cases for the SQL safety whitelist (spec §三).
 
-The rule design is HUMAN-OWNED; this table encodes the spec's acceptance
-criteria (single SELECT with CTE allowed; DML/DDL, multi-statement and
-comment-smuggling blocked). Remove the module-level skip once
-queryagent/safety.py is implemented. Adjusting borderline cases is the rule
-owner's call — with a rationale per change.
+Single SELECT with CTE allowed; DML/DDL, multi-statement, comment-smuggling,
+and write-shaped SELECT clauses (INTO OUTFILE / FOR UPDATE) blocked.
 """
 
 from __future__ import annotations
@@ -13,10 +10,6 @@ import pytest
 
 from queryagent.errors import SafetyViolation
 from queryagent.safety import ensure_safe_select
-
-pytestmark = pytest.mark.skip(
-    reason="safety.py rules are HUMAN-OWNED and not implemented yet; remove once rules land"
-)
 
 ALLOWED = [
     "SELECT 1",
@@ -46,7 +39,26 @@ BLOCKED = [
     # comment smuggling
     "SELECT/**/1;DROP/**/TABLE users",
     "DROP/*harmless?*/TABLE users",
+    # write-shaped SELECT clauses
+    "SELECT * FROM users INTO OUTFILE '/tmp/x'",
+    "SELECT * FROM users FOR UPDATE",
+    # not SELECT at all
+    "EXPLAIN SELECT 1",
+    "SHOW TABLES",
 ]
+
+MUST_MENTION_REASON = [
+    ("SELECT 1; DROP TABLE users", "multiple"),
+    ("DROP TABLE users", "SELECT"),
+]
+
+
+@pytest.mark.parametrize(("sql", "fragment"), MUST_MENTION_REASON)
+def test_rejection_reasons_are_actionable(sql: str, fragment: str) -> None:
+    with pytest.raises(SafetyViolation) as exc_info:
+        ensure_safe_select(sql)
+    assert fragment.lower() in str(exc_info.value).lower()
+    assert exc_info.value.sql == sql
 
 
 @pytest.mark.parametrize("sql", ALLOWED)

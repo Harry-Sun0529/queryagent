@@ -78,10 +78,13 @@ def test_read_only_account_blocks_writes(connector: MySQLConnector) -> None:
 
 
 def test_demo_question_has_nontrivial_answer(connector: MySQLConnector) -> None:
-    # the v0.1.0 acceptance question must have data behind it (spec §五)
+    # The v0.1.0 acceptance question must have data behind it (spec §五).
+    # Anchored on max(created_at) rather than curdate(): the DB server's
+    # clock (Docker VM) need not agree with the host clock that generated
+    # the data, and the demo's data-freshness is what is actually asserted.
     result = connector.execute(
         "SELECT date(created_at) AS d, count(*) FROM users "
-        "WHERE created_at >= date_sub(curdate(), INTERVAL 1 MONTH) "
+        "WHERE created_at >= date_sub((SELECT max(created_at) FROM users), INTERVAL 1 MONTH) "
         "GROUP BY d ORDER BY d",
         timeout_s=10,
         max_rows=50,

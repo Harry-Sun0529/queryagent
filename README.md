@@ -1,77 +1,216 @@
 # QueryAgent
 
-Zero-infrastructure Text-to-SQL agent for small data teams and individual data
-engineers: `pip install`, point it at your database, ask questions in natural
-language. Business metric definitions live in one YAML file that goes into
-git — reviewing a metric change is just reviewing a PR.
+[![CI](https://github.com/Harry-Sun0529/queryagent/actions/workflows/ci.yml/badge.svg)](https://github.com/Harry-Sun0529/queryagent/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 
-> **Status**: v0.1.0 under construction. Not released — interfaces may still move.
+**Zero-infrastructure Text-to-SQL agent for small data teams and individual
+data engineers.** `pip install`, point it at your database, ask questions in
+natural language. Business metric definitions live in one YAML file that goes
+into git — reviewing a metric change is just reviewing a PR. And when metric
+definitions conflict, the agent **asks you instead of guessing**.
+
+```text
+# illustrative session (numbers depend on the generated demo data)
+你问> 上个月新增用户有多少？
+
+[?] “新增用户”有两种口径：注册口径（按 created_at）和运营口径（按首单时间
+    first_order_at），你要哪一种？
+你答> 注册口径
+
+[ANSWER] 按注册口径，上个月新增用户 8,377 人（已剔除内部测试账号）。
+SQL: SELECT count(*) FROM users WHERE strftime('%Y-%m', created_at) = ...
+```
 
 ## Why another Text-to-SQL tool?
 
-On the complexity spectrum *Vanna (train a RAG model first) → WrenAI (deploy a
-multi-service platform) → DB-GPT (orchestrate multiple agents)*, QueryAgent
+On the complexity spectrum *Vanna (train a RAG model first) → WrenAI (deploy
+a multi-service platform) → DB-GPT (orchestrate multiple agents)*, QueryAgent
 takes the leftmost position: **no vector store, no services, no UI, no agent
-framework**. One process, one `config.yaml`, one `metrics.yaml`. If you are a
-3-person data team or a single engineer who wants metric definitions to take
-effect in five minutes, everything else is too heavy — that lightness is the
-feature.
+framework**. One process, one `config.yaml`, one `metrics.yaml`.
 
-## Architecture (v0.1.0)
+|  | Vanna | WrenAI | QueryAgent |
+|---|---|---|---|
+| Setup before first answer | train a RAG model | deploy multi-service platform + build MDL | write one config.yaml |
+| Semantic / metric layer | none formal (example retrieval) | MDL (full-featured, JSON) | one YAML file, git-diffable |
+| Infrastructure | vector store | services + vector store + UI | **none** |
+| Conflicting metric definitions | — | governed centrally | **agent stops and asks you** |
+| Form factor | library | BI platform | library |
+| License | MIT | AGPL-3.0 engine | MIT |
 
-```
-question ──▶ ReAct loop (agent.py) ──▶ AgentEvent stream ──▶ consumers
-                 │                                            (demo printer,
-                 ├─ LLMBackend        (llm/)                   v0.1.1 CLI,
-                 ├─ ToolRegistry      (tools.py)               v0.2.0 eval)
-                 │    ├─ get_schema
-                 │    └─ execute_sql ─▶ safety.py ─▶ Connector (connectors/)
-                 └─ ContextBuilder    (context.py)
-```
+WrenAI solves enterprise governance ("the CFO and the PM must get the same
+number"). QueryAgent solves the engineer's problem: *make the agent use my
+definitions today, with zero new infrastructure*. Lightness is the feature.
 
-The event stream is the load-bearing interface: the agent never prints or
-renders; every front end is just a different consumer of the same
-`Iterator[AgentEvent]`.
+## Features
 
-- `agent.py` — hand-written ReAct loop: four explicit termination conditions,
-  parse-failure fallback. No framework.
-- `safety.py` — SQL whitelist (single SELECT only), backed by connector-level
-  timeouts/row caps and a read-only DB account. Three independent layers.
-- `llm/` — provider abstraction; tool-call format differences are absorbed
-  per backend, the agent never sees raw SDK responses.
-- `connectors/` — data source abstraction (`dialect` drives SQL generation).
-- `context.py` — context assembly; token budgeting lands in v0.1.1.
+- **Hand-written ReAct loop** — no LangChain/LlamaIndex; the whole control
+  flow is one readable generator with four explicit termination conditions,
+  parse-failure fallback, and a self-repair loop (database errors are fed
+  back to the model, capped at 3 retries).
+- **Metrics as YAML** (`metrics.yaml`): definitions are matched to the
+  question and injected into the prompt; answers cite the metric used.
+  Metrics with a `caution` field trigger a **clarifying question** when the
+  user's phrasing is ambiguous — and are forbidden from asking when it isn't.
+- **Three-layer SQL safety**: a token-level whitelist (single SELECT only,
+  CTEs allowed — string literals can't fool it, comments can't smuggle past
+  it), connector-enforced timeouts and row caps, and a documented read-only
+  account setup as the final backstop. See [SECURITY.md](SECURITY.md).
+- **Three dialects out of the box**: MySQL, SQLite (stdlib, Docker-free
+  demo), ClickHouse (`pip install queryagent[clickhouse]`). New sources
+  implement one 3-method protocol.
+- **Two providers, one abstraction**: Anthropic + any OpenAI-compatible
+  endpoint (DeepSeek / Qwen / GLM / vLLM / Ollama) via `base_url`. Provider
+  tool-call formats never leak into the agent.
+- **Event-stream architecture**: the agent yields `AgentEvent`s; the CLI,
+  the eval runner, and any future UI are just different consumers. This is
+  the load-bearing seam of the codebase.
+- **Reproducible evaluation built in**: `queryagent eval` runs a 20-case
+  self-built suite (including should-ask / must-not-ask clarify controls)
+  plus a fixed-seed public-benchmark subset (BIRD/Spider), comparing
+  executed result sets — never SQL text. See [eval/README.md](eval/README.md).
 
-## Quickstart (dev preview — MySQL via Docker)
+## Quickstart (SQLite — no Docker, ~2 minutes)
 
 ```bash
+git clone https://github.com/Harry-Sun0529/queryagent && cd queryagent
+python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-make demo-up                 # generates demo data, starts MySQL on :3307
-export ANTHROPIC_API_KEY=sk-ant-...
-python -m queryagent.demo "上个月每天的新增用户数"
+make demo-data                        # generates demo_shop.db (fictional e-commerce)
+export ANTHROPIC_API_KEY=sk-ant-...   # or use an OpenAI-compatible backend, see below
+queryagent chat --config examples/demo_ecommerce/config.sqlite.yaml
 ```
 
-The demo database is a fictional e-commerce shop (~50k users, ~200k orders
-over the last 6 months). For your own database, create a **read-only**
-account and point `config.yaml` at it:
+Try: `上个月每天的新增用户数` — and watch it ask which definition of
+"new user" you mean. `--verbose` shows the full THINK / ACT / OBSERVE trace.
+
+To use DeepSeek (or any OpenAI-compatible endpoint) instead, edit the `llm:`
+section of the config:
+
+```yaml
+llm:
+  backend: openai_compatible
+  model: deepseek-chat
+  base_url: https://api.deepseek.com   # OPENAI_API_KEY holds the key
+```
+
+### MySQL / ClickHouse (Docker)
+
+```bash
+make demo-up      # MySQL 8 on :3307, data pre-loaded, read-only account
+queryagent chat --config examples/demo_ecommerce/config.yaml
+
+make demo-up-ch   # additionally ClickHouse on :9001
+queryagent chat --config examples/demo_ecommerce/config.clickhouse.yaml
+```
+
+### Your own database
+
+Create a **read-only** account (this is a load-bearing part of the security
+model, not optional hardening):
 
 ```sql
 CREATE USER 'queryagent_ro'@'%' IDENTIFIED BY '...';
 GRANT SELECT ON your_db.* TO 'queryagent_ro'@'%';
 ```
 
+Point `config.yaml` at it, write a `metrics.yaml` for your business
+definitions, and set `metrics_path` in the config.
+
+## Defining metrics
+
+```yaml
+metrics:
+  - name: new_users              # required, unique
+    display_name: 新增用户
+    aliases: [新用户, new users]
+    definition: >                # required — injected into the prompt
+      按 users.created_at 的日期计数（注册口径）；不含测试账号。
+    caution: >                   # optional — makes ambiguity a question, not a guess
+      运营口径按 first_order_at 计数；未指明口径且涉及报表时需确认。
+    tables: [users]              # optional
+    sql_hint: "COUNT(*) FROM users WHERE ..."   # optional
+```
+
+Required fields (`name`, `definition`) are frozen; optional fields may grow
+(semver promise, see [CHANGELOG.md](CHANGELOG.md)).
+
+## Evaluation
+
+```bash
+make eval                        # self-built 20 cases against the demo db
+queryagent eval --backend openai_compatible --model deepseek-chat \
+  --base-url https://api.deepseek.com \
+  --config examples/demo_ecommerce/config.sqlite.yaml   # dual-model comparison
+```
+
+Methodology: executed row sets compared as order-insensitive multisets with
+float tolerance; five metrics including **clarify-behaviour accuracy**
+(asked when it should, didn't when it shouldn't). A fixed-seed subset of a
+public benchmark serves as an external anchor, with a hard rule that prompts
+are never tuned against it ([eval/README.md](eval/README.md)).
+
+> Honesty note: published accuracy numbers are **pending** — the harness is
+> fully tested (153 tests, incl. live-database integration), but the
+> maintainer has not yet run the suites against paid LLM endpoints. Numbers
+> will land in this section as soon as they exist, unpolished.
+
+## Architecture
+
+```
+question ──▶ ReAct loop (agent.py) ──▶ Iterator[AgentEvent] ──▶ consumers
+                 │                                              (chat CLI,
+                 ├─ LLMBackend        llm/          Anthropic | OpenAI-compat
+                 ├─ ToolRegistry      tools.py      get_schema | execute_sql
+                 │                                  | ask_clarification
+                 │      └─▶ safety.py ─▶ Connector  connectors/  mysql | sqlite
+                 │          (whitelist)             | clickhouse
+                 ├─ ContextBuilder    context.py    schema + metrics + budget
+                 └─ MetricStore       metrics/      YAML store, alias matching
+```
+
+Every module is small enough to read in one sitting; there is deliberately
+no framework between you and the control flow. Design rationale for the big
+decisions lives in commit messages and [prompt-log.md](prompt-log.md) — this
+project was built with heavy AI assistance under a documented protocol, and
+the log is the honest record of who decided what.
+
 ## Development
 
 ```bash
-make test        # ruff + mypy + pytest; red means don't commit
+make test        # ruff + mypy + pytest (153 tests; DB integration tests
+                 # auto-skip when demo containers aren't running)
+make demo-down   # tear down demo databases
 ```
 
-This repo follows a strict human/AI code-ownership protocol: `agent.py` and
-the `safety.py` rule design are human-written; reviewable AI-drafted modules
-carry `# REVIEW-ME:` markers at real decision points and require a human
-refactor commit before they count as merged. See `prompt-log.md` for the
-collaboration record.
+## Roadmap
+
+- PostgreSQL connector (validates the Connector seam further)
+- Cross-session memory for confirmed metric choices
+- Embedding-based matching as an optional MetricStore implementation
+- Published eval numbers (strong + weak model, self-built + public subset)
 
 ## License
 
-MIT
+[MIT](LICENSE)
+
+---
+
+## 中文速览
+
+QueryAgent 是给小数据团队和个人工程师的**零基建 Text-to-SQL Agent 库**：
+不用训练、不用部署平台、不用向量库。业务口径写在一个 YAML 里进 git，改口
+径就是发 PR；当口径之间冲突（比如"新增用户"既可以按注册也可以按首单）而
+问题又没说清时，agent 会**停下来反问**而不是猜一个。
+
+两分钟上手（免 Docker）：
+
+```bash
+pip install -e ".[dev]" && make demo-data
+export ANTHROPIC_API_KEY=...    # 或改配置用 DeepSeek 等 OpenAI 兼容端点
+queryagent chat --config examples/demo_ecommerce/config.sqlite.yaml
+```
+
+安全模型：SQL 白名单（仅单条 SELECT，词法级校验）+ 连接层超时/行数上限 +
+只读数据库账号，三层互相独立。评估体系随库附带：`make eval` 一条命令复现
+20 条自建用例（含"该问的要问、不该问的不许问"的追问对照组）。

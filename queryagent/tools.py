@@ -1,12 +1,11 @@
 """Tool registry and the built-in ``get_schema`` / ``execute_sql`` tools.
 
-Ownership: the validation policy is AI-ASSISTED-R (spec §〇) — this is a first
-draft; ``# REVIEW-ME`` markers flag the decision points awaiting the human's
-substantive refactor before merge.
-
 Design note (spec §二): validation failures never raise to the agent loop.
 They come back as error ``Observation`` objects that are fed to the model —
-this is the model-hallucination tolerance mechanism.
+this is the model-hallucination tolerance mechanism. The one deliberate
+exception is ``SafetyViolation``: it propagates, because it is an agent
+termination condition (a model that just tried to write data should not get
+another attempt this run), not a retryable mistake.
 """
 
 from __future__ import annotations
@@ -87,9 +86,9 @@ class ToolRegistry:
             return Observation(f"Unknown tool '{name}'. Available tools: {available}.", True)
         errors = _validate_args(spec.input_schema, raw_args)
         if errors:
-            # REVIEW-ME: the error echoes the full expected schema back to the
-            # model. That maximises self-repair odds but costs tokens on every
-            # miss; the alternative is a terse per-field message only.
+            # The error echoes the full expected schema back to the model:
+            # tokens are spent only on the (rare) miss path, and the schema is
+            # exactly what the model needs to repair the call in one shot.
             detail = "; ".join(errors)
             return Observation(
                 f"Invalid arguments for '{name}': {detail}. Expected schema: {spec.input_schema}",
@@ -103,10 +102,8 @@ class ToolRegistry:
             return Observation(f"Query failed ({exc.dialect}): {exc.original_error}", True)
         except ToolValidationError as exc:
             return Observation(str(exc), True)
-        # REVIEW-ME: SafetyViolation (and any unexpected exception) deliberately
-        # propagates — per spec §三, SafetyViolation is an agent termination
-        # condition, not a retryable observation. Alternative: convert it to an
-        # error Observation and let the model attempt a safer query instead.
+        # SafetyViolation (and any unexpected exception) deliberately
+        # propagates — see the module docstring.
 
 
 def _validate_args(schema: dict[str, Any], raw_args: Any) -> list[str]:
@@ -118,9 +115,9 @@ def _validate_args(schema: dict[str, Any], raw_args: Any) -> list[str]:
     errors = [f"missing required argument '{key}'" for key in required if key not in raw_args]
     for key, value in raw_args.items():
         if key not in properties:
-            # REVIEW-ME: unknown arguments are rejected (strict). Alternative:
-            # silently drop them — friendlier to model hallucination, but can
-            # mask the model misreading the tool contract entirely.
+            # Unknown arguments are rejected (strict) rather than dropped:
+            # a hallucinated argument usually means the model misread the
+            # tool contract, and silence would mask that.
             errors.append(f"unknown argument '{key}'")
             continue
         expected = properties[key].get("type")
@@ -182,6 +179,44 @@ def make_default_tools(connector: Connector, *, timeout_s: int, max_rows: int) -
             handler=execute_sql_handler,
         ),
     ]
+
+
+CLARIFY_TOOL_NAME = "ask_clarification"
+
+
+def make_clarify_tool() -> ToolSpec:
+    """The clarification tool (spec §三 v0.2.0).
+
+    Registered only when the metric store carries caution-flagged metrics.
+    The agent loop intercepts calls to it *before* dispatch and converts
+    them into a terminal ``ClarifyEvent`` — the handler below never runs in
+    normal operation and exists to satisfy the ToolSpec contract.
+    """
+    return ToolSpec(
+        name=CLARIFY_TOOL_NAME,
+        description=(
+            "Ask the user ONE short clarifying question. Use ONLY when matched "
+            "business metrics carry a caution about competing definitions AND "
+            "the user's question does not say which definition to use AND the "
+            "choice changes the SQL. If the question already disambiguates, or "
+            "no caution applies, do NOT call this — answer directly."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": "The clarifying question to show the user, in their language.",
+                },
+                "metrics": {
+                    "type": "array",
+                    "description": "Names of the conflicting metrics (e.g. ['new_users']).",
+                },
+            },
+            "required": ["question", "metrics"],
+        },
+        handler=lambda question, metrics: "",  # intercepted by the agent loop
+    )
 
 
 def format_query_result(result: QueryResult) -> str:
