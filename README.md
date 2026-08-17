@@ -150,10 +150,34 @@ float tolerance; five metrics including **clarify-behaviour accuracy**
 public benchmark serves as an external anchor, with a hard rule that prompts
 are never tuned against it ([eval/README.md](eval/README.md)).
 
-> Honesty note: published accuracy numbers are **pending** — the harness is
-> fully tested (153 tests, incl. live-database integration), but the
-> maintainer has not yet run the suites against paid LLM endpoints. Numbers
-> will land in this section as soon as they exist, unpolished.
+### Results (`deepseek-chat`, temperature 0, 2026-08-17)
+
+| metric | self-built (20 cases) | BIRD mini-dev subset (30 cases, seed 42) |
+|---|---|---|
+| first-execution pass rate | 15/18 (83%) | 10/30 (33%) |
+| pass rate after self-repair | **18/18 (100%)** | 14/30 (47%) |
+| metric hit rate | 3/4 | n/a |
+| clarify-behaviour accuracy | **4/4** | n/a |
+| average tool calls | 1.35 | 2.83 |
+
+Honest notes, in the order they matter:
+
+- **The self-built set was iterated on — that is its job.** The first run
+  scored 50%; failure analysis exposed a metric-matching noise bug (one
+  shared bigram dragged a metric's filters into unrelated questions), an
+  unstable clarify trigger at provider-default temperature, and two brittle
+  case designs (rolling-date conventions). All fixed, all in git history.
+- **The public subset ran exactly once, zero tuning** — it exists to keep
+  the self-built numbers honest. 47% after self-repair for a small general
+  model with a generic zero-shot agent is the unvarnished anchor; the gap
+  vs the self-built set is mostly schema unfamiliarity (avg tool calls
+  2.83 vs 1.35 — the agent explores before it answers).
+- One public case failed because the *gold* SQL exceeded the harness's 30s
+  timeout; counted as a failure anyway (conservative).
+- Self-built denominators: 18 result-checked cases; the 2 ask-clarify cases
+  score behaviour, not result sets.
+- A strong-model column (Claude) will be added when run; raw reports live
+  in [eval/results/](eval/results/).
 
 ## Architecture
 
