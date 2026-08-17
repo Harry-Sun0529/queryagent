@@ -20,7 +20,9 @@ from queryagent.tools import ToolSpec
 class AnthropicBackend:
     """LLMBackend over the Anthropic Messages API."""
 
-    def __init__(self, model: str, *, max_tokens: int = 2048) -> None:
+    def __init__(
+        self, model: str, *, max_tokens: int = 2048, temperature: float | None = None
+    ) -> None:
         """Create a backend; the API key is read from ``ANTHROPIC_API_KEY``.
 
         Raises:
@@ -34,6 +36,7 @@ class AnthropicBackend:
         self._client = Anthropic()
         self._model = model
         self._max_tokens = max_tokens
+        self._temperature = temperature
 
     def complete(
         self,
@@ -46,6 +49,7 @@ class AnthropicBackend:
         response = self._client.messages.create(
             model=self._model,
             max_tokens=self._max_tokens,
+            temperature=self._temperature if self._temperature is not None else omit,
             system=system if system else omit,
             messages=converted,
             tools=[_convert_tool(t) for t in tools] if tools else omit,

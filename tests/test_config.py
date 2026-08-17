@@ -118,6 +118,20 @@ database:
 """
 
 
+def test_temperature_parsed_and_defaults_to_none(tmp_path: Path) -> None:
+    config = load_config(write(tmp_path, VALID))
+    assert config.llm.temperature is None
+    text = VALID.replace("model: claude-sonnet-5", "model: m\n  temperature: 0")
+    config = load_config(write(tmp_path, text))
+    assert config.llm.temperature == 0.0
+
+
+def test_negative_temperature_rejected(tmp_path: Path) -> None:
+    text = VALID.replace("model: claude-sonnet-5", "model: m\n  temperature: -1")
+    with pytest.raises(ValueError, match="temperature"):
+        load_config(write(tmp_path, text))
+
+
 def test_clickhouse_config_defaults(tmp_path: Path) -> None:
     text = VALID.split("database:")[0] + CLICKHOUSE_DB_SECTION
     config = load_config(write(tmp_path, text))

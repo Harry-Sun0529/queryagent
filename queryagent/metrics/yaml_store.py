@@ -1,8 +1,11 @@
 """YAML-backed metric store (spec §三 v0.1.1).
 
-Matching policy (all deliberate, tune against the eval set):
+Matching policy (all deliberate, tuned against the self-built eval set):
 - exact phrase hits on display_name/aliases score 10x a token overlap — a
   verbatim alias in the question is near-certain intent;
+- a minimum score of 2 filters single-shared-bigram noise: "有多少用户" must
+  NOT match 新增用户 just because both contain 用户 (eval showed such weak
+  matches leak metric filters into unrelated questions);
 - definitions are excluded from matching (long text drags in noise);
 - ties keep YAML file order (stable sort), so authors control precedence.
 
@@ -33,6 +36,7 @@ _CJK_RUN = re.compile(r"[一-鿿]+")
 _ASCII_WORD = re.compile(r"[a-z0-9_]+")
 
 _PHRASE_HIT_SCORE = 10.0  # one verbatim alias hit outweighs any token overlap
+_MIN_SCORE = 2.0  # a single shared bigram/word is noise, not a match
 
 
 def _tokens(text: str) -> set[str]:
@@ -93,7 +97,7 @@ class YamlMetricStore:
                 " ".join((metric.name, metric.display_name, *metric.aliases))
             )
             score += len(question_tokens & metric_tokens)
-            if score > 0:
+            if score >= _MIN_SCORE:
                 scored.append((score, metric))
         scored.sort(key=lambda pair: pair[0], reverse=True)  # stable: ties keep file order
         return [metric for _, metric in scored[:top_k]]

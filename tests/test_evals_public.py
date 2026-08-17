@@ -37,6 +37,21 @@ def test_load_bird_format(tmp_path: Path) -> None:
     assert cases[0].expected_sql == "SELECT 0"
 
 
+def test_bird_evidence_folded_into_question(tmp_path: Path) -> None:
+    items = [
+        {
+            "question_id": 1,
+            "db_id": "x",
+            "question": "How many?",
+            "evidence": "released refers to plan_date",
+            "SQL": "SELECT 1",
+        }
+    ]
+    cases = load_source_cases(write_json(tmp_path, "bird.json", items))
+    assert "How many?" in cases[0].question
+    assert "plan_date" in cases[0].question  # BIRD protocol: evidence shown to model
+
+
 def test_load_spider_format(tmp_path: Path) -> None:
     cases = load_source_cases(write_json(tmp_path, "spider.json", SPIDER_ITEMS))
     assert cases[0].expected_sql == "SELECT count(*) FROM singer"

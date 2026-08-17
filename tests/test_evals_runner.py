@@ -91,6 +91,28 @@ def test_self_repair_counts_retry() -> None:
     assert result.retries == 1
 
 
+def test_verification_query_after_answer_still_passes() -> None:
+    # Agents often run a sanity-check query AFTER the answer-bearing one;
+    # any successful SQL reproducing the expected result counts.
+    events = (
+        sql_events("SELECT agent", call_id="c1")
+        + sql_events("SELECT check", call_id="c2")
+        + [AnswerEvent(text="42")]
+    )
+    connector = FakeConnector(
+        {
+            "SELECT ref": ((42,),),
+            "SELECT agent": ((42,),),
+            "SELECT check": ((42, 42),),  # different shape, does not match
+        }
+    )
+    result = run_case(
+        simple_case(), run_question=lambda q: scripted(events), connector=connector
+    )
+    assert result.passed
+    assert result.first_attempt_passed  # first SQL matched, zero retries
+
+
 def test_wrong_result_fails() -> None:
     events = sql_events("SELECT agent") + [AnswerEvent(text="7")]
     connector = FakeConnector({"SELECT ref": ((42,),), "SELECT agent": ((7,),)})

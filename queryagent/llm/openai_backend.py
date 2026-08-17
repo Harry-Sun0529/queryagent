@@ -34,6 +34,7 @@ class OpenAICompatibleBackend:
         *,
         base_url: str,
         max_tokens: int = 2048,
+        temperature: float | None = None,
         timeout_s: float = 120.0,
         client: httpx.Client | None = None,
     ) -> None:
@@ -58,6 +59,7 @@ class OpenAICompatibleBackend:
             )
         self._model = model
         self._max_tokens = max_tokens
+        self._temperature = temperature
         self._url = base_url.rstrip("/") + "/chat/completions"
         self._headers = {"Authorization": f"Bearer {api_key}"}
         self._client = client or httpx.Client(timeout=timeout_s)
@@ -75,6 +77,8 @@ class OpenAICompatibleBackend:
             "messages": [_convert_message(m) for m in messages],
             **kwargs,
         }
+        if self._temperature is not None and "temperature" not in body:
+            body["temperature"] = self._temperature
         if tools:
             body["tools"] = [_convert_tool(t) for t in tools]
         response = self._client.post(self._url, json=body, headers=self._headers)

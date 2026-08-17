@@ -173,7 +173,10 @@ def _cmd_eval(args: argparse.Namespace) -> int:
             if not args.db_dir:
                 print("--public requires --db-dir", file=sys.stderr)
                 return 2
-            results = _eval_public(args.public, Path(args.db_dir), config, args.max_turns)
+            # Public benchmarks have no metrics.yaml of their own; the demo's
+            # e-commerce metrics must not leak into their prompts.
+            public_config = dataclasses.replace(config, metrics_path=None)
+            results = _eval_public(args.public, Path(args.db_dir), public_config, args.max_turns)
             title = "QueryAgent Eval Report — public subset"
         else:
             results = _eval_self_built(args.cases, config, args.max_turns)
