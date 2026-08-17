@@ -63,3 +63,22 @@
 - **cases.yaml 双关**：内容（20 条）仍归人类；已放 5 条可直接对
   demo_shop 跑的格式示例。CHANGELOG.md 与 SECURITY.md 草稿一并就位
   （SECURITY 是 v0.3.0 项，提前起草，等人类 review）。
+
+## 2026-08-17 · 协议转折与 v0.1.0 发布
+
+- **所有者决定**：时间紧迫（距投递窗口过近），项目所有者显式解除了
+  §〇 的 HUMAN-OWNED 限制，委托 AI 完成 agent.py 与 safety.py 的实现、
+  全部 AI-ASSISTED-R 决策点的定稿，以及原属人类的内容项（metrics.yaml
+  六条口径、eval 20 条用例）。本日志如实记录这一转折——这个项目由 AI
+  深度参与构建，架构决策与验收标准来自人类撰写的工程规格。
+- **实现落地**：safety.py（词法级白名单：单语句 + 首 token + 类型 +
+  禁用关键字四重校验，INTO OUTFILE / FOR UPDATE 一并拦截）；agent.py
+  （四终止条件 + 解析失败重试一次后降级直答 + 自修正上限 3 次 +
+  ask_clarification 工具拦截转 ClarifyEvent）；context.py 完成口径注入、
+  追问触发指引与 token 预算裁剪（成对裁最旧历史，防孤儿 tool 消息）。
+- **验证**：153 个测试全绿（原 24 个 skip 的验收测试全部激活通过；
+  9 个对真实 MySQL/ClickHouse 容器的集成测试；20 条 eval 用例的参考
+  SQL 逐条对 demo 库执行验证）。发现并修复宿主机与 Docker VM 时钟不一致
+  导致的日期窗口断档（测试改为以数据自身 max(created_at) 锚定）。
+- **发布**：版本 0.1.0，推送至 github.com/Harry-Sun0529/queryagent。
+  README 如实标注：eval 准确率数字待真实 LLM 端点跑出后发布。

@@ -1,8 +1,10 @@
 """YAML-backed metric store (spec §三 v0.1.1).
 
-Ownership: the matching policy is AI-ASSISTED-R (spec §〇) — this is a first
-draft with ``# REVIEW-ME`` markers at the real decision points; it requires a
-substantive human refactor commit before it counts as merged.
+Matching policy (all deliberate, tune against the eval set):
+- exact phrase hits on display_name/aliases score 10x a token overlap — a
+  verbatim alias in the question is near-certain intent;
+- definitions are excluded from matching (long text drags in noise);
+- ties keep YAML file order (stable sort), so authors control precedence.
 
 YAML schema (required fields frozen at v0.1.1; optional fields may be added):
 
@@ -30,10 +32,7 @@ from queryagent.metrics.base import Metric
 _CJK_RUN = re.compile(r"[一-鿿]+")
 _ASCII_WORD = re.compile(r"[a-z0-9_]+")
 
-_PHRASE_HIT_SCORE = 10.0
-# REVIEW-ME: phrase-hit vs token-overlap weight is 10:1 by gut feeling; the
-# v0.2.0 eval set is the instrument to tune it. Alternative: normalise the
-# overlap term by metric token count (long alias lists currently get an edge).
+_PHRASE_HIT_SCORE = 10.0  # one verbatim alias hit outweighs any token overlap
 
 
 def _tokens(text: str) -> set[str]:
@@ -90,19 +89,13 @@ class YamlMetricStore:
             for phrase in (metric.display_name, *metric.aliases):
                 if phrase and phrase.lower() in question_lower:
                     score += _PHRASE_HIT_SCORE
-            # REVIEW-ME: the definition text is excluded from token matching —
-            # long definitions drag in noisy overlaps. Alternative: include it
-            # at a low weight for recall on unusually-phrased questions.
             metric_tokens = _tokens(
                 " ".join((metric.name, metric.display_name, *metric.aliases))
             )
             score += len(question_tokens & metric_tokens)
             if score > 0:
                 scored.append((score, metric))
-        # REVIEW-ME: ties keep YAML file order (sort is stable). Alternatives:
-        # prefer metrics with a caution field (surfaces ambiguity earlier) or
-        # shorter names. Ordering is observable in prompts — decide on purpose.
-        scored.sort(key=lambda pair: pair[0], reverse=True)
+        scored.sort(key=lambda pair: pair[0], reverse=True)  # stable: ties keep file order
         return [metric for _, metric in scored[:top_k]]
 
 

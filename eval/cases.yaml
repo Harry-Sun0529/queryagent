@@ -1,30 +1,68 @@
-# Self-built eval cases (spec §三 v0.2.0).
+# Self-built eval cases (spec §三 v0.2.0): 20 cases in four groups —
+# simple / metric-aware / multi-step / clarify-behaviour (with controls).
+# expected_sql is written in the sqlite dialect (run with
+# examples/demo_ecommerce/config.sqlite.yaml). Relative dates use sqlite's
+# 'now', which is the host clock — the same clock that generated the data.
 #
-# TODO(HUMAN): 内容为 HUMAN 所有——扩充到 20 条，四类：简单查询 / 需口径查询 /
-# 多步查询 / 应当追问的歧义查询(2-3 条) + 不应追问的对照查询(2-3 条)。
-# 下面 5 条是可直接对 demo_shop 运行的格式示例（也可保留）。
-#
-# 字段：id(唯一) question kind(simple|metric|multistep|clarify|no_clarify)
-#       expected_sql(除 clarify 外必填，参考实现，跑出期望结果集)
-#       expected_metrics(clarify: ClarifyEvent 必须提及的口径名;
-#                        metric: 最终回答必须出现的字符串)
-#       tags(预留，按能力维度切分报告用)
+# Fields: id(unique) question kind(simple|metric|multistep|clarify|no_clarify)
+#         expected_sql(required except clarify; the reference result set)
+#         expected_metrics(clarify: names the ClarifyEvent must mention;
+#                          metric: strings the final answer must contain)
+#         tags(reserved for report slicing)
 
 cases:
+  # ---- simple ------------------------------------------------------------
   - id: simple_total_users
     kind: simple
     question: 一共有多少注册用户？
     expected_sql: SELECT count(*) FROM users
     tags: [count]
 
-  - id: simple_paid_orders_last_30d
+  - id: simple_channels_list
+    kind: simple
+    question: 有哪些获客渠道？
+    expected_sql: SELECT code, name FROM channels ORDER BY code
+    tags: [lookup]
+
+  - id: simple_paid_orders_30d
     kind: simple
     question: 最近30天有多少笔已支付订单？
     expected_sql: >
       SELECT count(*) FROM orders
-      WHERE status = 'paid' AND created_at >= date('now', '-30 day')
+      WHERE status = 'paid' AND created_at >= datetime('now', '-30 day')
     tags: [count, date]
 
+  - id: simple_users_by_region
+    kind: simple
+    question: 各地区分别有多少用户？
+    expected_sql: SELECT region, count(*) FROM users GROUP BY region ORDER BY region
+    tags: [groupby]
+
+  - id: simple_max_order_amount
+    kind: simple
+    question: 单笔金额最大的订单是多少钱？
+    expected_sql: SELECT max(amount) FROM orders
+    tags: [aggregate]
+
+  - id: simple_distinct_skus
+    kind: simple
+    question: 一共卖过多少种不同的商品SKU？
+    expected_sql: SELECT count(DISTINCT sku) FROM order_items
+    tags: [distinct]
+
+  - id: simple_orders_by_status
+    kind: simple
+    question: 各状态的订单分别有多少笔？
+    expected_sql: SELECT status, count(*) FROM orders GROUP BY status ORDER BY status
+    tags: [groupby]
+
+  - id: simple_users_without_orders
+    kind: simple
+    question: 有多少用户从来没有下过单？
+    expected_sql: SELECT count(*) FROM users WHERE first_order_at IS NULL
+    tags: [null-handling]
+
+  # ---- metric-aware ------------------------------------------------------
   - id: metric_new_users_registration
     kind: metric
     question: 按注册口径，上个月总共新增了多少用户？
@@ -35,17 +73,97 @@ cases:
     expected_metrics: [新增用户]
     tags: [metric, date]
 
+  - id: metric_gmv_paid_last_month
+    kind: metric
+    question: 按支付口径，上个月的GMV是多少？
+    expected_sql: >
+      SELECT sum(amount) FROM orders
+      WHERE status = 'paid'
+        AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now', '-1 month')
+    expected_metrics: [成交额]
+    tags: [metric, aggregate]
+
+  - id: metric_aov_overall
+    kind: metric
+    question: 我们的客单价是多少？
+    expected_sql: SELECT avg(amount) FROM orders WHERE status = 'paid'
+    expected_metrics: [客单价]
+    tags: [metric]
+
+  - id: metric_active_buyers_30d
+    kind: metric
+    question: 最近30天的活跃购买用户有多少？
+    expected_sql: >
+      SELECT count(DISTINCT user_id) FROM orders
+      WHERE status = 'paid' AND created_at >= datetime('now', '-30 day')
+    expected_metrics: [活跃购买用户]
+    tags: [metric, date]
+
+  # ---- multi-step --------------------------------------------------------
+  - id: multi_top3_regions_by_paid_amount
+    kind: multistep
+    question: 按已支付订单金额排名前三的地区是哪三个？
+    expected_sql: >
+      SELECT u.region, sum(o.amount) AS total
+      FROM orders o JOIN users u ON u.id = o.user_id
+      WHERE o.status = 'paid'
+      GROUP BY u.region ORDER BY total DESC LIMIT 3
+    tags: [join, topk]
+
+  - id: multi_best_non_test_channel
+    kind: multistep
+    question: 除去内部测试渠道，哪个渠道带来的用户最多？
+    expected_sql: >
+      SELECT channel FROM users WHERE channel <> 'internal_test'
+      GROUP BY channel ORDER BY count(*) DESC LIMIT 1
+    tags: [groupby, topk]
+
+  - id: multi_daily_new_users_7d
+    kind: multistep
+    question: 最近7天每天按注册口径新增多少用户？
+    expected_sql: >
+      SELECT date(created_at) AS d, count(*) FROM users
+      WHERE created_at >= datetime('now', '-7 day')
+        AND channel <> 'internal_test'
+      GROUP BY d ORDER BY d
+    tags: [date, groupby]
+
+  - id: multi_ads_share_of_paid_amount
+    kind: multistep
+    question: 已支付订单金额中，来自付费广告渠道用户的占比是多少？
+    expected_sql: >
+      SELECT sum(CASE WHEN u.channel = 'ads' THEN o.amount ELSE 0 END) * 1.0
+             / sum(o.amount)
+      FROM orders o JOIN users u ON u.id = o.user_id
+      WHERE o.status = 'paid'
+    tags: [join, ratio]
+
+  # ---- clarify behaviour -------------------------------------------------
   - id: clarify_new_users_ambiguous
     kind: clarify
     question: 上个月新增用户有多少？
     expected_metrics: [new_users]
     tags: [clarify]
 
-  - id: no_clarify_order_amount
+  - id: clarify_gmv_ambiguous
+    kind: clarify
+    question: 今年到现在的成交额一共是多少？
+    expected_metrics: [gmv]
+    tags: [clarify]
+
+  - id: no_clarify_disambiguated_new_users
     kind: no_clarify
-    question: 上个月所有已支付订单的总金额是多少？
+    question: 按注册时间算，上个月新增用户有多少？不用管运营口径。
     expected_sql: >
-      SELECT sum(amount) FROM orders
-      WHERE status = 'paid'
-        AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now', '-1 month')
-    tags: [clarify-control, aggregate]
+      SELECT count(*) FROM users
+      WHERE strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now', '-1 month')
+        AND channel <> 'internal_test'
+    tags: [clarify-control]
+
+  - id: no_clarify_plain_order_count
+    kind: no_clarify
+    question: 上个月一共有多少笔订单？
+    expected_sql: >
+      SELECT count(*) FROM orders
+      WHERE strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now', '-1 month')
+    tags: [clarify-control]

@@ -38,8 +38,9 @@ from queryagent.events import (
     ToolCallEvent,
 )
 from queryagent.llm import make_backend
+from queryagent.metrics.yaml_store import YamlMetricStore
 from queryagent.schema import render_schema
-from queryagent.tools import ToolRegistry, make_default_tools
+from queryagent.tools import ToolRegistry, make_clarify_tool, make_default_tools
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -74,19 +75,23 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _make_run_question(
     connector: Connector, config: AppConfig, max_turns: int
 ) -> RunQuestion:
-    """Wire backend + context + tools for one data source; return the seam."""
+    """Wire backend + context + metrics + tools for one data source."""
     backend = make_backend(config.llm)
+    metric_store = YamlMetricStore(config.metrics_path) if config.metrics_path else None
     builder = ContextBuilder(
         schema_text=render_schema(connector.get_schema()),
         dialect=connector.dialect,
+        metric_store=metric_store,
     )
-    registry = ToolRegistry(
-        make_default_tools(
-            connector,
-            timeout_s=config.safety.timeout_s,
-            max_rows=config.safety.max_rows,
-        )
+    tools = make_default_tools(
+        connector,
+        timeout_s=config.safety.timeout_s,
+        max_rows=config.safety.max_rows,
     )
+    if metric_store is not None:
+        # The clarify tool only exists when metrics can actually conflict.
+        tools.append(make_clarify_tool())
+    registry = ToolRegistry(tools)
 
     def run_question(question: str) -> Iterator[AgentEvent]:
         return run_agent(

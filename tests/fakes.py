@@ -12,12 +12,15 @@ from queryagent.tools import ToolSpec
 class FakeLLMBackend:
     """LLMBackend that replays a scripted list of responses in order.
 
+    Script entries may also be Exception instances — those are raised
+    instead of returned, for testing parse-failure paths.
+
     Records every ``complete`` call (messages and tools) for assertions.
     Raises AssertionError when the script runs out — a test asking for more
     turns than it scripted is a test bug, not agent behaviour.
     """
 
-    def __init__(self, responses: Sequence[ModelResponse]) -> None:
+    def __init__(self, responses: Sequence[ModelResponse | Exception]) -> None:
         self._responses = list(responses)
         self.calls: list[list[Message]] = []
 
@@ -30,7 +33,10 @@ class FakeLLMBackend:
         self.calls.append(list(messages))
         if not self._responses:
             raise AssertionError("FakeLLMBackend script exhausted")
-        return self._responses.pop(0)
+        item = self._responses.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
 
 
 def answer(text: str) -> ModelResponse:

@@ -19,4 +19,4 @@ safety:
   timeout_s: 10
   max_rows: 200
 
-# metrics_path: examples/metrics.yaml   # 等 context.py 完成人类重构后接线
+metrics_path: examples/metrics.yaml
