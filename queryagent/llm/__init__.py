@@ -15,10 +15,14 @@ def make_backend(config: LLMConfig) -> LLMBackend:
     if config.backend == "anthropic":
         from queryagent.llm.anthropic_backend import AnthropicBackend
 
-        return AnthropicBackend(model=config.model)
+        return AnthropicBackend(model=config.model, temperature=config.temperature)
     if config.backend == "openai_compatible":
         from queryagent.llm.openai_backend import OpenAICompatibleBackend
 
         # base_url presence is enforced by config validation.
-        return OpenAICompatibleBackend(model=config.model, base_url=config.base_url or "")
+        return OpenAICompatibleBackend(
+            model=config.model,
+            base_url=config.base_url or "",
+            temperature=config.temperature,
+        )
     raise ValueError(f"unsupported llm backend: {config.backend}")

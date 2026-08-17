@@ -50,6 +50,13 @@ def test_no_match_returns_empty(store: YamlMetricStore) -> None:
     assert store.match("今天天气怎么样") == []
 
 
+def test_single_shared_bigram_is_noise_not_a_match(store: YamlMetricStore) -> None:
+    # "用户" alone overlaps 新增用户/新用户, but one bigram must not pull the
+    # new_users metric (and its test-account filter) into an unrelated question.
+    assert store.match("一共有多少注册用户？") == []
+    assert store.match("各地区分别有多少用户？") == []
+
+
 def test_top_k_caps_results(store: YamlMetricStore) -> None:
     matched = store.match("新增用户的 GMV 和复购率", top_k=1)
     assert len(matched) == 1

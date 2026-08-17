@@ -32,8 +32,10 @@ SAMPLE_SEED = 42
 def load_source_cases(path: str | Path) -> list[EvalCase]:
     """Load BIRD mini-dev or Spider dev questions (format auto-detected).
 
-    BIRD items carry ``question_id``/``db_id``/``question``/``SQL``;
-    Spider items carry ``db_id``/``question``/``query`` (id = list index).
+    BIRD items carry ``question_id``/``db_id``/``question``/``SQL`` plus an
+    ``evidence`` hint — BIRD's official protocol supplies the evidence to the
+    model, so it is folded into the question text here. Spider items carry
+    ``db_id``/``question``/``query`` (id = list index, no evidence).
     """
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(data, list):
@@ -44,6 +46,9 @@ def load_source_cases(path: str | Path) -> list[EvalCase]:
             raise ValueError(f"{path}: item {index} is not an object")
         db_id = str(item.get("db_id") or "")
         question = str(item.get("question") or "")
+        evidence = str(item.get("evidence") or "").strip()
+        if evidence:
+            question = f"{question}\n(hint: {evidence})"
         sql = str(item.get("SQL") or item.get("query") or "")
         if not db_id or not question or not sql:
             raise ValueError(f"{path}: item {index} lacks db_id/question/SQL fields")

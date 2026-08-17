@@ -3,6 +3,7 @@
 llm:
   backend: anthropic
   model: claude-sonnet-5
+  temperature: 0        # deterministic SQL + clarify decisions
 
 database:
   type: clickhouse

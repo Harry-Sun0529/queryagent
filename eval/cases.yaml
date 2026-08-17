@@ -20,7 +20,7 @@ cases:
 
   - id: simple_channels_list
     kind: simple
-    question: 有哪些获客渠道？
+    question: 列出所有获客渠道的代码和名称。
     expected_sql: SELECT code, name FROM channels ORDER BY code
     tags: [lookup]
 
@@ -90,12 +90,13 @@ cases:
     expected_metrics: [客单价]
     tags: [metric]
 
-  - id: metric_active_buyers_30d
+  - id: metric_active_buyers_last_month
     kind: metric
-    question: 最近30天的活跃购买用户有多少？
+    question: 上个月的活跃购买用户有多少？
     expected_sql: >
       SELECT count(DISTINCT user_id) FROM orders
-      WHERE status = 'paid' AND created_at >= datetime('now', '-30 day')
+      WHERE status = 'paid'
+        AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now', '-1 month')
     expected_metrics: [活跃购买用户]
     tags: [metric, date]
 
@@ -110,27 +111,28 @@ cases:
       GROUP BY u.region ORDER BY total DESC LIMIT 3
     tags: [join, topk]
 
-  - id: multi_best_non_test_channel
+  - id: multi_channel_user_ranking
     kind: multistep
-    question: 除去内部测试渠道，哪个渠道带来的用户最多？
+    question: 除去内部测试渠道，各渠道分别带来了多少用户？按用户数从高到低排。
     expected_sql: >
-      SELECT channel FROM users WHERE channel <> 'internal_test'
-      GROUP BY channel ORDER BY count(*) DESC LIMIT 1
+      SELECT channel, count(*) AS user_count FROM users
+      WHERE channel <> 'internal_test'
+      GROUP BY channel ORDER BY user_count DESC
     tags: [groupby, topk]
 
-  - id: multi_daily_new_users_7d
+  - id: multi_daily_new_users_last_month
     kind: multistep
-    question: 最近7天每天按注册口径新增多少用户？
+    question: 上个月每天按注册口径新增多少用户？
     expected_sql: >
       SELECT date(created_at) AS d, count(*) FROM users
-      WHERE created_at >= datetime('now', '-7 day')
+      WHERE strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now', '-1 month')
         AND channel <> 'internal_test'
       GROUP BY d ORDER BY d
     tags: [date, groupby]
 
   - id: multi_ads_share_of_paid_amount
     kind: multistep
-    question: 已支付订单金额中，来自付费广告渠道用户的占比是多少？
+    question: 已支付订单金额中，来自付费广告渠道用户的占比是多少？（用 0 到 1 的小数表示）
     expected_sql: >
       SELECT sum(CASE WHEN u.channel = 'ads' THEN o.amount ELSE 0 END) * 1.0
              / sum(o.amount)

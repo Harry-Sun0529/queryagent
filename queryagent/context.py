@@ -40,19 +40,26 @@ Database schema:
 """
 
 _METRICS_HEADER = """
-Business metric definitions matched to this question. They are authoritative
-when relevant — but if a definition does not apply to this question, ignore
-it and say so. When your answer relies on a metric definition, cite the
-metric's name in the final answer.
+Business metric definitions possibly relevant to this question. Rules:
+- Apply a metric's definition and filters ONLY when the question is genuinely
+  asking about that metric. NEVER import a metric's filters (e.g. excluding
+  test accounts, paid-only) into a question that is not about that metric —
+  a plain "how many users" means ALL users unless the question says otherwise.
+- When your answer does rely on a metric definition, cite the metric's name
+  in the final answer.
 """
 
 _CLARIFY_GUIDANCE = """
-One or more matched metrics carry a caution about competing definitions.
-Decision rule: if the user's question does NOT specify which definition to
-use AND the choice would change the SQL, call the `ask_clarification` tool
-with one short question and the conflicting metric names — do not guess.
-If the question already disambiguates, or the ambiguity does not affect the
-SQL, do NOT ask; proceed and cite the definition you used.
+IMPORTANT — clarification protocol. A matched metric above carries a Caution
+about competing definitions. Before running any SQL, decide:
+1. Does the question say which definition to use (e.g. 按注册口径 / 按支付口径)?
+   If yes: proceed with that definition, do NOT ask.
+2. If no, and the choice between definitions would change the SQL and the
+   number: you MUST call the `ask_clarification` tool FIRST — one short
+   question naming the options, plus the conflicting metric names. Do not
+   guess a definition for an ambiguous reporting question.
+3. If the ambiguity does not affect the SQL for this particular question:
+   proceed, and state the definition you used.
 """
 
 

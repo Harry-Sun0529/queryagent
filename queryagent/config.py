@@ -23,11 +23,16 @@ _DB_PASSWORD_ENV = "QUERYAGENT_DB_PASSWORD"
 
 @dataclass(frozen=True)
 class LLMConfig:
-    """LLM backend selection; ``base_url`` only applies to openai_compatible."""
+    """LLM backend selection; ``base_url`` only applies to openai_compatible.
+
+    ``temperature=None`` means the provider default; 0 is recommended for
+    eval runs (reproducible SQL conventions and clarify decisions).
+    """
 
     backend: str
     model: str
     base_url: str | None = None
+    temperature: float | None = None
 
 
 @dataclass(frozen=True)
@@ -104,7 +109,12 @@ def _load_llm(section: dict[str, Any]) -> LLMConfig:
     base_url = _opt_str(section, "base_url")
     if backend == "openai_compatible" and not base_url:
         raise ValueError("llm.base_url is required when llm.backend is 'openai_compatible'")
-    return LLMConfig(backend=backend, model=_req_str(section, "model", "llm"), base_url=base_url)
+    return LLMConfig(
+        backend=backend,
+        model=_req_str(section, "model", "llm"),
+        base_url=base_url,
+        temperature=_opt_number(section, "temperature"),
+    )
 
 
 def _load_database(section: dict[str, Any]) -> DatabaseConfig:
@@ -172,6 +182,15 @@ def _opt_str(section: dict[str, Any], key: str) -> str | None:
     if not isinstance(value, str):
         raise ValueError(f"{key} must be a string when present")
     return value
+
+
+def _opt_number(section: dict[str, Any], key: str) -> float | None:
+    value = section.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        raise ValueError(f"{key} must be a non-negative number when present")
+    return float(value)
 
 
 def _pos_int(section: dict[str, Any], key: str, default: int, where: str) -> int:

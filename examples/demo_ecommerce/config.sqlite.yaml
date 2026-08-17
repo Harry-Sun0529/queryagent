@@ -6,6 +6,7 @@
 llm:
   backend: anthropic
   model: claude-sonnet-5
+  temperature: 0        # deterministic SQL + clarify decisions
   # 开发迭代推荐用 DeepSeek（成本约 1/10-1/20，规格 §八）：
   # backend: openai_compatible
   # model: deepseek-chat

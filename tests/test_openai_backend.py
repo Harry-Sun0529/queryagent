@@ -135,3 +135,24 @@ def test_missing_api_key_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     with pytest.raises(ValueError, match="OPENAI_API_KEY"):
         OpenAICompatibleBackend("m", base_url="https://api.example.com")
+
+
+def test_temperature_forwarded_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[dict[str, Any]] = []
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content))
+        return httpx.Response(200, json=text_reply("ok"))
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    backend = OpenAICompatibleBackend(
+        "m", base_url="https://api.example.com", temperature=0.0, client=client
+    )
+    backend.complete([Message(role="user", content="q")])
+    assert captured[0]["temperature"] == 0.0
+
+    captured.clear()
+    default_backend = make_backend(monkeypatch, text_reply("ok"), captured=captured)
+    default_backend.complete([Message(role="user", content="q")])
+    assert "temperature" not in captured[0]  # provider default when unset

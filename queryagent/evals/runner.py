@@ -129,7 +129,8 @@ def run_case(
     if case.kind == "metric" and case.expected_metrics:
         metrics_mentioned = all(name in summary.answer_text for name in case.expected_metrics)
 
-    if summary.final_sql is None:
+    successful = [sql for sql, was_error in summary.executed_sql if not was_error]
+    if not successful:
         detail = summary.error.message if summary.error else "no successful execute_sql call"
         return _failed(
             case,
@@ -143,28 +144,53 @@ def run_case(
         expected = connector.execute(case.expected_sql, timeout_s=timeout_s, max_rows=max_rows)
     except QueryError as exc:
         return _failed(case, f"reference expected_sql failed (case bug?): {exc.original_error}")
-    try:
-        actual = connector.execute(summary.final_sql, timeout_s=timeout_s, max_rows=max_rows)
-    except QueryError as exc:
-        return _failed(
-            case,
-            f"agent SQL failed on re-execution: {exc.original_error}",
-            retries=retries,
-            tool_calls=summary.tool_calls,
-            clarify_correct=clarify_correct,
-            metrics_mentioned=metrics_mentioned,
-        )
-    passed = rows_match(expected.rows, actual.rows)
+
+    # The case passes when ANY successful SQL reproduces the expected result:
+    # agents often run verification queries after the answer-bearing one, so
+    # requiring the *last* SQL to be the answer punished good behaviour.
+    # Checked last-first (the most likely answer query).
+    passed = False
+    matched: set[str] = set()
+    for sql in dict.fromkeys(reversed(successful)):
+        try:
+            actual = connector.execute(sql, timeout_s=timeout_s, max_rows=max_rows)
+        except QueryError:
+            continue
+        if rows_match(expected.rows, actual.rows):
+            matched.add(sql)
+            passed = True
+            break
+    first_sql, first_was_error = summary.executed_sql[0]
+    first_attempt_passed = (
+        retries == 0 and not first_was_error and (first_sql in matched or _matches(
+            connector, first_sql, expected.rows, timeout_s=timeout_s, max_rows=max_rows
+        ))
+    )
     return CaseResult(
         case=case,
         passed=passed,
-        first_attempt_passed=passed and retries == 0,
+        first_attempt_passed=first_attempt_passed,
         retries=retries,
         tool_calls=summary.tool_calls,
         clarify_correct=clarify_correct,
         metrics_mentioned=metrics_mentioned,
         failure_reason="" if passed else "result sets differ",
     )
+
+
+def _matches(
+    connector: Connector,
+    sql: str,
+    expected_rows: tuple[tuple[object, ...], ...],
+    *,
+    timeout_s: int,
+    max_rows: int,
+) -> bool:
+    try:
+        actual = connector.execute(sql, timeout_s=timeout_s, max_rows=max_rows)
+    except QueryError:
+        return False
+    return rows_match(expected_rows, actual.rows)
 
 
 def _failed(

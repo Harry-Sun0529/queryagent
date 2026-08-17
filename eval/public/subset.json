@@ -1,0 +1,182 @@
+[
+  {
+    "id": "california_schools_37",
+    "db_id": "california_schools",
+    "question": "What is the complete address of the school with the lowest excellence rate? Indicate the Street, City, Zip and State.\n(hint: Execellence Rate = NumGE1500 / NumTstTakr; complete address has Street, City, State, Zip code)",
+    "gold_sql": "SELECT T2.Street, T2.City, T2.State, T2.Zip FROM satscores AS T1 INNER JOIN schools AS T2 ON T1.cds = T2.CDSCode ORDER BY CAST(T1.NumGE1500 AS REAL) / T1.NumTstTakr ASC LIMIT 1"
+  },
+  {
+    "id": "california_schools_39",
+    "db_id": "california_schools",
+    "question": "What is the average number of test takers from Fresno schools that opened between 1/1/1980 and 12/31/1980?\n(hint: between 1/1/1980 and 12/31/1980 means the year = 1980)",
+    "gold_sql": "SELECT AVG(T1.NumTstTakr) FROM satscores AS T1 INNER JOIN schools AS T2 ON T1.cds = T2.CDSCode WHERE strftime('%Y', T2.OpenDate) = '1980' AND T2.County = 'Fresno'"
+  },
+  {
+    "id": "california_schools_41",
+    "db_id": "california_schools",
+    "question": "List the names of virtual schools that are among the top 5 in their respective counties based on average reading scores.\n(hint: Exclusively virtual refers to Virtual = 'F'; respective counties means PARTITION BY County)",
+    "gold_sql": "SELECT School FROM (SELECT T2.School,T1.AvgScrRead, RANK() OVER (PARTITION BY T2.County ORDER BY T1.AvgScrRead DESC) AS rnk FROM satscores AS T1 INNER JOIN schools AS T2 ON T1.cds = T2.CDSCode WHERE T2.Virtual = 'F' ) ranked_schools WHERE rnk <= 5"
+  },
+  {
+    "id": "california_schools_45",
+    "db_id": "california_schools",
+    "question": "What is the average writing score of each of the schools managed by Ricci Ulrich? List the schools and the corresponding average writing scores.\n(hint: Usually, administrators manage the school stuff.)",
+    "gold_sql": "SELECT T2.School, T1.AvgScrWrite FROM satscores AS T1 INNER JOIN schools AS T2 ON T1.cds = T2.CDSCode WHERE T2.AdmFName1 = 'Ricci' AND T2.AdmLName1 = 'Ulrich'"
+  },
+  {
+    "id": "card_games_379",
+    "db_id": "card_games",
+    "question": "What are the cards belong to duel deck a? List the ID.\n(hint: duel deck a refers to duelDeck = a;)",
+    "gold_sql": "SELECT id FROM cards WHERE duelDeck = 'a'"
+  },
+  {
+    "id": "card_games_397",
+    "db_id": "card_games",
+    "question": "What is the mana cost of cards with a normal layout, a 2003 frame version, with a black border color, and available in paper and mtgo?\n(hint: available in paper and mtgo refers to availability = 'mtgo,paper'; frameVersion = 2003;borderColor = 'black')",
+    "gold_sql": "SELECT manaCost FROM cards WHERE availability = 'mtgo,paper' AND borderColor = 'black' AND frameVersion = 2003 AND layout = 'normal'"
+  },
+  {
+    "id": "card_games_409",
+    "db_id": "card_games",
+    "question": "Indicates the number of cards with pre-modern format, ruling text \"This is a triggered mana ability.\" that do not have multiple faces.\n(hint: pre-modern format refers to format = 'premodern' ;do not have multiple faces refers to side IS NULL)",
+    "gold_sql": "SELECT COUNT(T1.id) FROM cards AS T1 INNER JOIN legalities AS T2 ON T1.uuid = T2.uuid INNER JOIN rulings AS T3 ON T1.uuid = T3.uuid WHERE T2.format = 'premodern' AND T3.text = 'This is a triggered mana ability.' AND T1.Side IS NULL"
+  },
+  {
+    "id": "card_games_422",
+    "db_id": "card_games",
+    "question": "What is the language of the card with the multiverse number 149934?\n(hint: multiverse number 149934 refers to multiverseid = 149934;)",
+    "gold_sql": "SELECT language FROM foreign_data WHERE multiverseid = 149934"
+  },
+  {
+    "id": "card_games_479",
+    "db_id": "card_games",
+    "question": "Among the cards with converted mana cost higher than 5 in the set Coldsnap, how many of them have unknown power?\n(hint: card set Coldsnap refers to name = 'Coldsnap'; converted mana cost higher than 5 refers to convertedManaCost > 5; unknown power refers to power = '*' or T1.power is null)",
+    "gold_sql": "SELECT SUM(CASE WHEN T1.power = '*' OR T1.power IS NULL THEN 1 ELSE 0 END) FROM cards AS T1 INNER JOIN sets AS T2 ON T2.code = T1.setCode WHERE T2.name = 'Coldsnap' AND T1.convertedManaCost > 5"
+  },
+  {
+    "id": "codebase_community_581",
+    "db_id": "codebase_community",
+    "question": "Who is the owner of the post titled 'Open source tools for visualizing multi-dimensional data?'\n(hint: 'Open source tools for visualizing multi-dimensional data' is the Title of Post; owner refers to DisplayName;)",
+    "gold_sql": "SELECT T2.DisplayName FROM posts AS T1 INNER JOIN users AS T2 ON T1.OwnerUserId = T2.Id WHERE T1.Title = 'Open source tools for visualizing multi-dimensional data?'"
+  },
+  {
+    "id": "codebase_community_634",
+    "db_id": "codebase_community",
+    "question": "Among posts by Harvey Motulsky and Noah Snyder, which one has higher popularity?\n(hint: Has higher popularity means the post has higher view count ; calculation = MAX(SUM(ViewCount)) where DisplayName = 'Harvey Motulsky' OR DisplayName = 'Noah Snyder';)",
+    "gold_sql": "SELECT T1.DisplayName FROM users AS T1 INNER JOIN postHistory AS T2 ON T1.Id = T2.UserId INNER JOIN posts AS T3 ON T2.PostId = T3.Id WHERE T1.DisplayName = 'Harvey Motulsky' OR T1.DisplayName = 'Noah Snyder' GROUP BY T1.DisplayName ORDER BY SUM(T3.ViewCount) DESC LIMIT 1"
+  },
+  {
+    "id": "codebase_community_640",
+    "db_id": "codebase_community",
+    "question": "Calculate the difference in view count from post posted by Mornington and view count from posts posted by Amos.\n(hint: calculation = SUBTRACT(SUM(ViewCount where DisplayName = 'Mornington'), SUM(ViewCount where DisplayName = 'Amos'));)",
+    "gold_sql": "SELECT SUM(IIF(T1.DisplayName = 'Mornington', T3.ViewCount, 0)) - SUM(IIF(T1.DisplayName = 'Amos', T3.ViewCount, 0)) AS diff FROM users AS T1 INNER JOIN postHistory AS T2 ON T1.Id = T2.UserId INNER JOIN posts AS T3 ON T3.Id = T2.PostId"
+  },
+  {
+    "id": "codebase_community_678",
+    "db_id": "codebase_community",
+    "question": "Which post by Harvey Motulsky has the most views? Please give the id and title of this post.\n(hint: DisplayName = 'Harvey Motulsky'; the most views refer to MAX(ViewCount);)",
+    "gold_sql": "SELECT T2.Id, T2.Title FROM users AS T1 INNER JOIN posts AS T2 ON T1.Id = T2.OwnerUserId WHERE T1.DisplayName = 'Harvey Motulsky' ORDER BY T2.ViewCount DESC LIMIT 1"
+  },
+  {
+    "id": "codebase_community_701",
+    "db_id": "codebase_community",
+    "question": "Among all the posts posted by the most influential user, identify the percentage with a score above 50.\n(hint: The higher reputation the user has the more influence; percentage = DIVIDE(COUNT(stats_posts.Id where Score > 50 and MAX(Reputation))), COUNT(stats_posts.Id where MAX(Reputation));)",
+    "gold_sql": "SELECT CAST(SUM(CASE WHEN T2.Score > 50 THEN 1 ELSE 0 END) AS REAL) * 100 / COUNT(T1.Id) FROM users T1 INNER JOIN posts T2 ON T1.Id = T2.OwnerUserId INNER JOIN ( SELECT MAX(Reputation) AS max_reputation FROM users ) T3 ON T1.Reputation = T3.max_reputation"
+  },
+  {
+    "id": "debit_card_specializing_1484",
+    "db_id": "debit_card_specializing",
+    "question": "How many more \"discount\" gas stations does the Czech Republic have compared to Slovakia?\n(hint: Czech Republic can be represented as the Country value in gasstations table is 'CZE'; Slovakia can be represented as the Country value in the gasstations table is 'SVK';  Computation of more \"discount\" gas stations= Total no. of discount gas stations in Czech Republic - Total no. of discount gas stations in Slovakia)",
+    "gold_sql": "SELECT SUM(IIF(Country = 'CZE', 1, 0)) - SUM(IIF(Country = 'SVK', 1, 0)) FROM gasstations WHERE Segment = 'Discount'"
+  },
+  {
+    "id": "financial_115",
+    "db_id": "financial",
+    "question": "For the branch which located in the south Bohemia with biggest number of inhabitants, what is the percentage of the male clients?\n(hint: Percentage of the male clients = DIVIDE(COUNT(male clients), COUNT(clients)) * 100; Male refers to gender = 'M', A3 is the region name. A4 contains the information about inhabitants.)",
+    "gold_sql": "SELECT CAST(SUM(T1.gender = 'M') AS REAL) * 100 / COUNT(T1.client_id) FROM client AS T1 INNER JOIN district AS T2 ON T1.district_id = T2.district_id WHERE T2.A3 = 'south Bohemia' GROUP BY T2.A4 ORDER BY T2.A4 DESC LIMIT 1"
+  },
+  {
+    "id": "financial_117",
+    "db_id": "financial",
+    "question": "What is the percentage of loan amount that has been fully paid with no issue.\n(hint: Loan paid with no issue means contract finished, no problems; status = 'A' means contract finished, no problems; Percentage of accounts by condition = [(total(amount) & condition) / (total amount)] * 100%)",
+    "gold_sql": "SELECT (CAST(SUM(CASE WHEN status = 'A' THEN amount ELSE 0 END) AS REAL) * 100) / SUM(amount) FROM loan"
+  },
+  {
+    "id": "formula_1_866",
+    "db_id": "formula_1",
+    "question": "Who was the player that got the lap time of 0:01:27 in the race No. 161? Show his introduction website.\n(hint: player and driver are synonyms; the lap time of 0:0M:SS refers to lapTime.time LIKE 'M:SS%';race number refers to raceId; introduction website of the drivers refers to url;)",
+    "gold_sql": "SELECT DISTINCT T2.forename, T2.surname, T2.url FROM lapTimes AS T1 INNER JOIN drivers AS T2 ON T2.driverId = T1.driverId WHERE T1.raceId = 161 AND T1.time LIKE '1:27%'"
+  },
+  {
+    "id": "formula_1_910",
+    "db_id": "formula_1",
+    "question": "What's the location coordinates of Silverstone Circuit?\n(hint: location coordinates refers to (lat, lng); Silverstone Circuit refers to circuits.name = 'Silverstone Circuit')",
+    "gold_sql": "SELECT lat, lng FROM circuits WHERE name = 'Silverstone Circuit'"
+  },
+  {
+    "id": "formula_1_940",
+    "db_id": "formula_1",
+    "question": "Among the drivers that finished the race in the 2008 Chinese Grand Prix, how many of them have participated in Formula_1 races?\n(hint: COUNT(raceID) > 0 reveals that this driver participated in races; drivers who finished the race refers to time has value.)",
+    "gold_sql": "SELECT COUNT(*) FROM ( SELECT T1.driverId FROM results AS T1 INNER JOIN races AS T2 on T1.raceId = T2.raceId WHERE T2.name = 'Chinese Grand Prix' AND T2.year = 2008 AND T1.time IS NOT NULL GROUP BY T1.driverId HAVING COUNT(T2.raceId) > 0 )"
+  },
+  {
+    "id": "formula_1_972",
+    "db_id": "formula_1",
+    "question": "Which drivers who were born in 1971 and has the fastest lap time on the race? Give id and code of these drivers.\n(hint: born in 1971 refers to year(dob) = 1971; has the fastest lap time refers to fastestLapTime has values)",
+    "gold_sql": "SELECT T2.driverId, T2.code FROM results AS T1 INNER JOIN drivers AS T2 on T1.driverId = T2.driverId WHERE STRFTIME('%Y', T2.dob) = '1971' AND T1.fastestLapTime IS NOT NULL"
+  },
+  {
+    "id": "formula_1_990",
+    "db_id": "formula_1",
+    "question": "What is the constructor reference name of the champion in the 2009 Singapore Grand Prix? Please give its website.\n(hint: the time of the champion shows in the format of \"minutes: seconds.millionsecond\" in which Max(time); constructor reference name refers to constructorRef; website refers to url)",
+    "gold_sql": "SELECT T3.constructorRef, T3.url FROM results AS T1 INNER JOIN races AS T2 on T1.raceId = T2.raceId INNER JOIN constructors AS T3 on T1.constructorId = T3.constructorId WHERE T2.name = 'Singapore Grand Prix' AND T2.year = 2009 AND T1.time LIKE '_:%:__.___'"
+  },
+  {
+    "id": "student_club_1361",
+    "db_id": "student_club",
+    "question": "What is the total cost of the pizzas for all the events?\n(hint: total cost of the pizzas refers to SUM(cost) where expense_description = 'Pizza')",
+    "gold_sql": "SELECT SUM(cost) FROM expense WHERE expense_description = 'Pizza'"
+  },
+  {
+    "id": "student_club_1376",
+    "db_id": "student_club",
+    "question": "Among all the closed events, which event has the highest spend-to-budget ratio?\n(hint: closed events refers to event_name where status = 'Closed'; highest spend-to budget ratio refers to MAX(DIVIDE(spent, amount)))",
+    "gold_sql": "SELECT T2.event_name FROM budget AS T1 INNER JOIN event AS T2 ON T1.link_to_event = T2.event_id WHERE T2.status = 'Closed' ORDER BY T1.spent / T1.amount DESC LIMIT 1"
+  },
+  {
+    "id": "student_club_1405",
+    "db_id": "student_club",
+    "question": "Calculate the amount budgeted for 'April Speaker' event. List all the budgeted categories for said event in an ascending order based on their amount budgeted.\n(hint: 'April Speaker' is an event name; amount budgeted refers to SUM(amount); budget categories refers to category)",
+    "gold_sql": "SELECT T2.category, SUM(T2.amount) FROM event AS T1 JOIN budget AS T2 ON T1.event_id = T2.link_to_event WHERE T1.event_name = 'April Speaker' GROUP BY T2.category ORDER BY SUM(T2.amount) ASC"
+  },
+  {
+    "id": "superhero_719",
+    "db_id": "superhero",
+    "question": "Among the superheroes with the super power of \"Super Strength\", how many of them have a height of over 200cm?\n(hint: super power of \"Super Strength\" refers to power_name = 'Super Strength'; a height of over 200cm refers to height_cm > 200)",
+    "gold_sql": "SELECT COUNT(T1.id) FROM superhero AS T1 INNER JOIN hero_power AS T2 ON T1.id = T2.hero_id INNER JOIN superpower AS T3 ON T2.power_id = T3.id WHERE T3.power_name = 'Super Strength' AND T1.height_cm > 200"
+  },
+  {
+    "id": "superhero_733",
+    "db_id": "superhero",
+    "question": "How many gold-eyed superheroes did Marvel Comics publish?\n(hint: gold-eyed refers to colour = 'Gold' where eye_colour_id = colour.id; superheroes that Marvel Comics published refers to publisher_name = 'Marvel Comics')",
+    "gold_sql": "SELECT COUNT(T1.id) FROM superhero AS T1 INNER JOIN publisher AS T2 ON T1.publisher_id = T2.id INNER JOIN colour AS T3 ON T1.eye_colour_id = T3.id WHERE T2.publisher_name = 'Marvel Comics' AND T3.colour = 'Gold'"
+  },
+  {
+    "id": "superhero_751",
+    "db_id": "superhero",
+    "question": "List down at least five superpowers of male superheroes.\n(hint: male refers to gender = 'Male'; superpowers refers to power_name;)",
+    "gold_sql": "SELECT T3.power_name FROM superhero AS T1 INNER JOIN hero_power AS T2 ON T1.id = T2.hero_id INNER JOIN superpower AS T3 ON T3.id = T2.power_id INNER JOIN gender AS T4 ON T4.id = T1.gender_id WHERE T4.gender = 'Male' LIMIT 5"
+  },
+  {
+    "id": "superhero_758",
+    "db_id": "superhero",
+    "question": "Provide the hair colour of the human superhero who is 185 cm tall.\n(hint: 185 cm tall refers to height_cm = 185; human superhero refers to race = 'human'; hair colour refers to colour where hair_colour_id = colour.id;)",
+    "gold_sql": "SELECT DISTINCT T3.colour FROM superhero AS T1 INNER JOIN race AS T2 ON T1.race_id = T2.id INNER JOIN colour AS T3 ON T1.hair_colour_id = T3.id WHERE T1.height_cm = 185 AND T2.race = 'Human'"
+  },
+  {
+    "id": "thrombosis_prediction_1270",
+    "db_id": "thrombosis_prediction",
+    "question": "Among the patients who has a normal anti-scl70, how many of them are female and does not have any symptom?\n(hint: normal anti-scl70 refers to SC170 IN('negative', '0'); female refers to Sex = 'F'; does not have any symptom refers to symptoms IS NULL; Should consider DISTINCT in the final result;)",
+    "gold_sql": "SELECT COUNT(DISTINCT T1.ID) FROM Patient AS T1 INNER JOIN Laboratory AS T2 ON T1.ID = T2.ID INNER JOIN Examination AS T3 ON T3.ID = T2.ID WHERE (T2.SC170 = 'negative' OR T2.SC170 = '0') AND T1.SEX = 'F' AND T3.Symptoms IS NULL"
+  }
+]
