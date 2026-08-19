@@ -1,6 +1,6 @@
 # ADR-006: Three exit codes, because failures are not all alike
 
-Status: accepted · Date: 2026-08-19
+Status: accepted · Date: 2026-08-20
 
 ## Decision
 

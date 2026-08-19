@@ -43,6 +43,17 @@ measured on the now-retired 30-case samples and **are not comparable**.
 Those entries keep their original values deliberately — a changelog records
 what was published, not what we would prefer to have published.
 
+On the new samples (`deepseek-v4-flash`, temperature 0): dev 39% first
+execution / 49% after self-repair (100 cases); sealed test 32% / 48% (200
+cases).
+
+**The larger samples corrected an earlier claim of ours.** At 30 cases per
+set, v0.3.0 measured a +14pp dev gain against a +6pp test gain and described
+the gap as an overfitting measurement. At 100/200 cases the two sets agree
+within 1pp, so that gap is best explained as noise — which is precisely what
+the power analysis predicted (±25pp for a difference at n=30) and precisely
+why the samples were expanded.
+
 A controlled decomposition ([eval/results/version-decomposition.md](eval/results/version-decomposition.md))
 established that the drop from v0.2.0's 83% first-execution rate to
 v0.3.0's 61–72% is **not a code regression**: with cases and configuration
