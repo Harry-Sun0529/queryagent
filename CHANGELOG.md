@@ -6,6 +6,35 @@ versioning: [SemVer](https://semver.org/). CLI arguments and config structure
 enter the semver contract at v0.2.0; `metrics.yaml` required fields are
 frozen from v0.1.1 (spec §四).
 
+## [0.3.0] — 2026-08-19
+
+### Added
+
+- **Observability**: event streams recorded to `.queryagent/traces/*.jsonl`
+  and replayable with `queryagent replay`; on by default with a first-write
+  privacy notice, `--no-trace` / `trace: false`, and `.queryagent/`
+  gitignored (ADR-005).
+- **Cost & latency accounting**: `UsageEvent` carries per-call tokens
+  (including prompt-cache hits) and latency; eval reports gain tokens,
+  cache-hit rate, latency and an upper-bound cost per case.
+- **DeepSeek thinking-mode support**: `reasoning_content` is parsed and
+  echoed back, without which turn 2 of any tool-using conversation failed
+  with HTTP 400.
+- **Actionable CLI errors**: six common failures (missing key, bad key,
+  missing config, missing database, missing optional driver, invalid config)
+  print one line of problem and one line of fix; `--verbose` keeps the
+  traceback.
+- **dev/test split for the public benchmark** (ADR-004 rewritten):
+  `sample_cases(exclude=)` plus a committed seed-7 dev subset, disjoint from
+  the sealed seed-42 test set by a tested property.
+- Failing eval cases now report the agent's SQL next to the reference SQL.
+
+### Changed
+
+- System prompt instructs precise projection (select what was asked; context
+  belongs in the answer text) — dev-set failure analysis showed half of all
+  failures were shape, not substance. dev 33% → 47% after self-repair.
+
 ## [0.2.0] — 2026-08-19
 
 ### Added

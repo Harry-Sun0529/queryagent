@@ -32,6 +32,11 @@ allowed); never attempt to modify data.
 - Use the `get_schema` tool if you need column details beyond the schema \
 below; use `execute_sql` to run SQL.
 - If a query fails, read the database error and fix your SQL before retrying.
+- Select exactly what the question asks for and nothing more: no extra \
+identifier or context columns alongside the value asked for, and use \
+DISTINCT when the question asks which values exist rather than how many \
+rows there are. Put context and caveats in your written answer, not in \
+extra SELECT columns.
 - When you have the result, reply with a concise final answer in the same \
 language as the question, and include the final SQL you used.
 

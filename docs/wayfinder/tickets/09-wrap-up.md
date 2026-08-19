@@ -1,8 +1,8 @@
 ---
-status: open
+status: closed
 type: task
 blocked_by: [02, 04, 05, 07, 08]
-claimed_by:
+claimed_by: fable-session
 ---
 # T9 — 收口
 
@@ -21,3 +21,14 @@ claimed_by:
 
 ## Done when
 - `make test` 全绿；文档无过时描述；tag 已打但远端无变化。
+
+## Resolution (closed 2026-08-19)
+
+- README：Evaluation 章节重写（双模型区间 + dev/test 双集 + 成本延迟缓存），
+  Features 补可观测性并把终止条件订正为五种。
+- CHANGELOG 0.3.0；版本号 bump；SECURITY.md 新增「Traces on disk」段。
+- ADR-004 改写为记录 dev/test 切分（原则不变，纪律更严）；新增 ADR-005
+  记录 trace 默认开启的取舍与被否决的部分脱敏方案。
+- eval/README 更新为双集纪律。
+- 桌面《QueryAgent精读解析.md》补 v0.2.0-v0.3.0 增量八节。
+- **按人类指示：打 tag 但不推送**，等人工 review 找 bug 后再发布。

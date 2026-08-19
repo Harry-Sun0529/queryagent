@@ -45,9 +45,15 @@ definitions today, with zero new infrastructure*. Lightness is the feature.
 ## Features
 
 - **Hand-written ReAct loop** — no LangChain/LlamaIndex; the whole control
-  flow is one readable generator with four explicit termination conditions,
+  flow is one readable generator with five explicit termination conditions,
   parse-failure fallback, and a self-repair loop (database errors are fed
-  back to the model, capped at 3 retries).
+  back to the model, capped at 3 retries). Multi-turn chat keeps the session
+  in context, so follow-ups can refer back.
+- **Observability**: every run records its event stream to
+  `.queryagent/traces/*.jsonl`; `queryagent replay <trace>` reconstructs it
+  exactly. Token usage, prompt-cache hit rate, latency and an upper-bound
+  cost estimate are reported per run and per eval suite. On by default with
+  a startup notice and an off-switch ([ADR-005](docs/adr/005-traces-on-by-default.md)).
 - **Metrics as YAML** (`metrics.yaml`): definitions are matched to the
   question and injected into the prompt; answers cite the metric used.
   Metrics with a `caution` field trigger a **clarifying question** when the
@@ -146,10 +152,13 @@ Required fields (`name`, `definition`) are frozen; optional fields may grow
 ## Evaluation
 
 ```bash
-make eval                        # self-built 20 cases against the demo db
-queryagent eval --backend openai_compatible --model deepseek-chat \
-  --base-url https://api.deepseek.com \
-  --config examples/demo_ecommerce/config.sqlite.yaml   # dual-model comparison
+make eval                                     # self-built 20 cases, demo db
+queryagent eval --model deepseek-v4-pro \
+  --config examples/demo_ecommerce/config.sqlite.yaml    # strong-model run
+
+queryagent eval --public eval/public/dev-subset.json \
+  --db-dir eval/public/databases \
+  --config examples/demo_ecommerce/config.sqlite.yaml    # BIRD dev set
 ```
 
 Methodology: executed row sets compared as order-insensitive multisets with
@@ -158,43 +167,69 @@ float tolerance; five metrics including **clarify-behaviour accuracy**
 public benchmark serves as an external anchor, with a hard rule that prompts
 are never tuned against it ([eval/README.md](eval/README.md)).
 
-### Results (`deepseek-chat`, temperature 0)
+### Results (2026-08-19, DeepSeek v4, temperature 0)
 
-Self-built numbers are **ranges over 3 consecutive runs** (v0.2.0 case set,
-2026-08-19); the BIRD column is the one-shot v0.1.0 anchor run.
+Self-built numbers are **ranges over 3 consecutive runs** — DeepSeek exposes
+no sampling seed, so single-run benchmark numbers on such APIs are noise.
 
-| metric | self-built (20 cases, 3 runs) | BIRD mini-dev subset (30 cases, seed 42) |
+| metric | v4-flash (weak) | v4-pro (strong) |
 |---|---|---|
-| first-execution pass rate | 15/18 (83%, all runs) | 10/30 (33%) |
-| pass rate after self-repair | **17–18/18 (94–100%)** | 14/30 (47%) |
-| metric hit rate | 3/4 (all runs) | n/a |
-| clarify-behaviour accuracy | **4/4 (all runs)** | n/a |
-| average tool calls | ~1.4 | 2.83 |
+| first-execution pass rate | 11–13/18 (61–72%) | **14–15/18 (78–83%)** |
+| pass rate after self-repair | **17–18/18 (94–100%)** | 16–18/18 (89–100%) |
+| metric citation | 2–3/4 | **3–4/4** |
+| clarify-behaviour accuracy | **4/4 (all runs)** | **4/4 (all runs)** |
+| tokens per case | 3,122–3,582 | 2,987–3,094 |
+| prompt cache hit rate | 88–90% | 86–89% |
+| latency per case | 3.9–4.3s | 6.1–6.5s |
+| cost per case (upper bound) | $0.0007–0.0008 | $0.0019–0.0020 |
+
+**The strong model wins at getting it right first, not at getting it right.**
+After the self-repair loop the two converge — the architecture buys a weak
+model the same final accuracy at roughly a third of the cost, paying in one
+extra tool call. Clarify behaviour is identical (4/4 both, all runs): it is
+produced by the prompt protocol, not by model strength. Full breakdown:
+[dual-model-analysis.md](eval/results/dual-model-analysis.md).
+
+### Public benchmark: dev/test split (BIRD mini-dev)
+
+Two fixed-seed 30-case samples, both committed, provably disjoint
+([ADR-004](docs/adr/004-public-subset-external-anchor.md)):
+
+| | before | after | delta |
+|---|---|---|---|
+| **dev** (seed 7 — analysed, drives improvement) | 10/30 (33%) | **14/30 (47%)** | +14pp |
+| **test** (seed 42 — sealed, run once per release) | 14/30 (47%)¹ | **16/30 (53%)** | +6pp |
+
+¹ the v0.1.0 acceptance run.
+
+**The dev gain generalised at under half strength.** That gap is the
+overfitting measurement, and it is the entire reason for the split.
 
 Honest notes, in the order they matter:
 
-- **Why ranges**: deepseek-chat exposes no sampling seed, so even
-  temperature-0 runs are not bit-deterministic — single-run benchmark
-  numbers on such APIs are noise. Case questions pin output contracts
-  (decimal precision, column count) so the suite measures SQL semantics,
-  not answer formatting luck.
-
-- **The self-built set was iterated on — that is its job.** The first run
-  scored 50%; failure analysis exposed a metric-matching noise bug (one
-  shared bigram dragged a metric's filters into unrelated questions), an
-  unstable clarify trigger at provider-default temperature, and two brittle
-  case designs (rolling-date conventions). All fixed, all in git history.
-- **The public subset ran exactly once, zero tuning** — it exists to keep
-  the self-built numbers honest. 47% after self-repair for a small general
-  model with a generic zero-shot agent is the unvarnished anchor; the gap
-  vs the self-built set is mostly schema unfamiliarity (avg tool calls
-  2.83 vs 1.35 — the agent explores before it answers).
-- One public case failed because the *gold* SQL exceeded the harness's 30s
-  timeout; counted as a failure anyway (conservative).
+- **The two test numbers are not a controlled comparison.** v0.1.0 ran the
+  `deepseek-chat` alias (non-thinking mode) on older code; v0.3.0 runs
+  v4-flash in thinking mode with every change since. The clean before/after
+  exists only on dev — test is an acceptance number, by design, because the
+  discipline says it runs once.
+- **What the improvement actually was**: dev failure analysis showed **half
+  of all failures were shape, not substance** — the agent computed the right
+  value but returned extra context columns, or omitted DISTINCT. One general
+  prompt rule ("select exactly what was asked; put context in the answer
+  text") fixed that class. A further quarter of the failures are gold-SQL
+  ambiguities that should not be fixed (e.g. "how many patients" whose gold
+  counts join rows, not patients). Details:
+  [dev-failure-analysis.md](eval/results/dev-failure-analysis.md).
+- **The self-built set is iterated on — that is its job.** Its history
+  (metric-matching noise, unstable clarify trigger, brittle case wording) is
+  in git.
+- **A bug the eval caught that unit tests could not**: DeepSeek v4 requires
+  `reasoning_content` echoed back, so turn 2 of every tool-using
+  conversation returned HTTP 400. 210 unit tests were green and single-turn
+  `ask` worked; only the multi-turn benchmark exposed it.
 - Self-built denominators: 18 result-checked cases; the 2 ask-clarify cases
-  score behaviour, not result sets.
-- A strong-model column (Claude) will be added when run; raw reports live
-  in [eval/results/](eval/results/).
+  score behaviour, not result sets. Costs are peak-rate upper bounds
+  (off-peak is half). Raw reports: [eval/results/](eval/results/).
 
 ## Architecture
 

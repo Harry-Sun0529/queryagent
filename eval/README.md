@@ -5,15 +5,17 @@ Two tracks (spec §三 v0.2.0), both runnable with one command:
 1. **Self-built cases** (`cases.yaml`, 20 cases): measures what this project
    actually adds — metric-aware SQL, self-repair, clarify behaviour. Used for
    A/B runs with/without `metrics.yaml`.
-2. **Public benchmark subset** (`public/`): 30–50 questions sampled from BIRD
-   mini-dev (or Spider dev) as an **external anchor** against the
-   "you graded your own homework" objection.
+2. **Public benchmark, split in two** (`public/`, ADR-004): a **dev** subset
+   (seed 7) that failure analysis may use freely, and a **sealed test**
+   subset (seed 42) that runs once per release and is never analysed. The
+   gap between dev and test improvement is the overfitting measurement.
 
 ## Discipline (non-negotiable)
 
-- Prompts and matching algorithms are **never tuned against the public
-  subset**. It runs once per version acceptance, and the README reports the
-  numbers as-is — including failures.
+- Prompts and matching algorithms are **never tuned against the test
+  subset** (seed 42). It runs once per version acceptance and the README
+  reports it as-is, including failures. The dev subset (seed 7) exists
+  precisely so improvement work has a legitimate surface.
 - The sampling seed is fixed (`SAMPLE_SEED = 42` in
   `queryagent/evals/public.py`) and the sampled `subset.json` is committed,
   so anyone can reproduce both the subset and the numbers.

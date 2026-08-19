@@ -36,6 +36,20 @@ row caps bound volume, the event stream makes every executed SQL visible and
 auditable, and deployments should grant the read-only account access only to
 tables the agent legitimately needs.
 
+## Traces on disk
+
+By default every `chat` / `ask` run writes its full event stream — question,
+SQL, observations (including result rows) and token usage — to
+`.queryagent/traces/*.jsonl`. Against a real database that is business data
+at rest on the local filesystem.
+
+Mitigations: a stderr notice on the first write, `--no-trace` and config
+`trace: false`, a 50-file retention cap, and `.queryagent/` in `.gitignore`
+so traces cannot be committed by accident. Reasoning for the default —
+including why partial redaction was rejected — is in
+[ADR-005](docs/adr/005-traces-on-by-default.md). On sensitive data, set
+`trace: false`.
+
 ## Key handling
 
 API keys are read exclusively from environment variables
