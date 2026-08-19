@@ -6,7 +6,7 @@ versioning: [SemVer](https://semver.org/). CLI arguments and config structure
 enter the semver contract at v0.2.0; `metrics.yaml` required fields are
 frozen from v0.1.1 (spec §四).
 
-## [0.4.0] — 2026-08-19
+## [0.4.0] — 2026-08-20
 
 ### Added
 

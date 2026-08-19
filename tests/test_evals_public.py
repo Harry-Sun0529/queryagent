@@ -138,3 +138,35 @@ def test_same_id_different_content_keeps_both(tmp_path: Path) -> None:
     cases = load_source_cases(write_json(tmp_path, "clash.json", [a, b]))
     assert len(cases) == 2
     assert len({c.id for c in cases}) == 2, "ids must stay unique"
+
+
+def _bird_source() -> Path | None:
+    """The upstream question file, if this machine has it (it is too large
+    to commit, so the reproducibility check skips rather than fails)."""
+    for candidate in Path("/private/tmp/claude-501").glob(
+        "*/*/scratchpad/minidev/MINIDEV/mini_dev_sqlite.json"
+    ):
+        return candidate
+    return None
+
+
+def test_committed_samples_are_reproducible_from_the_script() -> None:
+    """The samples must be derivable, not just asserted — documenting the
+    derivation as CLI flags once got it wrong, so the script is the source
+    of truth and this test keeps it honest."""
+    source = _bird_source()
+    if source is None:
+        pytest.skip("upstream BIRD question file not present on this machine")
+    import importlib.util
+
+    root = Path(__file__).parent.parent
+    spec = importlib.util.spec_from_file_location(
+        "rebuild_samples", root / "eval" / "public" / "rebuild_samples.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    test_cases, dev_cases = module.build(source)
+    assert test_cases == load_subset(root / "eval" / "public" / "subset.json")
+    assert dev_cases == load_subset(root / "eval" / "public" / "dev-subset.json")

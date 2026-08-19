@@ -34,3 +34,5 @@ claimed_by: fable-session
   每题 12,441 token / 13.4s —— BIRD 的 schema 比 demo 大得多，探索成本
   是自建集的 4 倍（3,100 token / 4.2s）。报告存
   `eval/results/dev-baseline-flash.md`。
+
+> 注（2026-08-20）：该报告文件已在 v0.4.0 扩集时随退役样本一并移除；当前 dev 基线见 `eval/results/dev-baseline-100.md`。
