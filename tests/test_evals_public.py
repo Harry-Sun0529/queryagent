@@ -84,3 +84,25 @@ def test_subset_roundtrip(tmp_path: Path) -> None:
     write_subset(subset, out)
     loaded = load_subset(out)
     assert loaded == subset
+
+
+def test_exclude_keeps_dev_and_test_disjoint(tmp_path: Path) -> None:
+    cases = load_source_cases(write_json(tmp_path, "bird.json", BIRD_ITEMS))
+    test_set = sample_cases(cases, 5, seed=42)
+    dev_set = sample_cases(cases, 5, seed=7, exclude={c.id for c in test_set})
+    assert len(dev_set) == 5
+    assert not ({c.id for c in dev_set} & {c.id for c in test_set})
+
+
+def test_exclude_is_reproducible(tmp_path: Path) -> None:
+    cases = load_source_cases(write_json(tmp_path, "bird.json", BIRD_ITEMS))
+    excluded = {"db0_0", "db1_1"}
+    first = sample_cases(cases, 4, seed=7, exclude=excluded)
+    second = sample_cases(cases, 4, seed=7, exclude=excluded)
+    assert [c.id for c in first] == [c.id for c in second]
+
+
+def test_exclude_shrinks_the_pool(tmp_path: Path) -> None:
+    cases = load_source_cases(write_json(tmp_path, "bird.json", BIRD_ITEMS))
+    everything = {c.id for c in cases}
+    assert sample_cases(cases, 5, seed=7, exclude=everything) == []

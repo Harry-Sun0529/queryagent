@@ -34,6 +34,7 @@ Failure handling inside a run:
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Iterator, Sequence
 
 from queryagent.context import ContextBuilder
@@ -47,6 +48,7 @@ from queryagent.events import (
     RetryEvent,
     ThinkEvent,
     ToolCallEvent,
+    UsageEvent,
 )
 from queryagent.llm.base import LLMBackend, Message, ModelResponse, ToolCall
 from queryagent.tools import CLARIFY_TOOL_NAME, ToolRegistry
@@ -86,6 +88,7 @@ def run_agent(
     failed_observations = 0
 
     for _ in range(max_turns):
+        started = time.monotonic()
         try:
             response = backend.complete(
                 context_builder.build(question, history, conversation=conversation),
@@ -105,6 +108,10 @@ def run_agent(
                 conversation=conversation,
             )
             return
+
+        usage_event = _usage_event(response, started)
+        if usage_event is not None:
+            yield usage_event
 
         if not response.tool_calls:
             text = response.text.strip()
@@ -172,7 +179,12 @@ def run_agent(
                 return
 
         history.append(
-            Message(role="assistant", content=response.text, tool_calls=(call,))
+            Message(
+                role="assistant",
+                content=response.text,
+                tool_calls=(call,),
+                reasoning=response.reasoning,
+            )
         )
         history.append(
             Message(role="tool", content=observation.content, tool_call_id=call.id)
@@ -193,6 +205,7 @@ def _degraded_answer(
     conversation: Sequence[Message] = (),
 ) -> Iterator[AgentEvent]:
     """Last resort after repeated parse failures: plain completion, no tools."""
+    started = time.monotonic()
     try:
         response: ModelResponse = backend.complete(
             context_builder.build(question, history, conversation=conversation)
@@ -200,11 +213,31 @@ def _degraded_answer(
     except Exception as exc:  # noqa: BLE001 - deliberate: report, never crash the stream
         yield ErrorEvent(error_type="LLMParseError", message=str(exc))
         return
+    usage_event = _usage_event(response, started)
+    if usage_event is not None:
+        yield usage_event
     text = response.text.strip()
     if text:
         yield AnswerEvent(text=text)
     else:
         yield ErrorEvent(error_type="LLMParseError", message="model produced no usable output")
+
+
+def _usage_event(response: ModelResponse, started: float) -> UsageEvent | None:
+    """Pair the provider's token counts with the latency the user actually felt.
+
+    Latency is measured around the whole call, so backend-level retries show
+    up as the wait they really were.
+    """
+    if response.usage is None:
+        return None
+    return UsageEvent(
+        model=response.usage.model,
+        input_tokens=response.usage.input_tokens,
+        output_tokens=response.usage.output_tokens,
+        cached_input_tokens=response.usage.cached_input_tokens,
+        latency_ms=int((time.monotonic() - started) * 1000),
+    )
 
 
 def _parse_failure_notice(detail: str) -> Message:

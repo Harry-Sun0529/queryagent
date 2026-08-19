@@ -21,7 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
-from collections.abc import Sequence
+from collections.abc import Container, Sequence
 from pathlib import Path
 
 from queryagent.evals.cases import EvalCase
@@ -66,13 +66,26 @@ def load_source_cases(path: str | Path) -> list[EvalCase]:
     return cases
 
 
-def sample_cases(cases: Sequence[EvalCase], n: int, seed: int = SAMPLE_SEED) -> list[EvalCase]:
-    """Deterministically sample ``n`` cases (sorted, seeded, then re-sorted)."""
-    if n >= len(cases):
-        return sorted(cases, key=lambda c: c.id)
-    ordered = sorted(cases, key=lambda c: c.id)
-    sampled = random.Random(seed).sample(ordered, n)
-    return sorted(sampled, key=lambda c: c.id)
+def sample_cases(
+    cases: Sequence[EvalCase],
+    n: int,
+    seed: int = SAMPLE_SEED,
+    exclude: Container[str] | None = None,
+) -> list[EvalCase]:
+    """Deterministically sample ``n`` cases (sorted, seeded, then re-sorted).
+
+    Args:
+        cases: The pool to sample from.
+        n: How many to take; fewer if the pool is smaller.
+        seed: Fixed so the sample is reproducible from the repo alone.
+        exclude: Case ids to keep out of the pool — this is how the dev set
+            is guaranteed disjoint from the sealed test set (ADR-004).
+    """
+    pool = [c for c in cases if exclude is None or c.id not in exclude]
+    ordered = sorted(pool, key=lambda c: c.id)
+    if n >= len(ordered):
+        return ordered
+    return sorted(random.Random(seed).sample(ordered, n), key=lambda c: c.id)
 
 
 def write_subset(cases: Sequence[EvalCase], path: str | Path) -> None:
@@ -115,12 +128,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--source", required=True, help="BIRD mini-dev or Spider dev JSON")
     parser.add_argument("--out", required=True, help="output subset JSON (commit this)")
     parser.add_argument("--n", type=int, default=30)
+    parser.add_argument("--seed", type=int, default=SAMPLE_SEED)
+    parser.add_argument(
+        "--exclude",
+        help="path to another subset JSON whose cases must not be reused "
+        "(how the dev set stays disjoint from the sealed test set)",
+    )
     args = parser.parse_args(argv)
     cases = load_source_cases(args.source)
-    subset = sample_cases(cases, args.n)
+    excluded = {c.id for c in load_subset(args.exclude)} if args.exclude else None
+    subset = sample_cases(cases, args.n, seed=args.seed, exclude=excluded)
     write_subset(subset, args.out)
     needed = sorted({case.db_id for case in subset})
-    print(f"sampled {len(subset)}/{len(cases)} cases (seed={SAMPLE_SEED}) -> {args.out}")
+    print(f"sampled {len(subset)}/{len(cases)} cases (seed={args.seed}) -> {args.out}")
     print(f"databases needed ({len(needed)}): {', '.join(needed)}")
     return 0
 

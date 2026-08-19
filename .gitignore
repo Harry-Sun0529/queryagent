@@ -22,3 +22,6 @@ examples/demo_ecommerce/demo_shop.db
 # Public benchmark databases (large; subset.json IS committed)
 eval/public/databases/
 eval_report.md
+
+# Agent traces (may contain business data)
+.queryagent/
