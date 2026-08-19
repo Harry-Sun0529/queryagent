@@ -34,7 +34,7 @@ Failure handling inside a run:
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 
 from queryagent.context import ContextBuilder
 from queryagent.errors import LLMParseError, SafetyViolation
@@ -60,6 +60,7 @@ def run_agent(
     context_builder: ContextBuilder,
     max_turns: int = 8,
     max_retries: int = 3,
+    conversation: Sequence[Message] = (),
 ) -> Iterator[AgentEvent]:
     """Run the ReAct loop for one question, yielding AgentEvents.
 
@@ -71,6 +72,9 @@ def run_agent(
             history, budget trimming).
         max_turns: Hard cap on model calls in the tool loop.
         max_retries: Failed tool observations tolerated before giving up.
+        conversation: Finished prior turns of a chat session (plain
+            user/assistant text messages), so follow-up questions can refer
+            back to earlier answers. Empty for one-shot runs and eval.
 
     Yields:
         AgentEvent instances; the stream always ends with one of the five
@@ -84,7 +88,8 @@ def run_agent(
     for _ in range(max_turns):
         try:
             response = backend.complete(
-                context_builder.build(question, history), tools=registry.specs()
+                context_builder.build(question, history, conversation=conversation),
+                tools=registry.specs(),
             )
         except LLMParseError as exc:
             parse_failures += 1
@@ -93,7 +98,11 @@ def run_agent(
                 history.append(_parse_failure_notice(str(exc)))
                 continue
             yield from _degraded_answer(
-                question, backend=backend, context_builder=context_builder, history=history
+                question,
+                backend=backend,
+                context_builder=context_builder,
+                history=history,
+                conversation=conversation,
             )
             return
 
@@ -106,7 +115,11 @@ def run_agent(
                     history.append(_parse_failure_notice("your reply was empty"))
                     continue
                 yield from _degraded_answer(
-                    question, backend=backend, context_builder=context_builder, history=history
+                    question,
+                    backend=backend,
+                    context_builder=context_builder,
+                    history=history,
+                    conversation=conversation,
                 )
                 return
             yield AnswerEvent(text=text)
@@ -177,10 +190,13 @@ def _degraded_answer(
     backend: LLMBackend,
     context_builder: ContextBuilder,
     history: list[Message],
+    conversation: Sequence[Message] = (),
 ) -> Iterator[AgentEvent]:
     """Last resort after repeated parse failures: plain completion, no tools."""
     try:
-        response: ModelResponse = backend.complete(context_builder.build(question, history))
+        response: ModelResponse = backend.complete(
+            context_builder.build(question, history, conversation=conversation)
+        )
     except Exception as exc:  # noqa: BLE001 - deliberate: report, never crash the stream
         yield ErrorEvent(error_type="LLMParseError", message=str(exc))
         return
