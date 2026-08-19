@@ -192,22 +192,27 @@ def run_case(
     # agents often run verification queries after the answer-bearing one, so
     # requiring the *last* SQL to be the answer punished good behaviour.
     # Checked last-first (the most likely answer query).
-    passed = False
-    matched: set[str] = set()
+    matched_sql: str | None = None
     for sql in dict.fromkeys(reversed(successful)):
         try:
             actual = connector.execute(sql, timeout_s=timeout_s, max_rows=max_rows)
         except QueryError:
             continue
         if rows_match(expected.rows, actual.rows):
-            matched.add(sql)
-            passed = True
+            matched_sql = sql
             break
+    passed = matched_sql is not None
+
     first_sql, first_was_error = summary.executed_sql[0]
     first_attempt_passed = (
-        retries == 0 and not first_was_error and (first_sql in matched or _matches(
-            connector, first_sql, expected.rows, timeout_s=timeout_s, max_rows=max_rows
-        ))
+        retries == 0
+        and not first_was_error
+        and (
+            first_sql == matched_sql
+            or _matches(
+                connector, first_sql, expected.rows, timeout_s=timeout_s, max_rows=max_rows
+            )
+        )
     )
     return CaseResult(
         case=case,
@@ -220,7 +225,8 @@ def run_case(
         failure_reason="" if passed else "result sets differ",
         usage=summary.usage,
         model=summary.model,
-        agent_sql=next(iter(matched), successful[-1]),
+        # the SQL that was scored, or the last one tried when none matched
+        agent_sql=matched_sql or successful[-1],
     )
 
 

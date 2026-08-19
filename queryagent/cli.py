@@ -26,6 +26,7 @@ from queryagent.connectors.sqlite import SQLiteConnector
 from queryagent.context import ContextBuilder
 from queryagent.errors import ConnectorError, QueryAgentError
 from queryagent.evals.cases import EvalCase, load_cases
+from queryagent.evals.checkpoint import ResultLog
 from queryagent.evals.public import load_subset
 from queryagent.evals.runner import CaseResult, render_report, run_case, unscoreable_case
 from queryagent.events import (
@@ -87,6 +88,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     evalp.add_argument("--model", help="override llm.model (dual-model reports, spec §三)")
     evalp.add_argument("--base-url", help="override llm.base_url")
     evalp.add_argument("--output", default="eval_report.md")
+    evalp.add_argument(
+        "--resume",
+        action="store_true",
+        help="reuse cases already scored in <output>.partial.jsonl instead of paying again",
+    )
     evalp.add_argument("--max-turns", type=int, default=8)
 
     args = parser.parse_args(argv)
@@ -110,19 +116,44 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _report_error(exc, verbose=getattr(args, "verbose", False))
 
 
+EXIT_USER_ERROR = 2
+EXIT_INTERNAL_DEFECT = 70  # sysexits EX_SOFTWARE
+EXIT_TEMPORARY_FAILURE = 75  # sysexits EX_TEMPFAIL
+
+
 def _report_error(exc: BaseException, *, verbose: bool) -> int:
-    """Turn an exception into one line of problem and one line of fix."""
+    """Print one line of problem, one line of fix, and classify the exit code.
+
+    Three classes, because a script and a human need different reactions:
+    the user misconfigured something (2), our code is broken (70), or the
+    upstream service is having a moment (75, retryable).
+    """
     if verbose:
         traceback.print_exc()
-    problem, fix = _explain(exc)
+    problem, fix, code = _explain(exc)
     print(f"[错误] {problem}", file=sys.stderr)
     if fix:
         print(f"  → {fix}", file=sys.stderr)
-    return 2
+    return code
 
 
-def _explain(exc: BaseException) -> tuple[str, str]:
-    """Map a known failure to (what went wrong, what to do about it)."""
+def _is_temporary(exc: BaseException, text: str) -> bool:
+    """Upstream trouble that a later retry could plausibly survive."""
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return True
+    if type(exc).__module__.startswith("httpx") and "Transport" in str(
+        type(exc).__mro__
+    ):
+        return True
+    if type(exc).__name__ in {"ConnectError", "ReadTimeout", "ConnectTimeout", "PoolTimeout"}:
+        return True
+    if "HTTP 429" in text:
+        return True
+    return any(f"HTTP {code}" in text for code in range(500, 600))
+
+
+def _explain(exc: BaseException) -> tuple[str, str, int]:
+    """Map a failure to (what went wrong, what to do, exit code)."""
     text = str(exc)
     if isinstance(exc, ImportError):
         missing = getattr(exc, "name", "") or text
@@ -130,31 +161,47 @@ def _explain(exc: BaseException) -> tuple[str, str]:
             return (
                 "缺少 ClickHouse 可选驱动。",
                 'pip install -e ".[clickhouse]"',
+                EXIT_USER_ERROR,
             )
-        return (f"缺少依赖：{missing}。", 'pip install -e ".[dev]"')
+        return (f"缺少依赖：{missing}。", 'pip install -e ".[dev]"', EXIT_USER_ERROR)
     if isinstance(exc, FileNotFoundError):
         return (
             f"找不到文件：{exc.filename or text}。",
             "检查 --config 路径；示例配置在 examples/demo_ecommerce/ 下。",
+            EXIT_USER_ERROR,
         )
     for env_var in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
         if env_var in text and "not set" in text:
-            return (f"{env_var} 未设置。", f"export {env_var}=<你的 key>")
+            return (f"{env_var} 未设置。", f"export {env_var}=<你的 key>", EXIT_USER_ERROR)
     if isinstance(exc, ConnectorError) and "not found" in text:
         return (
             f"{text}。",
             "先运行 make demo-data 生成示例库，或修正 config 里的 database.path。",
+            EXIT_USER_ERROR,
         )
     if "HTTP 401" in text or "Authentication" in text:
+        # A rejected key never fixes itself; retrying is not the answer.
         return (
             "LLM 拒绝了这个 API key（401）。",
             "检查 key 是否有效、是否与 config 里的 backend/base_url 匹配。",
+            EXIT_USER_ERROR,
+        )
+    if _is_temporary(exc, text):
+        return (
+            f"上游服务暂时不可用：{text[:160]}",
+            "稍后重试；持续失败可在 config 里换一个 base_url 或供应商。"
+            "（退出码 75 = 可重试，脚本可据此自动重跑）",
+            EXIT_TEMPORARY_FAILURE,
         )
     if isinstance(exc, ValueError):
-        return (f"配置有问题：{text}", "修正 config.yaml 后重试。")
+        return (f"配置有问题：{text}", "修正 config.yaml 后重试。", EXIT_USER_ERROR)
     if isinstance(exc, QueryAgentError):
-        return (text, "")
-    return (f"{type(exc).__name__}: {text}", "加 --verbose 可看完整调用栈。")
+        return (text, "", EXIT_USER_ERROR)
+    return (
+        f"这是 QueryAgent 自身的缺陷（bug）：{type(exc).__name__}: {text}",
+        "请带上 --verbose 的完整调用栈反馈；这不是你能通过改设置解决的问题。",
+        EXIT_INTERNAL_DEFECT,
+    )
 
 
 def _make_trace_writer(config: AppConfig, disabled: bool, question: str) -> TraceWriter | None:
@@ -378,6 +425,7 @@ def _cmd_eval(args: argparse.Namespace) -> int:
                 base_url=args.base_url or config.llm.base_url,
             ),
         )
+    log = ResultLog(Path(args.output).with_suffix(".partial.jsonl"), resume=args.resume)
     if args.public:
         if not args.db_dir:
             print("--public requires --db-dir", file=sys.stderr)
@@ -385,10 +433,18 @@ def _cmd_eval(args: argparse.Namespace) -> int:
         # Public benchmarks have no metrics.yaml of their own; the demo's
         # e-commerce metrics must not leak into their prompts.
         public_config = dataclasses.replace(config, metrics_path=None)
-        results = _eval_public(args.public, Path(args.db_dir), public_config, args.max_turns)
+        try:
+            results = _eval_public(
+                args.public, Path(args.db_dir), public_config, args.max_turns, log
+            )
+        finally:
+            log.close()
         title = "QueryAgent Eval Report — public subset"
     else:
-        results = _eval_self_built(args.cases, config, args.max_turns)
+        try:
+            results = _eval_self_built(args.cases, config, args.max_turns, log)
+        finally:
+            log.close()
         title = "QueryAgent Eval Report — self-built cases"
     report = render_report(results, title=title, model_label=config.llm.model)
     output = Path(args.output)
@@ -401,23 +457,31 @@ def _cmd_eval(args: argparse.Namespace) -> int:
 
 
 def _eval_self_built(
-    cases_path: str, config: AppConfig, max_turns: int
+    cases_path: str, config: AppConfig, max_turns: int, log: ResultLog
 ) -> list[CaseResult]:
     cases = load_cases(cases_path)
+    done = log.completed()
     with contextlib.ExitStack() as stack:
         connector = make_connector(config.database)
         stack.callback(connector.close)
         run_question = _make_run_question(connector, config, max_turns, stack)
-        return [
-            run_case(case, run_question=run_question, connector=connector) for case in cases
-        ]
+        results = []
+        for case in cases:
+            if case.id in done:
+                results.append(done[case.id])
+                continue
+            result = run_case(case, run_question=run_question, connector=connector)
+            log.append(result)
+            results.append(result)
+        return results
 
 
 def _eval_public(
-    subset_path: str, db_dir: Path, config: AppConfig, max_turns: int
+    subset_path: str, db_dir: Path, config: AppConfig, max_turns: int, log: ResultLog
 ) -> list[CaseResult]:
     """Public-benchmark mode: one SQLite database (and runtime) per db_id."""
     cases = load_subset(subset_path)
+    done = log.completed()
     results: list[CaseResult] = []
     by_db: dict[str, list[EvalCase]] = {}
     for case in cases:
@@ -430,21 +494,33 @@ def _eval_public(
             # a public suite is 30 paid minutes and must survive to a report.
             reason = f"database '{db_id}' unusable: {exc}"
             print(f"[warn] {reason}", file=sys.stderr)
-            results.extend(unscoreable_case(case, reason) for case in db_cases)
+            for case in db_cases:
+                result = done.get(case.id) or unscoreable_case(case, reason)
+                if case.id not in done:
+                    log.append(result)
+                results.append(result)
             continue
         try:
             with contextlib.ExitStack() as stack:
                 stack.callback(connector.close)
                 run_question = _make_run_question(connector, config, max_turns, stack)
                 for case in db_cases:
-                    results.append(
-                        run_case(case, run_question=run_question, connector=connector)
-                    )
+                    if case.id in done:
+                        results.append(done[case.id])
+                        continue
+                    result = run_case(case, run_question=run_question, connector=connector)
+                    log.append(result)
+                    results.append(result)
         except Exception as exc:  # noqa: BLE001
             reason = f"database '{db_id}' aborted: {type(exc).__name__}: {exc}"
             print(f"[warn] {reason}", file=sys.stderr)
-            done = {r.case.id for r in results}
-            results.extend(unscoreable_case(c, reason) for c in db_cases if c.id not in done)
+            recorded = {r.case.id for r in results}
+            for case in db_cases:
+                if case.id in recorded:
+                    continue
+                result = unscoreable_case(case, reason)
+                log.append(result)
+                results.append(result)
     results.sort(key=lambda r: r.case.id)
     return results
 
