@@ -158,17 +158,26 @@ float tolerance; five metrics including **clarify-behaviour accuracy**
 public benchmark serves as an external anchor, with a hard rule that prompts
 are never tuned against it ([eval/README.md](eval/README.md)).
 
-### Results (`deepseek-chat`, temperature 0, 2026-08-17)
+### Results (`deepseek-chat`, temperature 0)
 
-| metric | self-built (20 cases) | BIRD mini-dev subset (30 cases, seed 42) |
+Self-built numbers are **ranges over 3 consecutive runs** (v0.2.0 case set,
+2026-08-19); the BIRD column is the one-shot v0.1.0 anchor run.
+
+| metric | self-built (20 cases, 3 runs) | BIRD mini-dev subset (30 cases, seed 42) |
 |---|---|---|
-| first-execution pass rate | 15/18 (83%) | 10/30 (33%) |
-| pass rate after self-repair | **18/18 (100%)** | 14/30 (47%) |
-| metric hit rate | 3/4 | n/a |
-| clarify-behaviour accuracy | **4/4** | n/a |
-| average tool calls | 1.35 | 2.83 |
+| first-execution pass rate | 15/18 (83%, all runs) | 10/30 (33%) |
+| pass rate after self-repair | **17–18/18 (94–100%)** | 14/30 (47%) |
+| metric hit rate | 3/4 (all runs) | n/a |
+| clarify-behaviour accuracy | **4/4 (all runs)** | n/a |
+| average tool calls | ~1.4 | 2.83 |
 
 Honest notes, in the order they matter:
+
+- **Why ranges**: deepseek-chat exposes no sampling seed, so even
+  temperature-0 runs are not bit-deterministic — single-run benchmark
+  numbers on such APIs are noise. Case questions pin output contracts
+  (decimal precision, column count) so the suite measures SQL semantics,
+  not answer formatting luck.
 
 - **The self-built set was iterated on — that is its job.** The first run
   scored 50%; failure analysis exposed a metric-matching noise bug (one
