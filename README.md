@@ -77,21 +77,29 @@ git clone https://github.com/Harry-Sun0529/queryagent && cd queryagent
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 make demo-data                        # generates demo_shop.db (fictional e-commerce)
-export ANTHROPIC_API_KEY=sk-ant-...   # or use an OpenAI-compatible backend, see below
+export OPENAI_API_KEY=sk-...          # DeepSeek key works here (default config)
 queryagent chat --config examples/demo_ecommerce/config.sqlite.yaml
 ```
 
 Try: `上个月每天的新增用户数` — and watch it ask which definition of
-"new user" you mean. `--verbose` shows the full THINK / ACT / OBSERVE trace.
+"new user" you mean, then keep the thread: follow up with `那按渠道拆分呢？`
+and it remembers the month and the definition you chose. `--verbose` shows
+the full THINK / ACT / OBSERVE trace. For scripts and pipes there is a
+one-shot form:
 
-To use DeepSeek (or any OpenAI-compatible endpoint) instead, edit the `llm:`
-section of the config:
+```bash
+queryagent ask "上个月的成交额是多少？按支付口径" \
+    --config examples/demo_ecommerce/config.sqlite.yaml
+```
+
+The default configs talk to DeepSeek via the OpenAI-compatible backend; the
+same backend reaches Qwen/GLM/OpenAI/vLLM/Ollama by changing `base_url`.
+With an Anthropic key, switch the commented `llm:` block:
 
 ```yaml
 llm:
-  backend: openai_compatible
-  model: deepseek-chat
-  base_url: https://api.deepseek.com   # OPENAI_API_KEY holds the key
+  backend: anthropic          # reads ANTHROPIC_API_KEY
+  model: claude-sonnet-5
 ```
 
 ### MySQL / ClickHouse (Docker)

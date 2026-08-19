@@ -1,9 +1,13 @@
 # QueryAgent demo config — demo_ecommerce (MySQL via docker-compose).
 # API keys are NEVER put in config files; export ANTHROPIC_API_KEY instead (spec §二).
 llm:
-  backend: anthropic
-  model: claude-sonnet-5
-  temperature: 0        # deterministic SQL + clarify decisions
+  backend: openai_compatible    # reads OPENAI_API_KEY (DeepSeek keys go here)
+  model: deepseek-chat
+  base_url: https://api.deepseek.com
+  temperature: 0                # deterministic SQL + clarify decisions
+  # 有 ANTHROPIC_API_KEY 时可切换 Anthropic：
+  # backend: anthropic
+  # model: claude-sonnet-5
 
 database:
   type: mysql
