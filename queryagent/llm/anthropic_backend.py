@@ -13,7 +13,7 @@ from typing import Any, cast
 from anthropic import Anthropic, omit
 from anthropic.types import MessageParam, TextBlock, ToolParam, ToolUseBlock
 
-from queryagent.llm.base import Message, ModelResponse, ToolCall
+from queryagent.llm.base import Message, ModelResponse, ToolCall, Usage
 from queryagent.tools import ToolSpec
 
 
@@ -67,6 +67,13 @@ class AnthropicBackend:
             text="".join(text_parts),
             tool_calls=tuple(tool_calls),
             stop_reason=response.stop_reason or "",
+            usage=Usage(
+                input_tokens=response.usage.input_tokens,
+                output_tokens=response.usage.output_tokens,
+                cached_input_tokens=getattr(response.usage, "cache_read_input_tokens", 0)
+                or 0,
+                model=response.model,
+            ),
         )
 
 

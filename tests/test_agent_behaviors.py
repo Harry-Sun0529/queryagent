@@ -329,3 +329,62 @@ def test_conversation_is_forwarded_to_backend_before_question() -> None:
     assert "earlier question" in contents
     assert "earlier answer" in contents
     assert contents.index("earlier answer") < contents.index("follow-up")
+
+
+def test_usage_event_emitted_per_model_call() -> None:
+    from queryagent.events import UsageEvent
+    from queryagent.llm.base import Usage
+
+    usage = Usage(input_tokens=100, output_tokens=20, cached_input_tokens=64,
+                  model="deepseek-v4-flash")
+    backend = FakeLLMBackend([answer("done", usage=usage)])
+    events = list(
+        run_agent("q", backend=backend, registry=ToolRegistry([]),
+                  context_builder=make_builder())
+    )
+    usage_events = [e for e in events if isinstance(e, UsageEvent)]
+    assert len(usage_events) == 1
+    assert usage_events[0].input_tokens == 100
+    assert usage_events[0].cached_input_tokens == 64
+    assert usage_events[0].model == "deepseek-v4-flash"
+    assert usage_events[0].latency_ms >= 0
+    # chronological: usage of a call precedes what the call produced
+    assert events.index(usage_events[0]) < events.index(
+        next(e for e in events if isinstance(e, AnswerEvent))
+    )
+
+
+def test_no_usage_event_when_backend_reports_none() -> None:
+    from queryagent.events import UsageEvent
+
+    backend = FakeLLMBackend([answer("done")])
+    events = list(
+        run_agent("q", backend=backend, registry=ToolRegistry([]),
+                  context_builder=make_builder())
+    )
+    assert not [e for e in events if isinstance(e, UsageEvent)]
+
+
+def test_reasoning_is_carried_into_history() -> None:
+    from queryagent.llm.base import ModelResponse, ToolCall
+
+    thinking = ModelResponse(
+        text="checking",
+        tool_calls=(ToolCall(id="c1", name="echo", arguments={"msg": "hi"}),),
+        stop_reason="tool_use",
+        reasoning="internal chain of thought",
+    )
+    backend = FakeLLMBackend([thinking, answer("done")])
+    registry = ToolRegistry([
+        ToolSpec(
+            name="echo",
+            description="Echo.",
+            input_schema={"type": "object", "properties": {"msg": {"type": "string"}},
+                          "required": ["msg"]},
+            handler=lambda msg: msg,
+        )
+    ])
+    list(run_agent("q", backend=backend, registry=registry, context_builder=make_builder()))
+    second_call = backend.calls[1]
+    assistant = [m for m in second_call if m.role == "assistant"]
+    assert assistant and assistant[0].reasoning == "internal chain of thought"

@@ -223,3 +223,68 @@ def test_summarize_pairs_sql_with_observations_by_id() -> None:
     assert summary.executed_sql == (("SELECT 1", False),)
     assert summary.final_sql == "SELECT 1"
     assert summary.tool_calls == 2
+
+
+def usage_events(*specs: tuple[int, int, int, int]) -> list[AgentEvent]:
+    from queryagent.events import UsageEvent
+
+    return [
+        UsageEvent(
+            model="deepseek-v4-flash",
+            input_tokens=i,
+            output_tokens=o,
+            cached_input_tokens=c,
+            latency_ms=ms,
+        )
+        for i, c, o, ms in specs
+    ]
+
+
+def test_case_result_accumulates_usage() -> None:
+    events = [
+        *usage_events((1000, 800, 50, 900), (1500, 1400, 90, 1100)),
+        *sql_events("SELECT agent"),
+        AnswerEvent(text="42"),
+    ]
+    connector = FakeConnector({"SELECT ref": ((42,),), "SELECT agent": ((42,),)})
+    result = run_case(
+        simple_case(), run_question=lambda q: scripted(events), connector=connector
+    )
+    assert result.usage.input_tokens == 2500
+    assert result.usage.cached_input_tokens == 2200
+    assert result.usage.output_tokens == 140
+    assert result.usage.latency_ms == 2000
+    assert result.usage.calls == 2
+    assert result.model == "deepseek-v4-flash"
+
+
+def test_report_includes_cost_latency_and_cache_metrics() -> None:
+    events = [
+        *usage_events((1000, 800, 50, 900)),
+        *sql_events("SELECT agent"),
+        AnswerEvent(text="42"),
+    ]
+    connector = FakeConnector({"SELECT ref": ((42,),), "SELECT agent": ((42,),)})
+    result = run_case(
+        simple_case(), run_question=lambda q: scripted(events), connector=connector
+    )
+    report = render_report([result], title="T", model_label="deepseek-v4-flash")
+    assert "cache hit rate" in report
+    assert "80%" in report  # 800/1000 cached
+    assert "tokens per case" in report
+    assert "latency per case" in report
+    assert "cost" in report.lower()
+
+
+def test_report_handles_unpriced_model_without_crashing() -> None:
+    events = [
+        *usage_events((1000, 0, 50, 900)),
+        *sql_events("SELECT agent"),
+        AnswerEvent(text="42"),
+    ]
+    connector = FakeConnector({"SELECT ref": ((42,),), "SELECT agent": ((42,),)})
+    result = run_case(
+        simple_case(), run_question=lambda q: scripted(events), connector=connector
+    )
+    report = render_report([result], title="T", model_label="mystery-model-9000")
+    assert "n/a" in report  # cost unknown, never fabricated

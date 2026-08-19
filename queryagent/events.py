@@ -65,6 +65,23 @@ class RetryEvent(AgentEvent):
 
 
 @dataclass(frozen=True)
+class UsageEvent(AgentEvent):
+    """Token accounting and wall-clock latency for one model call.
+
+    Emitted only when the provider reports usage. Deliberately its own event
+    rather than a field on ThinkEvent/AnswerEvent: measurement should not
+    change what the semantic events mean, and the eval runner and trace
+    writer consume it independently of the reasoning stream.
+    """
+
+    model: str
+    input_tokens: int
+    output_tokens: int
+    cached_input_tokens: int
+    latency_ms: int
+
+
+@dataclass(frozen=True)
 class ClarifyEvent(AgentEvent):
     """The agent asks the user a clarifying question instead of guessing.
 

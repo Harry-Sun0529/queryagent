@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from queryagent.llm.base import Message, ModelResponse, ToolCall
+from queryagent.llm.base import Message, ModelResponse, ToolCall, Usage
 from queryagent.tools import ToolSpec
 
 
@@ -39,9 +39,9 @@ class FakeLLMBackend:
         return item
 
 
-def answer(text: str) -> ModelResponse:
+def answer(text: str, *, usage: Usage | None = None) -> ModelResponse:
     """Script entry: the model gives a final answer."""
-    return ModelResponse(text=text, tool_calls=(), stop_reason="end_turn")
+    return ModelResponse(text=text, tool_calls=(), stop_reason="end_turn", usage=usage)
 
 
 def tool_call(
@@ -50,7 +50,8 @@ def tool_call(
     *,
     call_id: str = "call_1",
     text: str = "",
+    usage: Usage | None = None,
 ) -> ModelResponse:
     """Script entry: the model requests one tool call (optionally with thinking text)."""
     call = ToolCall(id=call_id, name=name, arguments=arguments)
-    return ModelResponse(text=text, tool_calls=(call,), stop_reason="tool_use")
+    return ModelResponse(text=text, tool_calls=(call,), stop_reason="tool_use", usage=usage)

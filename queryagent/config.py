@@ -68,6 +68,7 @@ class AppConfig:
     database: DatabaseConfig
     safety: SafetyConfig
     metrics_path: str | None = None
+    trace: bool = True  # record event streams to .queryagent/traces/
 
 
 def load_config(path: str | Path) -> AppConfig:
@@ -91,6 +92,7 @@ def load_config(path: str | Path) -> AppConfig:
         database=_load_database(_section(raw, "database")),
         safety=_load_safety(raw.get("safety") or {}),
         metrics_path=_opt_str(raw, "metrics_path"),
+        trace=_opt_bool(raw, "trace", default=True),
     )
 
 
@@ -181,6 +183,13 @@ def _opt_str(section: dict[str, Any], key: str) -> str | None:
         return None
     if not isinstance(value, str):
         raise ValueError(f"{key} must be a string when present")
+    return value
+
+
+def _opt_bool(section: dict[str, Any], key: str, *, default: bool) -> bool:
+    value = section.get(key, default)
+    if not isinstance(value, bool):
+        raise ValueError(f"{key} must be true or false when present")
     return value
 
 

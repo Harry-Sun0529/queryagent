@@ -228,3 +228,90 @@ def test_temperature_forwarded_when_set(monkeypatch: pytest.MonkeyPatch) -> None
     default_backend = make_backend(monkeypatch, text_reply("ok"), captured=captured)
     default_backend.complete([Message(role="user", content="q")])
     assert "temperature" not in captured[0]  # provider default when unset
+
+
+def test_usage_parsed_with_cache_breakdown(monkeypatch: pytest.MonkeyPatch) -> None:
+    reply = {
+        "model": "deepseek-v4-flash",
+        "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+        "usage": {
+            "prompt_tokens": 1200,
+            "completion_tokens": 80,
+            "prompt_cache_hit_tokens": 1024,
+            "prompt_cache_miss_tokens": 176,
+        },
+    }
+    backend = make_backend(monkeypatch, reply)
+    usage = backend.complete([Message(role="user", content="q")]).usage
+    assert usage is not None
+    assert usage.input_tokens == 1200
+    assert usage.output_tokens == 80
+    assert usage.cached_input_tokens == 1024
+    assert usage.model == "deepseek-v4-flash"
+
+
+def test_usage_absent_degrades_to_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Not every OpenAI-compatible server returns usage; must not crash.
+    backend = make_backend(monkeypatch, text_reply("ok"))
+    assert backend.complete([Message(role="user", content="q")]).usage is None
+
+
+def test_usage_without_cache_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    reply = {
+        "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+    }
+    usage = make_backend(monkeypatch, reply).complete(
+        [Message(role="user", content="q")]
+    ).usage
+    assert usage is not None
+    assert usage.cached_input_tokens == 0
+
+
+def test_reasoning_content_parsed(monkeypatch: pytest.MonkeyPatch) -> None:
+    reply = {
+        "choices": [
+            {
+                "message": {
+                    "content": "I'll check the schema.",
+                    "reasoning_content": "The user asks about tables; use get_schema.",
+                },
+                "finish_reason": "stop",
+            }
+        ]
+    }
+    response = make_backend(monkeypatch, reply).complete([Message(role="user", content="q")])
+    assert response.reasoning.startswith("The user asks")
+    assert response.text == "I'll check the schema."
+
+
+def test_reasoning_is_sent_back_on_assistant_messages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # DeepSeek thinking models reject turn 2 unless reasoning_content is echoed.
+    captured: list[dict[str, Any]] = []
+    backend = make_backend(monkeypatch, text_reply("ok"), captured=captured)
+    backend.complete(
+        [
+            Message(role="user", content="q"),
+            Message(
+                role="assistant",
+                content="thinking out loud",
+                reasoning="internal chain",
+                tool_calls=(ToolCall(id="c1", name="get_schema", arguments={}),),
+            ),
+            Message(role="tool", content="schema", tool_call_id="c1"),
+        ]
+    )
+    assistant = captured[0]["messages"][1]
+    assert assistant["reasoning_content"] == "internal chain"
+
+
+def test_no_reasoning_field_when_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[dict[str, Any]] = []
+    backend = make_backend(monkeypatch, text_reply("ok"), captured=captured)
+    backend.complete(
+        [Message(role="assistant", content="plain", tool_calls=(
+            ToolCall(id="c1", name="t", arguments={}),))]
+    )
+    assert "reasoning_content" not in captured[0]["messages"][0]

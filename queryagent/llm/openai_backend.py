@@ -22,7 +22,7 @@ from typing import Any
 import httpx
 
 from queryagent.errors import LLMParseError
-from queryagent.llm.base import Message, ModelResponse, ToolCall
+from queryagent.llm.base import Message, ModelResponse, ToolCall, Usage
 from queryagent.tools import ToolSpec
 
 _RETRYABLE_STATUS = frozenset({429}) | frozenset(range(500, 600))
@@ -139,7 +139,7 @@ def _convert_tool(spec: ToolSpec) -> dict[str, Any]:
 
 def _convert_message(message: Message) -> dict[str, Any]:
     if message.role == "assistant" and message.tool_calls:
-        return {
+        payload: dict[str, Any] = {
             "role": "assistant",
             "content": message.content or None,
             "tool_calls": [
@@ -154,6 +154,10 @@ def _convert_message(message: Message) -> dict[str, Any]:
                 for call in message.tool_calls
             ],
         }
+        if message.reasoning:
+            # Thinking models reject the next turn without this echoed back.
+            payload["reasoning_content"] = message.reasoning
+        return payload
     if message.role == "tool":
         return {
             "role": "tool",
@@ -194,4 +198,20 @@ def _parse_response(data: Any) -> ModelResponse:
         text=raw_message.get("content") or "",
         tool_calls=tuple(tool_calls),
         stop_reason=str(choice.get("finish_reason") or ""),
+        usage=_parse_usage(data),
+        reasoning=str(raw_message.get("reasoning_content") or ""),
+    )
+
+
+def _parse_usage(data: Any) -> Usage | None:
+    """Read the usage block; not every compatible server sends one."""
+    raw = data.get("usage") if isinstance(data, dict) else None
+    if not isinstance(raw, dict):
+        return None
+    return Usage(
+        input_tokens=int(raw.get("prompt_tokens") or 0),
+        output_tokens=int(raw.get("completion_tokens") or 0),
+        # DeepSeek-specific split; absent elsewhere, hence the 0 default.
+        cached_input_tokens=int(raw.get("prompt_cache_hit_tokens") or 0),
+        model=str(data.get("model") or ""),
     )

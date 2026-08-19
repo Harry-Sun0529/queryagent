@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import sys
+import traceback
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Protocol
@@ -22,6 +23,7 @@ from queryagent.connectors import make_connector
 from queryagent.connectors.base import Connector
 from queryagent.connectors.sqlite import SQLiteConnector
 from queryagent.context import ContextBuilder
+from queryagent.errors import ConnectorError, QueryAgentError
 from queryagent.evals.cases import EvalCase, load_cases
 from queryagent.evals.public import load_subset
 from queryagent.evals.runner import CaseResult, render_report, run_case
@@ -34,12 +36,22 @@ from queryagent.events import (
     RetryEvent,
     ThinkEvent,
     ToolCallEvent,
+    UsageEvent,
 )
 from queryagent.llm import make_backend
 from queryagent.llm.base import Message
 from queryagent.metrics.yaml_store import YamlMetricStore
 from queryagent.schema import render_schema
 from queryagent.tools import ToolRegistry, make_clarify_tool, make_default_tools
+from queryagent.trace import (
+    TRACE_DIR_NAME,
+    TraceWriter,
+    new_trace_path,
+    prune_traces,
+    read_trace,
+)
+
+_trace_notice_shown = False
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -52,11 +64,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     chat.add_argument("--verbose", action="store_true", help="show the full agent trace")
     chat.add_argument("--max-turns", type=int, default=8)
 
+    chat.add_argument("--no-trace", action="store_true", help="do not record traces")
+
     ask = subparsers.add_parser("ask", help="one-shot question, scriptable (answer to stdout)")
     ask.add_argument("question", help="natural-language question")
     ask.add_argument("--config", default="config.yaml", help="path to config.yaml")
     ask.add_argument("--verbose", action="store_true", help="show the full agent trace")
     ask.add_argument("--max-turns", type=int, default=8)
+    ask.add_argument("--no-trace", action="store_true", help="do not record traces")
+
+    replay = subparsers.add_parser("replay", help="re-render a recorded trace")
+    replay.add_argument("path", help="path to a .jsonl trace file")
 
     evalp = subparsers.add_parser("eval", help="run the eval suite and write a markdown report")
     evalp.add_argument("--config", default="config.yaml", help="path to config.yaml")
@@ -70,13 +88,100 @@ def main(argv: Sequence[str] | None = None) -> int:
     evalp.add_argument("--max-turns", type=int, default=8)
 
     args = parser.parse_args(argv)
-    if args.command == "chat":
-        return _cmd_chat(args)
-    if args.command == "ask":
-        return _cmd_ask(args)
-    if args.command == "eval":
-        return _cmd_eval(args)
+    handlers = {
+        "chat": _cmd_chat,
+        "ask": _cmd_ask,
+        "replay": _cmd_replay,
+        "eval": _cmd_eval,
+    }
+    handler = handlers.get(args.command)
+    if handler is None:
+        return 2
+    try:
+        return handler(args)
+    except Exception as exc:  # noqa: BLE001 - top level: explain, never dump a traceback
+        return _report_error(exc, verbose=getattr(args, "verbose", False))
+
+
+def _report_error(exc: BaseException, *, verbose: bool) -> int:
+    """Turn an exception into one line of problem and one line of fix."""
+    if verbose:
+        traceback.print_exc()
+    problem, fix = _explain(exc)
+    print(f"[错误] {problem}", file=sys.stderr)
+    if fix:
+        print(f"  → {fix}", file=sys.stderr)
     return 2
+
+
+def _explain(exc: BaseException) -> tuple[str, str]:
+    """Map a known failure to (what went wrong, what to do about it)."""
+    text = str(exc)
+    if isinstance(exc, ImportError):
+        missing = getattr(exc, "name", "") or text
+        if "clickhouse" in missing:
+            return (
+                "缺少 ClickHouse 可选驱动。",
+                'pip install -e ".[clickhouse]"',
+            )
+        return (f"缺少依赖：{missing}。", 'pip install -e ".[dev]"')
+    if isinstance(exc, FileNotFoundError):
+        return (
+            f"找不到文件：{exc.filename or text}。",
+            "检查 --config 路径；示例配置在 examples/demo_ecommerce/ 下。",
+        )
+    for env_var in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+        if env_var in text and "not set" in text:
+            return (f"{env_var} 未设置。", f"export {env_var}=<你的 key>")
+    if isinstance(exc, ConnectorError) and "not found" in text:
+        return (
+            f"{text}。",
+            "先运行 make demo-data 生成示例库，或修正 config 里的 database.path。",
+        )
+    if "HTTP 401" in text or "Authentication" in text:
+        return (
+            "LLM 拒绝了这个 API key（401）。",
+            "检查 key 是否有效、是否与 config 里的 backend/base_url 匹配。",
+        )
+    if isinstance(exc, ValueError):
+        return (f"配置有问题：{text}", "修正 config.yaml 后重试。")
+    if isinstance(exc, QueryAgentError):
+        return (text, "")
+    return (f"{type(exc).__name__}: {text}", "加 --verbose 可看完整调用栈。")
+
+
+def _make_trace_writer(config: AppConfig, disabled: bool, question: str) -> TraceWriter | None:
+    """Build a trace writer unless tracing is off; prunes old traces first."""
+    if disabled or not config.trace:
+        return None
+    directory = Path(TRACE_DIR_NAME)
+    if directory.exists():
+        prune_traces(directory)
+    return TraceWriter(new_trace_path(directory, question))
+
+
+def _finish_trace(writer: TraceWriter | None) -> None:
+    """Close the trace and announce it once per process (privacy notice)."""
+    global _trace_notice_shown
+    if writer is None:
+        return
+    started = writer.started
+    writer.close()
+    if started and not _trace_notice_shown:
+        _trace_notice_shown = True
+        print(
+            f"[trace] 已记录到 {writer.path.parent}/ —— 含问题、SQL 与查询结果，"
+            "可能包含业务数据；该目录已在 .gitignore 中。"
+            "关闭方式：--no-trace 或 config 里 trace: false",
+            file=sys.stderr,
+        )
+
+
+def _cmd_replay(args: argparse.Namespace) -> int:
+    """Re-render a recorded trace (always full detail — that is the point)."""
+    for event in read_trace(args.path):
+        _render_event(event, verbose=True)
+    return 0
 
 
 class SessionRunQuestion(Protocol):
@@ -146,9 +251,17 @@ def _cmd_chat(args: argparse.Namespace) -> int:
                 break
             if not question:
                 continue
-            turn = _chat_one_question(
-                question, run_question, conversation=tuple(conversation), verbose=args.verbose
-            )
+            writer = _make_trace_writer(config, args.no_trace, question)
+            try:
+                turn = _chat_one_question(
+                    question,
+                    run_question,
+                    conversation=tuple(conversation),
+                    verbose=args.verbose,
+                    writer=writer,
+                )
+            finally:
+                _finish_trace(writer)
             if turn is not None:
                 asked, answered = turn
                 # The asked text may carry a clarify reply — follow-ups need
@@ -166,6 +279,7 @@ def _chat_one_question(
     *,
     conversation: Sequence[Message] = (),
     verbose: bool,
+    writer: TraceWriter | None = None,
 ) -> tuple[str, str] | None:
     """Run one chat turn (including clarify rounds).
 
@@ -178,6 +292,8 @@ def _chat_one_question(
         clarify: ClarifyEvent | None = None
         answer_text = ""
         for event in run_question(pending, conversation):
+            if writer is not None:
+                writer.write(event)
             if isinstance(event, ClarifyEvent):
                 clarify = event
             elif isinstance(event, AnswerEvent):
@@ -202,14 +318,18 @@ def _cmd_ask(args: argparse.Namespace) -> int:
     """
     config = load_config(args.config)
     connector = make_connector(config.database)
+    writer = _make_trace_writer(config, args.no_trace, args.question)
     exit_code = 0
     try:
         run_question = _make_run_question(connector, config, args.max_turns)
         for event in run_question(args.question):
+            if writer is not None:
+                writer.write(event)
             _render_event(event, args.verbose)
             if isinstance(event, ErrorEvent):
                 exit_code = 2
     finally:
+        _finish_trace(writer)
         connector.close()
     return exit_code
 
@@ -300,6 +420,12 @@ def _render_event(event: AgentEvent, verbose: bool) -> None:
         print(f"{prefix}\n{event.content}")
     elif isinstance(event, RetryEvent):
         print(f"[RETRY #{event.attempt}] {event.reason}")
+    elif isinstance(event, UsageEvent):
+        cached = f", cached {event.cached_input_tokens}" if event.cached_input_tokens else ""
+        print(
+            f"[USAGE] {event.model} in={event.input_tokens}{cached} "
+            f"out={event.output_tokens} {event.latency_ms}ms"
+        )
 
 
 if __name__ == "__main__":

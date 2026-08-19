@@ -19,6 +19,7 @@ from queryagent.connectors.base import Connector
 from queryagent.errors import QueryError
 from queryagent.evals.cases import EvalCase
 from queryagent.evals.compare import rows_match
+from queryagent.evals.cost import TokenTotals, estimate_cost_usd
 from queryagent.events import (
     AgentEvent,
     AnswerEvent,
@@ -26,6 +27,7 @@ from queryagent.events import (
     ErrorEvent,
     ObservationEvent,
     ToolCallEvent,
+    UsageEvent,
 )
 
 RunQuestion = Callable[[str], Iterable[AgentEvent]]
@@ -41,6 +43,8 @@ class EventSummary:
     clarify: ClarifyEvent | None
     error: ErrorEvent | None
     tool_calls: int
+    usage: TokenTotals
+    model: str
 
 
 def summarize_events(events: Iterable[AgentEvent]) -> EventSummary:
@@ -51,6 +55,8 @@ def summarize_events(events: Iterable[AgentEvent]) -> EventSummary:
     clarify: ClarifyEvent | None = None
     error: ErrorEvent | None = None
     tool_calls = 0
+    usage = TokenTotals()
+    model = ""
     for event in events:
         if isinstance(event, ToolCallEvent):
             tool_calls += 1
@@ -64,6 +70,15 @@ def summarize_events(events: Iterable[AgentEvent]) -> EventSummary:
             clarify = event
         elif isinstance(event, ErrorEvent):
             error = event
+        elif isinstance(event, UsageEvent):
+            usage = usage + TokenTotals(
+                input_tokens=event.input_tokens,
+                cached_input_tokens=event.cached_input_tokens,
+                output_tokens=event.output_tokens,
+                latency_ms=event.latency_ms,
+                calls=1,
+            )
+            model = event.model or model
     final_sql = next((sql for sql, was_error in reversed(executed) if not was_error), None)
     return EventSummary(
         executed_sql=tuple(executed),
@@ -72,6 +87,8 @@ def summarize_events(events: Iterable[AgentEvent]) -> EventSummary:
         clarify=clarify,
         error=error,
         tool_calls=tool_calls,
+        usage=usage,
+        model=model,
     )
 
 
@@ -87,6 +104,8 @@ class CaseResult:
     clarify_correct: bool | None
     metrics_mentioned: bool | None
     failure_reason: str = ""
+    usage: TokenTotals = TokenTotals()
+    model: str = ""
 
 
 def run_case(
@@ -122,6 +141,8 @@ def run_case(
             clarify_correct=ok,
             metrics_mentioned=None,
             failure_reason=reason,
+            usage=summary.usage,
+            model=summary.model,
         )
 
     clarify_correct = summary.clarify is None if case.kind == "no_clarify" else None
@@ -139,6 +160,8 @@ def run_case(
             tool_calls=summary.tool_calls,
             clarify_correct=clarify_correct,
             metrics_mentioned=metrics_mentioned,
+            usage=summary.usage,
+            model=summary.model,
         )
     try:
         expected = connector.execute(case.expected_sql, timeout_s=timeout_s, max_rows=max_rows)
@@ -175,6 +198,8 @@ def run_case(
         clarify_correct=clarify_correct,
         metrics_mentioned=metrics_mentioned,
         failure_reason="" if passed else "result sets differ",
+        usage=summary.usage,
+        model=summary.model,
     )
 
 
@@ -201,6 +226,8 @@ def _failed(
     tool_calls: int = 0,
     clarify_correct: bool | None = None,
     metrics_mentioned: bool | None = None,
+    usage: TokenTotals | None = None,
+    model: str = "",
 ) -> CaseResult:
     return CaseResult(
         case=case,
@@ -211,6 +238,8 @@ def _failed(
         clarify_correct=clarify_correct,
         metrics_mentioned=metrics_mentioned,
         failure_reason=reason,
+        usage=usage or TokenTotals(),
+        model=model,
     )
 
 
@@ -227,6 +256,8 @@ class EvalStats:
     clarify_cases: int
     clarify_correct: int
     avg_tool_calls: float
+    usage: TokenTotals = TokenTotals()
+    model: str = ""
 
 
 def aggregate(results: Sequence[CaseResult]) -> EvalStats:
@@ -245,12 +276,17 @@ def aggregate(results: Sequence[CaseResult]) -> EvalStats:
         clarify_cases=len(clarify_results),
         clarify_correct=sum(1 for r in clarify_results if r.clarify_correct),
         avg_tool_calls=(sum(r.tool_calls for r in results) / total) if total else 0.0,
+        usage=sum((r.usage for r in results), TokenTotals()),
+        model=next((r.model for r in results if r.model), ""),
     )
 
 
 def render_report(results: Sequence[CaseResult], *, title: str, model_label: str) -> str:
     """Render the markdown report (summary metrics + per-case table)."""
     stats = aggregate(results)
+    cost = estimate_cost_usd(stats.usage, stats.model or model_label)
+    cases = max(stats.total, 1)
+    total_tokens = stats.usage.input_tokens + stats.usage.output_tokens
     lines = [
         f"# {title}",
         "",
@@ -266,6 +302,11 @@ def render_report(results: Sequence[CaseResult], *, title: str, model_label: str
         f"| metric hit rate | {_rate(stats.metric_hits, stats.metric_cases)} |",
         f"| clarify-behaviour accuracy | {_rate(stats.clarify_correct, stats.clarify_cases)} |",
         f"| average tool calls | {stats.avg_tool_calls:.2f} |",
+        f"| tokens per case (in+out) | {total_tokens / cases:,.0f} |",
+        f"| prompt cache hit rate | {stats.usage.cache_hit_rate:.0%} |",
+        f"| latency per case | {stats.usage.latency_ms / cases / 1000:.1f}s |",
+        f"| cost per case (upper bound) | "
+        f"{'$%.4f' % (cost / cases) if cost is not None else 'n/a'} |",
         "",
         "## Cases",
         "",
