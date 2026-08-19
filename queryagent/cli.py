@@ -1,13 +1,10 @@
-"""QueryAgent CLI (spec §三 v0.1.1): ``queryagent chat --config config.yaml``.
+"""QueryAgent CLI: ``chat`` (interactive, multi-turn), ``ask`` (one-shot),
+``eval`` (scored suites) — all pure consumers of the AgentEvent stream.
 
-A pure consumer of the AgentEvent stream — ``--verbose`` renders the full
-THINK/ACT/OBSERVE trace, the default shows answers only.
-
-The ClarifyEvent branch below is the reserved seam for v0.2.0: when the agent
-asks a clarifying question, the CLI renders it, reads the user's reply and
-continues the conversation. The exact continuation mechanism (re-run with an
-augmented question, below) is a placeholder to be finalised together with the
-human's v0.2.0 agent design.
+``--verbose`` renders the full THINK/ACT/OBSERVE trace; the default shows
+answers only. In chat, a ClarifyEvent renders the agent's question, folds
+the user's reply back into the pending question and re-runs; answered turns
+are kept as session conversation so follow-ups can refer back.
 """
 
 from __future__ import annotations
@@ -17,6 +14,7 @@ import dataclasses
 import sys
 from collections.abc import Iterator, Sequence
 from pathlib import Path
+from typing import Protocol
 
 from queryagent.agent import run_agent
 from queryagent.config import AppConfig, LLMConfig, load_config
@@ -26,7 +24,7 @@ from queryagent.connectors.sqlite import SQLiteConnector
 from queryagent.context import ContextBuilder
 from queryagent.evals.cases import EvalCase, load_cases
 from queryagent.evals.public import load_subset
-from queryagent.evals.runner import CaseResult, RunQuestion, render_report, run_case
+from queryagent.evals.runner import CaseResult, render_report, run_case
 from queryagent.events import (
     AgentEvent,
     AnswerEvent,
@@ -38,6 +36,7 @@ from queryagent.events import (
     ToolCallEvent,
 )
 from queryagent.llm import make_backend
+from queryagent.llm.base import Message
 from queryagent.metrics.yaml_store import YamlMetricStore
 from queryagent.schema import render_schema
 from queryagent.tools import ToolRegistry, make_clarify_tool, make_default_tools
@@ -53,6 +52,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     chat.add_argument("--verbose", action="store_true", help="show the full agent trace")
     chat.add_argument("--max-turns", type=int, default=8)
 
+    ask = subparsers.add_parser("ask", help="one-shot question, scriptable (answer to stdout)")
+    ask.add_argument("question", help="natural-language question")
+    ask.add_argument("--config", default="config.yaml", help="path to config.yaml")
+    ask.add_argument("--verbose", action="store_true", help="show the full agent trace")
+    ask.add_argument("--max-turns", type=int, default=8)
+
     evalp = subparsers.add_parser("eval", help="run the eval suite and write a markdown report")
     evalp.add_argument("--config", default="config.yaml", help="path to config.yaml")
     evalp.add_argument("--cases", default="eval/cases.yaml", help="self-built cases YAML")
@@ -67,14 +72,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "chat":
         return _cmd_chat(args)
+    if args.command == "ask":
+        return _cmd_ask(args)
     if args.command == "eval":
         return _cmd_eval(args)
     return 2
 
 
+class SessionRunQuestion(Protocol):
+    """One-question runner that optionally carries session conversation.
+
+    Structurally a superset of the eval runner's single-arg ``RunQuestion``,
+    so the same wired closure serves chat, ask and eval.
+    """
+
+    def __call__(
+        self, question: str, conversation: Sequence[Message] = ()
+    ) -> Iterator[AgentEvent]: ...
+
+
 def _make_run_question(
     connector: Connector, config: AppConfig, max_turns: int
-) -> RunQuestion:
+) -> SessionRunQuestion:
     """Wire backend + context + metrics + tools for one data source."""
     backend = make_backend(config.llm)
     metric_store = YamlMetricStore(config.metrics_path) if config.metrics_path else None
@@ -93,13 +112,16 @@ def _make_run_question(
         tools.append(make_clarify_tool())
     registry = ToolRegistry(tools)
 
-    def run_question(question: str) -> Iterator[AgentEvent]:
+    def run_question(
+        question: str, conversation: Sequence[Message] = ()
+    ) -> Iterator[AgentEvent]:
         return run_agent(
             question,
             backend=backend,
             registry=registry,
             context_builder=builder,
             max_turns=max_turns,
+            conversation=conversation,
         )
 
     return run_question
@@ -108,6 +130,7 @@ def _make_run_question(
 def _cmd_chat(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     connector = make_connector(config.database)
+    conversation: list[Message] = []
     try:
         run_question = _make_run_question(connector, config, args.max_turns)
         print(
@@ -123,38 +146,72 @@ def _cmd_chat(args: argparse.Namespace) -> int:
                 break
             if not question:
                 continue
-            _chat_one_question(question, run_question, verbose=args.verbose)
-    except NotImplementedError as exc:
-        print(f"\n[BLOCKED] {exc}", file=sys.stderr)
-        print(
-            "agent.py / safety.py 为 HUMAN-OWNED（规格 §〇），由人类实现后 CLI 即可运行。",
-            file=sys.stderr,
-        )
-        return 1
+            turn = _chat_one_question(
+                question, run_question, conversation=tuple(conversation), verbose=args.verbose
+            )
+            if turn is not None:
+                asked, answered = turn
+                # The asked text may carry a clarify reply — follow-ups need
+                # that disambiguation, so it is what goes into the memory.
+                conversation.append(Message(role="user", content=asked))
+                conversation.append(Message(role="assistant", content=answered))
     finally:
         connector.close()
     return 0
 
 
-def _chat_one_question(question: str, run_question: RunQuestion, *, verbose: bool) -> None:
+def _chat_one_question(
+    question: str,
+    run_question: SessionRunQuestion,
+    *,
+    conversation: Sequence[Message] = (),
+    verbose: bool,
+) -> tuple[str, str] | None:
+    """Run one chat turn (including clarify rounds).
+
+    Returns:
+        ``(asked_question, answer_text)`` when the turn produced an answer —
+        the caller folds it into the session conversation — else ``None``.
+    """
     pending = question
     while True:
         clarify: ClarifyEvent | None = None
-        for event in run_question(pending):
+        answer_text = ""
+        for event in run_question(pending, conversation):
             if isinstance(event, ClarifyEvent):
                 clarify = event
+            elif isinstance(event, AnswerEvent):
+                answer_text = event.text
             _render_event(event, verbose)
         if clarify is None:
-            return
-        # v0.2.0 reserved branch: fold the user's reply back into the question
-        # and continue; mechanism to be finalised with the human agent design.
+            return (pending, answer_text) if answer_text else None
         try:
             reply = input("你答> ").strip()
         except EOFError:
-            return
+            return None
         if not reply:
-            return
+            return None
         pending = f"{pending}\n(用户补充说明: {reply})"
+
+
+def _cmd_ask(args: argparse.Namespace) -> int:
+    """One-shot mode: answer/clarify question to stdout, exit code says how.
+
+    0 = answered (or asked a clarifying question — in one-shot mode the
+    clarifying question *is* the output); 2 = terminal error event.
+    """
+    config = load_config(args.config)
+    connector = make_connector(config.database)
+    exit_code = 0
+    try:
+        run_question = _make_run_question(connector, config, args.max_turns)
+        for event in run_question(args.question):
+            _render_event(event, args.verbose)
+            if isinstance(event, ErrorEvent):
+                exit_code = 2
+    finally:
+        connector.close()
+    return exit_code
 
 
 def _cmd_eval(args: argparse.Namespace) -> int:
@@ -168,26 +225,18 @@ def _cmd_eval(args: argparse.Namespace) -> int:
                 base_url=args.base_url or config.llm.base_url,
             ),
         )
-    try:
-        if args.public:
-            if not args.db_dir:
-                print("--public requires --db-dir", file=sys.stderr)
-                return 2
-            # Public benchmarks have no metrics.yaml of their own; the demo's
-            # e-commerce metrics must not leak into their prompts.
-            public_config = dataclasses.replace(config, metrics_path=None)
-            results = _eval_public(args.public, Path(args.db_dir), public_config, args.max_turns)
-            title = "QueryAgent Eval Report — public subset"
-        else:
-            results = _eval_self_built(args.cases, config, args.max_turns)
-            title = "QueryAgent Eval Report — self-built cases"
-    except NotImplementedError as exc:
-        print(f"\n[BLOCKED] {exc}", file=sys.stderr)
-        print(
-            "eval 需要 agent.py / safety.py（HUMAN-OWNED）实现后才能运行。",
-            file=sys.stderr,
-        )
-        return 1
+    if args.public:
+        if not args.db_dir:
+            print("--public requires --db-dir", file=sys.stderr)
+            return 2
+        # Public benchmarks have no metrics.yaml of their own; the demo's
+        # e-commerce metrics must not leak into their prompts.
+        public_config = dataclasses.replace(config, metrics_path=None)
+        results = _eval_public(args.public, Path(args.db_dir), public_config, args.max_turns)
+        title = "QueryAgent Eval Report — public subset"
+    else:
+        results = _eval_self_built(args.cases, config, args.max_turns)
+        title = "QueryAgent Eval Report — self-built cases"
     report = render_report(results, title=title, model_label=config.llm.model)
     Path(args.output).write_text(report, encoding="utf-8")
     passed = sum(1 for r in results if r.passed)
