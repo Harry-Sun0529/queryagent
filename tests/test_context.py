@@ -153,3 +153,27 @@ def test_budget_generous_enough_keeps_everything() -> None:
         Message(role="tool", content="b", tool_call_id="c1"),
     ]
     assert len(builder.build("q", history=history)) == 4
+
+
+def test_budget_counts_tool_call_payloads_not_just_content() -> None:
+    # An assistant turn's cost lives in its tool_calls (the SQL), not in its
+    # short thinking text; ignoring it makes the budget under-count badly.
+    from queryagent.llm.base import ToolCall
+
+    builder = ContextBuilder(
+        schema_text="TABLE t\n  id INT", dialect="sqlite", token_budget=300
+    )
+    big_sql = "SELECT " + ", ".join(f"col_{i}" for i in range(400)) + " FROM t"
+    history = []
+    for i in range(4):
+        history.append(
+            Message(
+                role="assistant",
+                content="ok",
+                tool_calls=(ToolCall(id=f"c{i}", name="execute_sql",
+                                     arguments={"sql": big_sql}),),
+            )
+        )
+        history.append(Message(role="tool", content="rows", tool_call_id=f"c{i}"))
+    messages = builder.build("q", history=history)
+    assert len(messages) < 2 + len(history)  # over budget, so it must trim

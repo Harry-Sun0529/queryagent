@@ -111,3 +111,37 @@ def test_invalid_config_value_is_actionable(
     assert code == 2
     assert "backend" in err
     assert "Traceback" not in err
+
+
+UNREACHABLE_CONFIG = """\
+llm:
+  backend: openai_compatible
+  model: deepseek-v4-flash
+  base_url: http://127.0.0.1:9
+database:
+  type: sqlite
+  path: {db}
+trace: false
+"""
+
+
+def test_chat_survives_a_failing_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """One bad turn must not end the session — the user keeps their context."""
+    config = tmp_path / "unreachable.yaml"
+    config.write_text(UNREACHABLE_CONFIG.format(db=real_db(tmp_path)), encoding="utf-8")
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setattr(
+        "queryagent.llm.openai_backend.OpenAICompatibleBackend._post_with_retries",
+        lambda self, body: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    asked = iter(["第一个问题", "第二个问题", "exit"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(asked))
+
+    code = main(["chat", "--config", str(config)])
+
+    err = capsys.readouterr().err
+    assert code == 0  # the session itself ended normally
+    assert err.count("[错误]") == 2  # both turns reported, neither killed the loop
+    assert "Traceback" not in err

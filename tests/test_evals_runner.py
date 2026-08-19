@@ -288,3 +288,22 @@ def test_report_handles_unpriced_model_without_crashing() -> None:
     )
     report = render_report([result], title="T", model_label="mystery-model-9000")
     assert "n/a" in report  # cost unknown, never fabricated
+
+
+def test_usage_is_kept_when_the_reference_sql_is_broken() -> None:
+    # Tokens were spent even though the case is unscoreable; dropping them
+    # makes the suite's cost and latency totals silently under-count.
+    events = [
+        *usage_events((900, 700, 40, 800)),
+        *sql_events("SELECT agent"),
+        AnswerEvent(text="42"),
+    ]
+    connector = FakeConnector({"SELECT agent": ((42,),)})  # no "SELECT ref"
+    result = run_case(
+        simple_case(), run_question=lambda q: scripted(events), connector=connector
+    )
+    assert not result.passed
+    assert "reference expected_sql failed" in result.failure_reason
+    assert result.usage.input_tokens == 900
+    assert result.usage.calls == 1
+    assert result.model == "deepseek-v4-flash"

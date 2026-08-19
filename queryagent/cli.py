@@ -156,7 +156,7 @@ def _make_trace_writer(config: AppConfig, disabled: bool, question: str) -> Trac
         return None
     directory = Path(TRACE_DIR_NAME)
     if directory.exists():
-        prune_traces(directory)
+        prune_traces(directory, reserve=1)
     return TraceWriter(new_trace_path(directory, question))
 
 
@@ -260,6 +260,11 @@ def _cmd_chat(args: argparse.Namespace) -> int:
                     verbose=args.verbose,
                     writer=writer,
                 )
+            except Exception as exc:  # noqa: BLE001
+                # One bad turn (a network blip, a rate limit) must not end the
+                # session and throw away the conversation built up so far.
+                _report_error(exc, verbose=args.verbose)
+                turn = None
             finally:
                 _finish_trace(writer)
             if turn is not None:

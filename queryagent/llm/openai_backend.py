@@ -176,7 +176,7 @@ def _parse_response(data: Any) -> ModelResponse:
     except (KeyError, IndexError, TypeError) as exc:
         raise LLMParseError(f"unexpected chat-completions response shape: {exc}") from exc
     tool_calls: list[ToolCall] = []
-    for raw_call in raw_message.get("tool_calls") or []:
+    for index, raw_call in enumerate(raw_message.get("tool_calls") or []):
         function = raw_call.get("function") or {}
         raw_args = function.get("arguments") or "{}"
         try:
@@ -189,7 +189,11 @@ def _parse_response(data: Any) -> ModelResponse:
             raise LLMParseError(f"tool call arguments must be an object: {raw_args[:200]}")
         tool_calls.append(
             ToolCall(
-                id=str(raw_call.get("id") or ""),
+                # Some OpenAI-compatible servers (vLLM, older Ollama) omit the
+                # id. Both providers pair tool results by id, and so does the
+                # eval runner, so synthesise a distinct one rather than
+                # letting empty ids collide.
+                id=str(raw_call.get("id") or "") or f"call_{index}",
                 name=str(function.get("name") or ""),
                 arguments=arguments,
             )

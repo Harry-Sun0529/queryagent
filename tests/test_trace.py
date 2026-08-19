@@ -110,3 +110,18 @@ def test_prune_ignores_other_files(tmp_path: Path) -> None:
     prune_traces(tmp_path, keep=0)
     assert (tmp_path / "notes.txt").exists()
     assert not (tmp_path / "a.jsonl").exists()
+
+
+def test_retention_counts_the_file_about_to_be_written(tmp_path: Path) -> None:
+    # Pruning before creating the next trace leaves keep+1 files on disk.
+    for i in range(5):
+        (tmp_path / f"2026-08-19T00-00-{i:02d}-q.jsonl").write_text("{}\n", encoding="utf-8")
+    prune_traces(tmp_path, keep=3, reserve=1)
+    assert len(list(tmp_path.glob("*.jsonl"))) == 2  # room for the incoming one
+
+
+def test_two_traces_in_the_same_second_do_not_collide(tmp_path: Path) -> None:
+    first = new_trace_path(tmp_path, "同一个问题")
+    TraceWriter(first).write(AnswerEvent(text="a"))
+    second = new_trace_path(tmp_path, "同一个问题")
+    assert second != first
