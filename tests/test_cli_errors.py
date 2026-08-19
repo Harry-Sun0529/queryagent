@@ -345,7 +345,10 @@ def test_eval_persists_results_incrementally(
     )
     partial = report.with_suffix(".partial.jsonl")
     assert partial.exists(), "each finished case must land on disk as it completes"
-    assert partial.read_text(encoding="utf-8").count("\n") == 2
+    from queryagent.evals.checkpoint import ResultLog
+
+    recovered = ResultLog(partial, resume=True).completed()
+    assert set(recovered) == {"a1", "a2"}
 
 
 def test_resume_skips_completed_cases(
@@ -488,3 +491,48 @@ def test_first_turn_carries_no_conversation(
 
     roles = [m.role for m in backend.calls[0]]  # type: ignore[attr-defined]
     assert roles == ["system", "user"]  # nothing folded in yet
+
+
+def test_resume_refuses_to_mix_runs_from_different_models(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Reusing another model's results would produce a number nobody can
+    # explain — worse than having no number.
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    config = tmp_path / "config.yaml"
+    config.write_text(EVAL_CONFIG.format(db=real_db(tmp_path)), encoding="utf-8")
+    report = tmp_path / "report.md"
+    args = [
+        "eval",
+        "--config", str(config),
+        "--public", str(make_subset(tmp_path, ["a1"])),
+        "--db-dir", str(tmp_path / "databases"),
+        "--output", str(report),
+    ]
+    main([*args, "--model", "deepseek-v4-flash"])
+
+    code = main([*args, "--model", "deepseek-v4-pro", "--resume"])
+
+    err = capsys.readouterr().err
+    assert code == 2
+    assert "deepseek-v4-flash" in err and "deepseek-v4-pro" in err
+
+
+def test_resume_accepts_a_matching_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    config = tmp_path / "config.yaml"
+    config.write_text(EVAL_CONFIG.format(db=real_db(tmp_path)), encoding="utf-8")
+    report = tmp_path / "report.md"
+    args = [
+        "eval",
+        "--config", str(config),
+        "--public", str(make_subset(tmp_path, ["a1"])),
+        "--db-dir", str(tmp_path / "databases"),
+        "--output", str(report),
+        "--model", "deepseek-v4-flash",
+    ]
+    main(args)
+    assert main([*args, "--resume"]) == 3  # ran to completion, cases failed
+    assert "a1" in report.read_text(encoding="utf-8")

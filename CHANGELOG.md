@@ -6,6 +6,50 @@ versioning: [SemVer](https://semver.org/). CLI arguments and config structure
 enter the semver contract at v0.2.0; `metrics.yaml` required fields are
 frozen from v0.1.1 (spec §四).
 
+## [0.4.0] — 2026-08-19
+
+### Added
+
+- **Eval checkpointing**: each finished case is appended to
+  `<output>.partial.jsonl` as it completes, and `--resume` reuses it — an
+  expanded suite is ~45 minutes of paid API calls, and a blip at minute 40
+  used to discard all of it.
+- **Exit-code taxonomy** (ADR-006): 2 for user error, 70 (`EX_SOFTWARE`) for
+  defects in QueryAgent, 75 (`EX_TEMPFAIL`) for retryable upstream trouble.
+  Batch scripts can now tell "retry later" from "your config is wrong".
+- Black-box tests for multi-turn session memory, verified non-vacuous by a
+  mutation check.
+
+### Changed
+
+- **Benchmark samples expanded** (ADR-004 rewritten): the sealed test set
+  goes from 30 to **200 freshly sampled** questions, dev from 30 to **100**
+  (the 60 previously observed questions retired into dev); 198 held in
+  reserve. Reason: at n=30 even a paired before/after comparison was
+  underpowered — it needs 57–114 cases, while the earlier analysis had
+  mistakenly applied an independent-samples formula and overstated the
+  requirement.
+- **The anchor rule is restated** as "never change the system in response to
+  test results", replacing "run test only once" — the old wording described
+  the mechanism, not the purpose it serves.
+- Duplicate questions in upstream BIRD mini-dev are now collapsed (case ids
+  key the resume log and the report table, so a duplicate silently skipped
+  the second copy). Pool 500 → 498.
+
+### Numbers
+
+Measured on the **new** samples; earlier releases' numbers below were
+measured on the now-retired 30-case samples and **are not comparable**.
+Those entries keep their original values deliberately — a changelog records
+what was published, not what we would prefer to have published.
+
+A controlled decomposition ([eval/results/version-decomposition.md](eval/results/version-decomposition.md))
+established that the drop from v0.2.0's 83% first-execution rate to
+v0.3.0's 61–72% is **not a code regression**: with cases and configuration
+held constant the v0.3.0 code scores +5pp higher, and the entire drop comes
+from enabling the model's thinking mode, which lowers first-attempt accuracy
+without lowering final accuracy.
+
 ## [0.3.0] — 2026-08-19
 
 ### Added
