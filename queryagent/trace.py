@@ -114,12 +114,30 @@ class TraceWriter:
 
 
 def read_trace(path: str | Path) -> list[AgentEvent]:
-    """Read a JSONL trace back into events, skipping blank lines."""
+    """Read a JSONL trace back into events, skipping unreadable lines.
+
+    A run killed mid-write leaves a partial last line, and a trace written by
+    a newer version may name an event this build does not know — and those
+    are precisely the runs worth replaying. One bad line therefore costs that
+    line, never the file. Use ``count_trace_lines`` to see how many were
+    skipped.
+    """
     events: list[AgentEvent] = []
     for line in Path(path).read_text(encoding="utf-8").splitlines():
-        if line.strip():
+        if not line.strip():
+            continue
+        try:
             events.append(event_from_dict(json.loads(line)))
+        except (json.JSONDecodeError, ValueError, TypeError):
+            continue
     return events
+
+
+def count_trace_lines(path: str | Path) -> int:
+    """Number of non-blank lines in a trace, readable or not."""
+    return sum(
+        1 for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip()
+    )
 
 
 def new_trace_path(directory: str | Path, question: str) -> Path:
