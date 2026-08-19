@@ -219,13 +219,53 @@ def make_clarify_tool() -> ToolSpec:
     )
 
 
-def format_query_result(result: QueryResult) -> str:
-    """Format a QueryResult as plain text for the model to read."""
+MAX_CELL_CHARS = 200
+MAX_OBSERVATION_CHARS = 8_000
+
+
+def format_query_result(
+    result: QueryResult,
+    *,
+    max_cell_chars: int = MAX_CELL_CHARS,
+    max_chars: int = MAX_OBSERVATION_CHARS,
+) -> str:
+    """Format a QueryResult as plain text for the model to read.
+
+    The connector's row cap does not bound this text: a few hundred rows of
+    long text columns is easily tens of thousands of tokens, which overruns
+    the context budget — and because trimming can only drop whole messages,
+    the model would lose the very result it just asked for and re-run the
+    query. So cells and the total are both capped, and every cut is
+    announced so the model knows it is looking at a sample rather than
+    silently reasoning over partial data.
+    """
     header = " | ".join(result.columns)
     lines = [header, "-" * min(len(header), 80)]
+    budget = max_chars - len(header) - len(lines[1])
+    cells_cut = False
+    shown = 0
     for row in result.rows:
-        lines.append(" | ".join("NULL" if value is None else str(value) for value in row))
+        rendered = []
+        for value in row:
+            cell = "NULL" if value is None else str(value)
+            if len(cell) > max_cell_chars:
+                cell = cell[:max_cell_chars] + "…"
+                cells_cut = True
+            rendered.append(cell)
+        line = " | ".join(rendered)
+        if shown and budget - len(line) < 0:
+            break
+        budget -= len(line) + 1
+        lines.append(line)
+        shown += 1
+    notes = []
+    if result.truncated:
+        notes.append("truncated at the row limit")
+    if shown < len(result.rows):
+        notes.append(f"output truncated to the first {shown} rows")
+    if cells_cut:
+        notes.append(f"long values truncated at {max_cell_chars} chars")
     footer = f"({len(result.rows)} rows, {result.elapsed_ms} ms"
-    footer += ", truncated)" if result.truncated else ")"
+    footer += ", " + "; ".join(notes) + ")" if notes else ")"
     lines.append(footer)
     return "\n".join(lines)

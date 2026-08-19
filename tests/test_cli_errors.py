@@ -145,3 +145,151 @@ def test_chat_survives_a_failing_turn(
     assert code == 0  # the session itself ended normally
     assert err.count("[错误]") == 2  # both turns reported, neither killed the loop
     assert "Traceback" not in err
+
+
+EVAL_CONFIG = """\
+llm:
+  backend: openai_compatible
+  model: deepseek-v4-flash
+  base_url: https://api.deepseek.com
+database:
+  type: sqlite
+  path: {db}
+trace: false
+"""
+
+
+def test_unopenable_database_fails_its_cases_not_the_whole_suite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A 30-case public run costs real money and minutes; one missing database
+    # must not discard every result gathered so far.
+    import json
+
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    subset = tmp_path / "subset.json"
+    subset.write_text(
+        json.dumps(
+            [
+                {"id": "gone_1", "db_id": "gone", "question": "q1", "gold_sql": "SELECT 1"},
+                {"id": "gone_2", "db_id": "gone", "question": "q2", "gold_sql": "SELECT 1"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    config = tmp_path / "config.yaml"
+    config.write_text(EVAL_CONFIG.format(db=real_db(tmp_path)), encoding="utf-8")
+    report = tmp_path / "report.md"
+
+    code = main(
+        [
+            "eval",
+            "--config", str(config),
+            "--public", str(subset),
+            "--db-dir", str(tmp_path / "databases"),
+            "--output", str(report),
+        ]
+    )
+
+    assert code == 3  # cases failed, but the suite ran to completion
+    assert report.exists(), "the report must be written even when a database is unusable"
+    text = report.read_text(encoding="utf-8")
+    assert "gone_1" in text and "gone_2" in text
+    assert "gone" in text.lower()
+
+
+def test_report_directory_is_created_if_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Losing a finished (paid-for) run because the output folder is missing
+    # is the worst possible moment to fail.
+    import json
+
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    subset = tmp_path / "subset.json"
+    subset.write_text(
+        json.dumps([{"id": "gone_1", "db_id": "gone", "question": "q", "gold_sql": "SELECT 1"}]),
+        encoding="utf-8",
+    )
+    config = tmp_path / "config.yaml"
+    config.write_text(EVAL_CONFIG.format(db=real_db(tmp_path)), encoding="utf-8")
+    report = tmp_path / "nested" / "deeper" / "report.md"
+
+    main(
+        [
+            "eval",
+            "--config", str(config),
+            "--public", str(subset),
+            "--db-dir", str(tmp_path / "databases"),
+            "--output", str(report),
+        ]
+    )
+    assert report.exists()
+
+
+class RecordingBackend:
+    """A backend that answers immediately and remembers being closed."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    def complete(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        from queryagent.llm.base import ModelResponse
+
+        return ModelResponse(text="42", stop_reason="stop")
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_ask_releases_the_llm_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Each backend owns an httpx.Client; a public eval builds one per
+    # database, so never closing them leaks a connection pool per data source.
+    backend = RecordingBackend()
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setattr("queryagent.cli.make_backend", lambda _config: backend)
+    config = write_config(tmp_path, db=real_db(tmp_path))
+
+    assert main(["ask", "q", "--config", str(config)]) == 0
+    assert backend.closed, "the LLM client must be released when the command ends"
+
+
+def test_client_is_released_even_when_the_run_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    backend = RecordingBackend()
+
+    def explode(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("boom")
+
+    backend.complete = explode  # type: ignore[method-assign]
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setattr("queryagent.cli.make_backend", lambda _config: backend)
+    config = write_config(tmp_path, db=real_db(tmp_path))
+
+    main(["ask", "q", "--config", str(config)])
+    assert backend.closed
+
+
+def test_interrupt_exits_cleanly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Ctrl-C during a slow query is normal use, not a crash to report."""
+    backend = RecordingBackend()
+
+    def interrupted(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise KeyboardInterrupt
+
+    backend.complete = interrupted  # type: ignore[method-assign]
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setattr("queryagent.cli.make_backend", lambda _config: backend)
+    config = write_config(tmp_path, db=real_db(tmp_path))
+
+    code = main(["ask", "q", "--config", str(config)])
+
+    err = capsys.readouterr().err
+    assert code == 130  # conventional exit code for SIGINT
+    assert "Traceback" not in err
+    assert backend.closed, "resources are released on interrupt too"
