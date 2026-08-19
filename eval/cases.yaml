@@ -26,10 +26,14 @@ cases:
 
   - id: simple_paid_orders_30d
     kind: simple
-    question: 最近30天有多少笔已支付订单？
+    # 用数据自身的最大日期锚定，而不是 'now'：SQLite 的 now 是 UTC，
+    # 与模型推断的本地日期跨界时窗口会差一天。
+    question: >
+      已支付订单里，最后一笔订单往前 30 天内（含当天）一共有多少笔已支付订单？
     expected_sql: >
       SELECT count(*) FROM orders
-      WHERE status = 'paid' AND created_at >= datetime('now', '-30 day')
+      WHERE status = 'paid'
+        AND created_at >= datetime((SELECT max(created_at) FROM orders), '-30 day')
     tags: [count, date]
 
   - id: simple_users_by_region
@@ -103,7 +107,8 @@ cases:
   # ---- multi-step --------------------------------------------------------
   - id: multi_top3_regions_by_paid_amount
     kind: multistep
-    question: 按已支付订单金额排名前三的地区是哪三个？
+    question: >
+      按已支付订单金额排名前三的地区是哪三个？返回地区和对应的金额两列。
     expected_sql: >
       SELECT u.region, sum(o.amount) AS total
       FROM orders o JOIN users u ON u.id = o.user_id
