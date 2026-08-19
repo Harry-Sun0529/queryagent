@@ -106,3 +106,35 @@ def test_exclude_shrinks_the_pool(tmp_path: Path) -> None:
     cases = load_source_cases(write_json(tmp_path, "bird.json", BIRD_ITEMS))
     everything = {c.id for c in cases}
     assert sample_cases(cases, 5, seed=7, exclude=everything) == []
+
+
+def test_shipped_subsets_are_disjoint_and_sized() -> None:
+    """The committed samples are data, and their disjointness is the claim
+    the whole dev/test story rests on — so it is asserted, not promised."""
+    root = Path(__file__).parent.parent
+    test_cases = load_subset(root / "eval" / "public" / "subset.json")
+    dev_cases = load_subset(root / "eval" / "public" / "dev-subset.json")
+    test_ids = {c.id for c in test_cases}
+    dev_ids = {c.id for c in dev_cases}
+    assert len(test_cases) == 200
+    assert len(dev_cases) == 100
+    assert len(test_ids) == len(test_cases), "duplicate ids in the test subset"
+    assert not (test_ids & dev_ids), "dev and test must never share a question"
+
+
+def test_identical_duplicate_questions_collapse(tmp_path: Path) -> None:
+    # BIRD mini-dev genuinely ships the same question twice (financial_137).
+    # Scoring it twice double-weights it, and case ids key both the resume
+    # log and the report table.
+    item = {"question_id": 7, "db_id": "db", "question": "How many?", "SQL": "SELECT 1"}
+    cases = load_source_cases(write_json(tmp_path, "dup.json", [item, dict(item)]))
+    assert len(cases) == 1
+
+
+def test_same_id_different_content_keeps_both(tmp_path: Path) -> None:
+    # A collision that is not a true duplicate must not silently lose a case.
+    a = {"question_id": 7, "db_id": "db", "question": "How many?", "SQL": "SELECT 1"}
+    b = {"question_id": 7, "db_id": "db", "question": "How much?", "SQL": "SELECT 2"}
+    cases = load_source_cases(write_json(tmp_path, "clash.json", [a, b]))
+    assert len(cases) == 2
+    assert len({c.id for c in cases}) == 2, "ids must stay unique"

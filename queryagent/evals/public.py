@@ -19,6 +19,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import random
 from collections.abc import Container, Sequence
@@ -63,7 +64,32 @@ def load_source_cases(path: str | Path) -> list[EvalCase]:
                 db_id=db_id,
             )
         )
-    return cases
+    return _with_unique_ids(cases)
+
+
+def _with_unique_ids(cases: list[EvalCase]) -> list[EvalCase]:
+    """Collapse exact duplicates and disambiguate remaining id collisions.
+
+    BIRD mini-dev ships some questions twice under one question_id. Scoring
+    such a case twice double-weights it, and the id is the key for both the
+    resume log and the report table — so identical entries collapse, while a
+    genuine collision (same id, different question) keeps both under
+    distinct ids rather than silently losing one.
+    """
+    seen: dict[str, EvalCase] = {}
+    result: list[EvalCase] = []
+    for case in cases:
+        existing = seen.get(case.id)
+        if existing is not None:
+            if (existing.question, existing.expected_sql) == (case.question, case.expected_sql):
+                continue  # the same question twice adds no information
+            suffix = 2
+            while f"{case.id}#{suffix}" in seen:
+                suffix += 1
+            case = dataclasses.replace(case, id=f"{case.id}#{suffix}")
+        seen[case.id] = case
+        result.append(case)
+    return result
 
 
 def sample_cases(

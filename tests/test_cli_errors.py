@@ -307,3 +307,184 @@ def test_replay_reports_skipped_lines(
     captured = capsys.readouterr()
     assert "kept" in captured.out
     assert "1" in captured.err  # the unreadable line is reported, not hidden
+
+
+def make_subset(tmp_path: Path, ids: list[str]) -> Path:
+    import json
+
+    subset = tmp_path / "subset.json"
+    subset.write_text(
+        json.dumps(
+            [
+                {"id": i, "db_id": "gone", "question": f"q{i}", "gold_sql": "SELECT 1"}
+                for i in ids
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return subset
+
+
+def test_eval_persists_results_incrementally(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A 45-minute run that dies at minute 40 must not lose what it paid for.
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    config = tmp_path / "config.yaml"
+    config.write_text(EVAL_CONFIG.format(db=real_db(tmp_path)), encoding="utf-8")
+    report = tmp_path / "report.md"
+
+    main(
+        [
+            "eval",
+            "--config", str(config),
+            "--public", str(make_subset(tmp_path, ["a1", "a2"])),
+            "--db-dir", str(tmp_path / "databases"),
+            "--output", str(report),
+        ]
+    )
+    partial = report.with_suffix(".partial.jsonl")
+    assert partial.exists(), "each finished case must land on disk as it completes"
+    assert partial.read_text(encoding="utf-8").count("\n") == 2
+
+
+def test_resume_skips_completed_cases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    config = tmp_path / "config.yaml"
+    config.write_text(EVAL_CONFIG.format(db=real_db(tmp_path)), encoding="utf-8")
+    report = tmp_path / "report.md"
+    subset = make_subset(tmp_path, ["a1", "a2"])
+    args = [
+        "eval",
+        "--config", str(config),
+        "--public", str(subset),
+        "--db-dir", str(tmp_path / "databases"),
+        "--output", str(report),
+    ]
+    main(args)
+    first = report.with_suffix(".partial.jsonl").read_text(encoding="utf-8")
+
+    main([*args, "--resume"])
+
+    # The resumed run reuses the finished cases rather than paying for them again.
+    assert report.with_suffix(".partial.jsonl").read_text(encoding="utf-8") == first
+    assert "a1" in report.read_text(encoding="utf-8")
+    assert "a2" in report.read_text(encoding="utf-8")
+
+
+def test_programming_defect_is_not_disguised_as_user_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A TypeError from our own code is a bug; telling the user to "fix your
+    # config" sends them chasing a problem they cannot solve.
+    backend = RecordingBackend()
+    backend.complete = lambda *a, **k: (_ for _ in ()).throw(  # type: ignore[method-assign]
+        TypeError("unsupported operand")
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setattr("queryagent.cli.make_backend", lambda _config: backend)
+    code = main(["ask", "q", "--config", str(write_config(tmp_path, db=real_db(tmp_path)))])
+    err = capsys.readouterr().err
+    assert code == 70  # EX_SOFTWARE
+    assert "bug" in err.lower() or "缺陷" in err
+    assert "config" not in err.lower()
+
+
+def test_upstream_outage_is_marked_retryable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # 5xx after retries is neither the user's fault nor ours; a batch script
+    # needs to tell "retry later" apart from "your config is wrong".
+    backend = RecordingBackend()
+    backend.complete = lambda *a, **k: (_ for _ in ()).throw(  # type: ignore[method-assign]
+        RuntimeError("LLM request failed with HTTP 503: upstream unavailable")
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setattr("queryagent.cli.make_backend", lambda _config: backend)
+    code = main(["ask", "q", "--config", str(write_config(tmp_path, db=real_db(tmp_path)))])
+    err = capsys.readouterr().err
+    assert code == 75  # EX_TEMPFAIL
+    assert "重试" in err or "retry" in err.lower()
+
+
+def test_network_unreachable_is_retryable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import httpx
+
+    backend = RecordingBackend()
+    backend.complete = lambda *a, **k: (_ for _ in ()).throw(  # type: ignore[method-assign]
+        httpx.ConnectError("connection refused")
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setattr("queryagent.cli.make_backend", lambda _config: backend)
+    code = main(["ask", "q", "--config", str(write_config(tmp_path, db=real_db(tmp_path)))])
+    assert code == 75
+    assert backend.closed
+
+
+def test_bad_key_stays_a_user_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # 401 is the user's key, not an outage — retrying it forever helps nobody.
+    backend = RecordingBackend()
+    backend.complete = lambda *a, **k: (_ for _ in ()).throw(  # type: ignore[method-assign]
+        RuntimeError("LLM request failed with HTTP 401: invalid api key")
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setattr("queryagent.cli.make_backend", lambda _config: backend)
+    code = main(["ask", "q", "--config", str(write_config(tmp_path, db=real_db(tmp_path)))])
+    assert code == 2
+
+
+class ScriptedBackend:
+    """Answers from a script and records the messages it was given."""
+
+    def __init__(self, answers: list[str]) -> None:
+        self._answers = list(answers)
+        self.calls: list[list[object]] = []
+        self.closed = False
+
+    def complete(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        from queryagent.llm.base import ModelResponse
+
+        self.calls.append(list(messages))
+        return ModelResponse(text=self._answers.pop(0), stop_reason="stop")
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_followup_turn_carries_the_previous_exchange(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The whole point of session memory: turn 2 must see turn 1's Q and A.
+    backend = ScriptedBackend(["上个月是 8,377 人", "按渠道拆分如下"])
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setattr("queryagent.cli.make_backend", lambda _config: backend)
+    asked = iter(["上个月新增用户有多少？", "那按渠道拆分呢？", "exit"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(asked))
+
+    main(["chat", "--config", str(write_config(tmp_path, db=real_db(tmp_path)))])
+
+    assert len(backend.calls) == 2
+    second_turn = " ".join(m.content for m in backend.calls[1])  # type: ignore[attr-defined]
+    assert "上个月新增用户有多少？" in second_turn
+    assert "8,377" in second_turn
+
+
+def test_first_turn_carries_no_conversation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend = ScriptedBackend(["答案"])
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setattr("queryagent.cli.make_backend", lambda _config: backend)
+    asked = iter(["第一个问题", "exit"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(asked))
+
+    main(["chat", "--config", str(write_config(tmp_path, db=real_db(tmp_path)))])
+
+    roles = [m.role for m in backend.calls[0]]  # type: ignore[attr-defined]
+    assert roles == ["system", "user"]  # nothing folded in yet
