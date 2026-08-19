@@ -108,3 +108,44 @@ def test_format_query_result_truncation_marker() -> None:
     assert "id | name" in text
     assert "NULL" in text
     assert "truncated" in text
+
+
+def wide_result(rows: int, cell_chars: int) -> QueryResult:
+    return QueryResult(
+        columns=("a", "b"),
+        rows=tuple(("x" * cell_chars, "y" * cell_chars) for _ in range(rows)),
+        elapsed_ms=1,
+        truncated=False,
+    )
+
+
+def test_observation_is_bounded_regardless_of_cell_width() -> None:
+    # A row cap alone cannot bound the observation: 200 rows of long text
+    # columns produced ~50k tokens, which blew the context budget and got the
+    # whole result dropped by trimming.
+    text = format_query_result(wide_result(rows=200, cell_chars=200))
+    assert len(text) <= 12_000
+
+
+def test_bounded_output_says_it_was_shortened() -> None:
+    text = format_query_result(wide_result(rows=200, cell_chars=200))
+    assert "truncated" in text.lower() or "shortened" in text.lower()
+
+
+def test_small_results_are_untouched() -> None:
+    result = QueryResult(
+        columns=("id", "name"), rows=((1, "a"), (2, "b")), elapsed_ms=3, truncated=False
+    )
+    text = format_query_result(result)
+    assert "1 | a" in text and "2 | b" in text
+    assert "(2 rows, 3 ms)" in text
+
+
+def test_wide_cells_keep_the_beginning_of_each_value() -> None:
+    # The head of a value is what identifies it; the tail is usually noise.
+    result = QueryResult(
+        columns=("t",), rows=(("IMPORTANT" + "z" * 5000,),), elapsed_ms=1, truncated=False
+    )
+    text = format_query_result(result)
+    assert "IMPORTANT" in text
+    assert len(text) <= 12_000

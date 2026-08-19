@@ -10,6 +10,7 @@ are kept as session conversation so follow-ups can refer back.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import sys
 import traceback
@@ -26,7 +27,7 @@ from queryagent.context import ContextBuilder
 from queryagent.errors import ConnectorError, QueryAgentError
 from queryagent.evals.cases import EvalCase, load_cases
 from queryagent.evals.public import load_subset
-from queryagent.evals.runner import CaseResult, render_report, run_case
+from queryagent.evals.runner import CaseResult, render_report, run_case, unscoreable_case
 from queryagent.events import (
     AgentEvent,
     AnswerEvent,
@@ -99,6 +100,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     try:
         return handler(args)
+    except KeyboardInterrupt:
+        # Ctrl-C during a slow query is ordinary use, not a crash to report.
+        # Resources are released by the commands' own ExitStacks on the way out.
+        print("\n[已取消]", file=sys.stderr)
+        return 130
     except Exception as exc:  # noqa: BLE001 - top level: explain, never dump a traceback
         return _report_error(exc, verbose=getattr(args, "verbose", False))
 
@@ -197,10 +203,21 @@ class SessionRunQuestion(Protocol):
 
 
 def _make_run_question(
-    connector: Connector, config: AppConfig, max_turns: int
+    connector: Connector,
+    config: AppConfig,
+    max_turns: int,
+    stack: contextlib.ExitStack,
 ) -> SessionRunQuestion:
-    """Wire backend + context + metrics + tools for one data source."""
+    """Wire backend + context + metrics + tools for one data source.
+
+    The backend owns an HTTP client, so its release is registered on the
+    caller's stack: a public eval builds one per database, and leaking a
+    connection pool per data source is how a long run runs out of sockets.
+    """
     backend = make_backend(config.llm)
+    closer = getattr(backend, "close", None)
+    if callable(closer):
+        stack.callback(closer)
     metric_store = YamlMetricStore(config.metrics_path) if config.metrics_path else None
     builder = ContextBuilder(
         schema_text=render_schema(connector.get_schema()),
@@ -234,10 +251,11 @@ def _make_run_question(
 
 def _cmd_chat(args: argparse.Namespace) -> int:
     config = load_config(args.config)
-    connector = make_connector(config.database)
     conversation: list[Message] = []
-    try:
-        run_question = _make_run_question(connector, config, args.max_turns)
+    with contextlib.ExitStack() as stack:
+        connector = make_connector(config.database)
+        stack.callback(connector.close)
+        run_question = _make_run_question(connector, config, args.max_turns, stack)
         print(
             f"QueryAgent · {config.database.type} · {config.llm.model} "
             "(输入 exit 或 Ctrl-D 退出)"
@@ -273,8 +291,6 @@ def _cmd_chat(args: argparse.Namespace) -> int:
                 # that disambiguation, so it is what goes into the memory.
                 conversation.append(Message(role="user", content=asked))
                 conversation.append(Message(role="assistant", content=answered))
-    finally:
-        connector.close()
     return 0
 
 
@@ -322,20 +338,19 @@ def _cmd_ask(args: argparse.Namespace) -> int:
     clarifying question *is* the output); 2 = terminal error event.
     """
     config = load_config(args.config)
-    connector = make_connector(config.database)
     writer = _make_trace_writer(config, args.no_trace, args.question)
     exit_code = 0
-    try:
-        run_question = _make_run_question(connector, config, args.max_turns)
+    with contextlib.ExitStack() as stack:
+        stack.callback(_finish_trace, writer)
+        connector = make_connector(config.database)
+        stack.callback(connector.close)
+        run_question = _make_run_question(connector, config, args.max_turns, stack)
         for event in run_question(args.question):
             if writer is not None:
                 writer.write(event)
             _render_event(event, args.verbose)
             if isinstance(event, ErrorEvent):
                 exit_code = 2
-    finally:
-        _finish_trace(writer)
-        connector.close()
     return exit_code
 
 
@@ -366,7 +381,10 @@ def _cmd_eval(args: argparse.Namespace) -> int:
         results = _eval_self_built(args.cases, config, args.max_turns)
         title = "QueryAgent Eval Report — self-built cases"
     report = render_report(results, title=title, model_label=config.llm.model)
-    Path(args.output).write_text(report, encoding="utf-8")
+    output = Path(args.output)
+    # Never lose a finished (paid-for) run to a missing folder.
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(report, encoding="utf-8")
     passed = sum(1 for r in results if r.passed)
     print(f"{passed}/{len(results)} cases passed; report -> {args.output}")
     return 0 if passed == len(results) else 3
@@ -376,14 +394,13 @@ def _eval_self_built(
     cases_path: str, config: AppConfig, max_turns: int
 ) -> list[CaseResult]:
     cases = load_cases(cases_path)
-    connector = make_connector(config.database)
-    try:
-        run_question = _make_run_question(connector, config, max_turns)
+    with contextlib.ExitStack() as stack:
+        connector = make_connector(config.database)
+        stack.callback(connector.close)
+        run_question = _make_run_question(connector, config, max_turns, stack)
         return [
             run_case(case, run_question=run_question, connector=connector) for case in cases
         ]
-    finally:
-        connector.close()
 
 
 def _eval_public(
@@ -396,13 +413,28 @@ def _eval_public(
     for case in cases:
         by_db.setdefault(case.db_id, []).append(case)
     for db_id, db_cases in by_db.items():
-        connector = SQLiteConnector(path=str(db_dir / db_id / f"{db_id}.sqlite"))
         try:
-            run_question = _make_run_question(connector, config, max_turns)
-            for case in db_cases:
-                results.append(run_case(case, run_question=run_question, connector=connector))
-        finally:
-            connector.close()
+            connector = SQLiteConnector(path=str(db_dir / db_id / f"{db_id}.sqlite"))
+        except Exception as exc:  # noqa: BLE001
+            # One unusable database costs its own cases, not the whole run —
+            # a public suite is 30 paid minutes and must survive to a report.
+            reason = f"database '{db_id}' unusable: {exc}"
+            print(f"[warn] {reason}", file=sys.stderr)
+            results.extend(unscoreable_case(case, reason) for case in db_cases)
+            continue
+        try:
+            with contextlib.ExitStack() as stack:
+                stack.callback(connector.close)
+                run_question = _make_run_question(connector, config, max_turns, stack)
+                for case in db_cases:
+                    results.append(
+                        run_case(case, run_question=run_question, connector=connector)
+                    )
+        except Exception as exc:  # noqa: BLE001
+            reason = f"database '{db_id}' aborted: {type(exc).__name__}: {exc}"
+            print(f"[warn] {reason}", file=sys.stderr)
+            done = {r.case.id for r in results}
+            results.extend(unscoreable_case(c, reason) for c in db_cases if c.id not in done)
     results.sort(key=lambda r: r.case.id)
     return results
 

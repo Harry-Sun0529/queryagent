@@ -109,6 +109,14 @@ class CaseResult:
     agent_sql: str = ""  # the SQL that was scored — failure analysis needs it
 
 
+def unscoreable_case(case: EvalCase, reason: str) -> CaseResult:
+    """A case that could not be attempted at all (e.g. its database is
+    unreadable). Recorded as a failure with the reason, so one broken data
+    source costs its own cases and not the whole suite's results.
+    """
+    return _failed(case, reason)
+
+
 def run_case(
     case: EvalCase,
     *,
