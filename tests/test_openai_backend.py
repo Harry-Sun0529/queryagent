@@ -137,6 +137,78 @@ def test_missing_api_key_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
         OpenAICompatibleBackend("m", base_url="https://api.example.com")
 
 
+def flaky_backend(
+    monkeypatch: pytest.MonkeyPatch,
+    responses: list[httpx.Response | Exception],
+    calls: list[int],
+) -> OpenAICompatibleBackend:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        item = responses.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    return OpenAICompatibleBackend(
+        "m", base_url="https://api.example.com", client=client, retry_backoff_s=0
+    )
+
+
+def test_retries_on_http_500_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[int] = []
+    backend = flaky_backend(
+        monkeypatch,
+        [httpx.Response(500, text="boom"), httpx.Response(200, json=text_reply("ok"))],
+        calls,
+    )
+    response = backend.complete([Message(role="user", content="q")])
+    assert response.text == "ok"
+    assert len(calls) == 2
+
+
+def test_retries_on_transport_error_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[int] = []
+    backend = flaky_backend(
+        monkeypatch,
+        [httpx.ConnectError("reset"), httpx.Response(200, json=text_reply("ok"))],
+        calls,
+    )
+    assert backend.complete([Message(role="user", content="q")]).text == "ok"
+    assert len(calls) == 2
+
+
+def test_persistent_500_fails_after_three_attempts(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[int] = []
+    backend = flaky_backend(
+        monkeypatch, [httpx.Response(500, text="boom") for _ in range(5)], calls
+    )
+    with pytest.raises(RuntimeError, match="500"):
+        backend.complete([Message(role="user", content="q")])
+    assert len(calls) == 3  # initial + 2 retries
+
+
+def test_429_is_retryable(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[int] = []
+    backend = flaky_backend(
+        monkeypatch,
+        [httpx.Response(429, text="slow down"), httpx.Response(200, json=text_reply("ok"))],
+        calls,
+    )
+    assert backend.complete([Message(role="user", content="q")]).text == "ok"
+    assert len(calls) == 2
+
+
+def test_plain_4xx_fails_immediately(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[int] = []
+    backend = flaky_backend(monkeypatch, [httpx.Response(401, text="bad key")], calls)
+    with pytest.raises(RuntimeError, match="401"):
+        backend.complete([Message(role="user", content="q")])
+    assert len(calls) == 1  # a bad key does not get better by retrying
+
+
 def test_temperature_forwarded_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: list[dict[str, Any]] = []
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")

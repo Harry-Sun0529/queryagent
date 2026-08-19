@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from collections.abc import Sequence
 from typing import Any
 
@@ -23,6 +24,8 @@ import httpx
 from queryagent.errors import LLMParseError
 from queryagent.llm.base import Message, ModelResponse, ToolCall
 from queryagent.tools import ToolSpec
+
+_RETRYABLE_STATUS = frozenset({429}) | frozenset(range(500, 600))
 
 
 class OpenAICompatibleBackend:
@@ -36,6 +39,8 @@ class OpenAICompatibleBackend:
         max_tokens: int = 2048,
         temperature: float | None = None,
         timeout_s: float = 120.0,
+        max_retries: int = 2,
+        retry_backoff_s: float = 0.5,
         client: httpx.Client | None = None,
     ) -> None:
         """Create a backend; the API key is read from ``OPENAI_API_KEY``.
@@ -60,6 +65,8 @@ class OpenAICompatibleBackend:
         self._model = model
         self._max_tokens = max_tokens
         self._temperature = temperature
+        self._max_retries = max_retries
+        self._retry_backoff_s = retry_backoff_s
         self._url = base_url.rstrip("/") + "/chat/completions"
         self._headers = {"Authorization": f"Bearer {api_key}"}
         self._client = client or httpx.Client(timeout=timeout_s)
@@ -81,12 +88,38 @@ class OpenAICompatibleBackend:
             body["temperature"] = self._temperature
         if tools:
             body["tools"] = [_convert_tool(t) for t in tools]
-        response = self._client.post(self._url, json=body, headers=self._headers)
-        if response.status_code >= 400:
-            raise RuntimeError(
-                f"LLM request failed with HTTP {response.status_code}: {response.text[:500]}"
-            )
-        return _parse_response(response.json())
+        return _parse_response(self._post_with_retries(body))
+
+    def _post_with_retries(self, body: dict[str, Any]) -> Any:
+        """POST once, retrying transient failures (transport errors, 429, 5xx).
+
+        A plain 4xx fails immediately — a bad key or malformed request does
+        not get better by retrying. Backoff is linear and injectable so
+        tests run instantly.
+        """
+        last_error: Exception | None = None
+        for attempt in range(self._max_retries + 1):
+            if attempt:
+                time.sleep(self._retry_backoff_s * attempt)
+            try:
+                response = self._client.post(self._url, json=body, headers=self._headers)
+            except httpx.TransportError as exc:
+                last_error = exc
+                continue
+            if response.status_code in _RETRYABLE_STATUS:
+                last_error = RuntimeError(
+                    f"LLM request failed with HTTP {response.status_code}: "
+                    f"{response.text[:500]}"
+                )
+                continue
+            if response.status_code >= 400:
+                raise RuntimeError(
+                    f"LLM request failed with HTTP {response.status_code}: "
+                    f"{response.text[:500]}"
+                )
+            return response.json()
+        assert last_error is not None  # loop ran at least once to get here
+        raise last_error
 
     def close(self) -> None:
         """Close the underlying HTTP client."""
