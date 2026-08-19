@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Protocol
 
 from queryagent.agent import run_agent
-from queryagent.config import AppConfig, LLMConfig, load_config
+from queryagent.config import AppConfig, load_config
 from queryagent.connectors import make_connector
 from queryagent.connectors.base import Connector
 from queryagent.connectors.sqlite import SQLiteConnector
@@ -217,9 +217,12 @@ def _cmd_ask(args: argparse.Namespace) -> int:
 def _cmd_eval(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     if args.backend or args.model or args.base_url:
+        # replace() keeps unrelated fields (notably temperature) intact —
+        # rebuilding LLMConfig from scratch silently dropped them once.
         config = dataclasses.replace(
             config,
-            llm=LLMConfig(
+            llm=dataclasses.replace(
+                config.llm,
                 backend=args.backend or config.llm.backend,
                 model=args.model or config.llm.model,
                 base_url=args.base_url or config.llm.base_url,

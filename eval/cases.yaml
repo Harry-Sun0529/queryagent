@@ -40,7 +40,7 @@ cases:
 
   - id: simple_max_order_amount
     kind: simple
-    question: 单笔金额最大的订单是多少钱？
+    question: 单笔金额最大的订单是多少钱？（只需返回金额一个值）
     expected_sql: SELECT max(amount) FROM orders
     tags: [aggregate]
 
@@ -113,7 +113,9 @@ cases:
 
   - id: multi_channel_user_ranking
     kind: multistep
-    question: 除去内部测试渠道，各渠道分别带来了多少用户？按用户数从高到低排。
+    question: >
+      除去内部测试渠道，各渠道分别带来了多少用户？按用户数从高到低排，
+      返回渠道代码和用户数两列。
     expected_sql: >
       SELECT channel, count(*) AS user_count FROM users
       WHERE channel <> 'internal_test'
@@ -132,10 +134,12 @@ cases:
 
   - id: multi_ads_share_of_paid_amount
     kind: multistep
-    question: 已支付订单金额中，来自付费广告渠道用户的占比是多少？（用 0 到 1 的小数表示）
+    question: >
+      已支付订单金额中，来自付费广告渠道用户的占比是多少？
+      （用 0 到 1 的小数表示，保留 4 位小数）
     expected_sql: >
-      SELECT sum(CASE WHEN u.channel = 'ads' THEN o.amount ELSE 0 END) * 1.0
-             / sum(o.amount)
+      SELECT round(sum(CASE WHEN u.channel = 'ads' THEN o.amount ELSE 0 END) * 1.0
+             / sum(o.amount), 4)
       FROM orders o JOIN users u ON u.id = o.user_id
       WHERE o.status = 'paid'
     tags: [join, ratio]
@@ -149,7 +153,9 @@ cases:
 
   - id: clarify_gmv_ambiguous
     kind: clarify
-    question: 今年到现在的成交额一共是多少？
+    # 财务对账语境 = gmv caution 声明的确认条件；不带该语境的成交额问题
+    # 见 no_clarify 对照组的设计意图（caution 只在其声明的条件下触发）。
+    question: 我在做财务对账，今年到现在的成交额一共是多少？
     expected_metrics: [gmv]
     tags: [clarify]
 

@@ -99,3 +99,22 @@
   demo 口径文件）。结果：首次 10/30（33%），自修正后 14/30（47%），
   平均工具调用 2.83（陌生 schema 下的探索行为可见）。一题因金标 SQL
   超 30s 超时计为失败（保守）。原始报告存 eval/results/。
+
+## 2026-08-19 · MVP 迭代 1（按 mattpocock-skills-zh-CN 流程）
+
+- **流程变更**：应用户要求安装 vinvcn/mattpocock-skills-zh-CN（29 个，
+  英文版备份于 ~/.claude/skills-backup-en-20260819），本轮按
+  implement → tdd（预先声明 seams）→ code-review（双轴）执行；
+  spec 在 docs/specs/mvp-iteration-1.md。
+- **交付**：多轮会话记忆（conversation seam，裁剪优先级：老会话先于
+  本轮工具交换、成对删）；`queryagent ask` 一发命令；OpenAI 兼容后端
+  瞬态重试（429/5xx/传输错误，普通 4xx 立即失败）；DeepSeek 改为默认
+  后端；ADR 001-004 + CONTEXT.md。真机验证：ask 单发正确引用口径；
+  chat 跟进题"那按渠道拆分呢？"正确延续上一轮的月份与追问确认的口径。
+- **review 双轴发现**：eval `--backend` 覆盖曾重建 LLMConfig 丢掉
+  temperature（真 bug，已修——这意味着此前基线其实跑在默认温度）；
+  死代码 BLOCKED 处理器移除；成对裁剪抽出共享 helper。
+- **重要认知（写进 README）**：deepseek-chat 在 temperature=0 下 API
+  层面仍非逐比特确定（不支持 seed），单次跑分是噪声。自建集借机把
+  三个输出契约松散的用例钉死（精度 4 位小数/两列/单值），gmv 追问题
+  改为命中 caution 声明的财务对账语境；数字改为 3 连跑区间报告。
