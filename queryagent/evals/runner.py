@@ -106,6 +106,7 @@ class CaseResult:
     failure_reason: str = ""
     usage: TokenTotals = TokenTotals()
     model: str = ""
+    agent_sql: str = ""  # the SQL that was scored — failure analysis needs it
 
 
 def run_case(
@@ -200,6 +201,7 @@ def run_case(
         failure_reason="" if passed else "result sets differ",
         usage=summary.usage,
         model=summary.model,
+        agent_sql=next(iter(matched), successful[-1]),
     )
 
 
@@ -258,6 +260,7 @@ class EvalStats:
     avg_tool_calls: float
     usage: TokenTotals = TokenTotals()
     model: str = ""
+    agent_sql: str = ""  # the SQL that was scored — failure analysis needs it
 
 
 def aggregate(results: Sequence[CaseResult]) -> EvalStats:
@@ -319,6 +322,18 @@ def render_report(results: Sequence[CaseResult], *, title: str, model_label: str
             f"| {_mark(result.first_attempt_passed)} | {result.retries} "
             f"| {result.tool_calls} | {result.failure_reason} |"
         )
+    failures = [r for r in results if not r.passed and r.agent_sql]
+    if failures:
+        lines += ["", "## Failing cases — SQL comparison", ""]
+        for result in failures:
+            lines += [
+                f"### {result.case.id}",
+                "",
+                f"- question: {result.case.question.splitlines()[0]}",
+                f"- expected: `{' '.join(result.case.expected_sql.split())}`",
+                f"- agent: `{' '.join(result.agent_sql.split())}`",
+                "",
+            ]
     lines.append("")
     return "\n".join(lines)
 
