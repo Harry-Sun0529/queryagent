@@ -167,7 +167,18 @@ def run_case(
     try:
         expected = connector.execute(case.expected_sql, timeout_s=timeout_s, max_rows=max_rows)
     except QueryError as exc:
-        return _failed(case, f"reference expected_sql failed (case bug?): {exc.original_error}")
+        # Unscoreable, but the tokens were still spent — keep them, or the
+        # suite's cost and latency totals silently under-count.
+        return _failed(
+            case,
+            f"reference expected_sql failed (case bug?): {exc.original_error}",
+            retries=retries,
+            tool_calls=summary.tool_calls,
+            clarify_correct=clarify_correct,
+            metrics_mentioned=metrics_mentioned,
+            usage=summary.usage,
+            model=summary.model,
+        )
 
     # The case passes when ANY successful SQL reproduces the expected result:
     # agents often run verification queries after the answer-bearing one, so

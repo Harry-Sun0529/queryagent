@@ -315,3 +315,30 @@ def test_no_reasoning_field_when_absent(monkeypatch: pytest.MonkeyPatch) -> None
             ToolCall(id="c1", name="t", arguments={}),))]
     )
     assert "reasoning_content" not in captured[0]["messages"][0]
+
+
+def test_tool_calls_without_ids_get_usable_distinct_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # vLLM and some Ollama builds omit the id. An empty id breaks the
+    # tool_call/tool_result pairing both providers require, and collapses
+    # two calls into one when the eval runner pairs observations by id.
+    reply = {
+        "choices": [
+            {
+                "message": {
+                    "tool_calls": [
+                        {"function": {"name": "get_schema", "arguments": "{}"}},
+                        {"function": {"name": "execute_sql",
+                                      "arguments": '{"sql": "SELECT 1"}'}},
+                    ]
+                },
+                "finish_reason": "tool_calls",
+            }
+        ]
+    }
+    calls = make_backend(monkeypatch, reply).complete(
+        [Message(role="user", content="q")]
+    ).tool_calls
+    assert all(c.id for c in calls)
+    assert len({c.id for c in calls}) == 2

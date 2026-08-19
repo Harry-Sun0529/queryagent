@@ -14,6 +14,7 @@ undercounts CJK (closer to one token per char), which makes trimming kick in
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from datetime import date
 
@@ -71,6 +72,23 @@ about competing definitions. Before running any SQL, decide:
 def estimate_tokens(text: str) -> int:
     """Crude, dependency-free token estimate (see module docstring)."""
     return max(1, len(text) // 4)
+
+
+def message_tokens(message: Message) -> int:
+    """Estimate one message's cost, payloads included.
+
+    An assistant turn's weight is usually its tool_calls — the SQL — not its
+    short thinking text, and a tool result's is its rows. Counting only
+    ``content`` under-counts assistant turns badly enough that the budget
+    never fires on long tool-heavy conversations.
+    """
+    total = estimate_tokens(message.content)
+    for call in message.tool_calls:
+        total += estimate_tokens(call.name)
+        total += estimate_tokens(json.dumps(call.arguments, ensure_ascii=False))
+    if message.reasoning:
+        total += estimate_tokens(message.reasoning)
+    return total
 
 
 class ContextBuilder:
@@ -144,9 +162,7 @@ class ContextBuilder:
         current = list(history)
 
         def over_budget() -> bool:
-            total = sum(
-                estimate_tokens(m.content) for m in (*fixed, *past, *current)
-            )
+            total = sum(message_tokens(m) for m in (*fixed, *past, *current))
             return total > self._token_budget
 
         while over_budget() and past:

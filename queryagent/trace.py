@@ -123,15 +123,34 @@ def read_trace(path: str | Path) -> list[AgentEvent]:
 
 
 def new_trace_path(directory: str | Path, question: str) -> Path:
-    """Build a sortable, filesystem-safe trace filename for one question."""
+    """Build a sortable, filesystem-safe trace filename for one question.
+
+    The timestamp has second resolution, so asking the same question twice
+    within a second would otherwise reuse the name and overwrite the earlier
+    trace; a numeric suffix is appended until the name is free.
+    """
     stamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
     slug = _SLUG_STRIP.sub("-", question.strip())[:40].strip("-")
-    name = f"{stamp}-{slug}.jsonl" if slug else f"{stamp}.jsonl"
-    return Path(directory) / name
+    stem = f"{stamp}-{slug}" if slug else stamp
+    directory = Path(directory)
+    candidate = directory / f"{stem}.jsonl"
+    suffix = 1
+    while candidate.exists():
+        candidate = directory / f"{stem}-{suffix}.jsonl"
+        suffix += 1
+    return candidate
 
 
-def prune_traces(directory: str | Path, keep: int = DEFAULT_KEEP) -> None:
-    """Delete all but the ``keep`` newest traces; ignores non-trace files."""
+def prune_traces(directory: str | Path, keep: int = DEFAULT_KEEP, reserve: int = 0) -> None:
+    """Delete all but the ``keep`` newest traces; ignores non-trace files.
+
+    Args:
+        directory: Where traces live.
+        keep: How many traces may remain afterwards.
+        reserve: Slots to leave free for traces about to be written, so the
+            cap holds once they land rather than being exceeded by one.
+    """
     files = sorted(Path(directory).glob("*.jsonl"))
-    for path in files[: max(len(files) - keep, 0)]:
+    excess = len(files) - max(keep - reserve, 0)
+    for path in files[: max(excess, 0)]:
         path.unlink(missing_ok=True)
