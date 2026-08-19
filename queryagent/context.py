@@ -101,16 +101,28 @@ class ContextBuilder:
         self._metric_store = metric_store
         self._metrics_top_k = metrics_top_k
 
-    def build(self, question: str, history: Sequence[Message]) -> list[Message]:
+    def build(
+        self,
+        question: str,
+        history: Sequence[Message],
+        *,
+        conversation: Sequence[Message] = (),
+    ) -> list[Message]:
         """Assemble the full message list for one model call.
 
         Args:
             question: The user's natural-language question.
-            history: Accumulated assistant/tool messages from earlier turns.
+            history: Tool-call/observation messages from *this* run's earlier
+                turns.
+            conversation: Finished prior turns of the chat session, as plain
+                user/assistant text pairs (no tool blocks).
 
         Returns:
-            ``[system, user question, *history]``, history-trimmed to the
-            token budget (oldest turns dropped first, in pairs).
+            ``[system, *conversation, user question, *history]``, trimmed to
+            the token budget. Conversation is trimmed before current-run
+            history — this run's tool exchanges are worth more than old chat
+            — and both are dropped oldest-first, in pairs, so tool_result
+            and assistant messages never end up orphaned.
         """
         system = SYSTEM_PROMPT_TEMPLATE.format(
             dialect=self._dialect,
@@ -122,12 +134,21 @@ class ContextBuilder:
             system += _METRICS_HEADER + "".join(_render_metric(m) for m in matched)
             if any(metric.caution for metric in matched):
                 system += _CLARIFY_GUIDANCE
-        messages = [
-            Message(role="system", content=system),
-            Message(role="user", content=question),
-            *history,
-        ]
-        return self._trim(messages)
+        fixed = [Message(role="system", content=system), Message(role="user", content=question)]
+        past = list(conversation)
+        current = list(history)
+
+        def over_budget() -> bool:
+            total = sum(
+                estimate_tokens(m.content) for m in (*fixed, *past, *current)
+            )
+            return total > self._token_budget
+
+        while over_budget() and past:
+            _drop_oldest_pair(past, follower_role="assistant")
+        while over_budget() and current:
+            _drop_oldest_pair(current, follower_role="tool")
+        return [fixed[0], *past, fixed[1], *current]
 
     def match_metrics(self, question: str) -> list[Metric]:
         """Metrics matched to the question (empty without a store)."""
@@ -135,19 +156,18 @@ class ContextBuilder:
             return []
         return self._metric_store.match(question, top_k=self._metrics_top_k)
 
-    def _trim(self, messages: list[Message]) -> list[Message]:
-        """Drop oldest history turns (in pairs) until under the budget."""
 
-        def total() -> int:
-            return sum(estimate_tokens(m.content) for m in messages)
 
-        # messages[0] is the system prompt, messages[1] the question; both
-        # are always kept — only history (index >= 2) is trimmable.
-        while total() > self._token_budget and len(messages) > 2:
-            del messages[2]
-            if len(messages) > 2 and messages[2].role == "tool":
-                del messages[2]  # keep tool results paired with their call
-        return messages
+def _drop_oldest_pair(messages: list[Message], *, follower_role: str) -> None:
+    """Drop the oldest message, taking its paired follower with it.
+
+    Conversation pairs are user+assistant; current-run pairs are
+    assistant+tool. Dropping a leader without its follower would orphan an
+    assistant reply or a tool_result block (provider APIs reject the latter).
+    """
+    messages.pop(0)
+    if messages and messages[0].role == follower_role:
+        messages.pop(0)
 
 
 def _render_metric(metric: Metric) -> str:

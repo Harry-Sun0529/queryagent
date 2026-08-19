@@ -112,6 +112,40 @@ def test_budget_trims_oldest_history_in_pairs() -> None:
     assert len(messages) < 2 + len(history)
 
 
+def test_conversation_precedes_question() -> None:
+    conversation = [
+        Message(role="user", content="上个月新增用户？"),
+        Message(role="assistant", content="1234 人（注册口径）"),
+    ]
+    messages = make_builder().build("那按渠道拆分呢？", history=[], conversation=conversation)
+    assert [m.role for m in messages[:4]] == ["system", "user", "assistant", "user"]
+    assert messages[1].content == "上个月新增用户？"
+    assert messages[3].content == "那按渠道拆分呢？"
+
+
+def test_conversation_trimmed_before_current_history_in_pairs() -> None:
+    builder = ContextBuilder(
+        schema_text="TABLE t\n  id INT", dialect="sqlite", token_budget=500
+    )
+    conversation = []
+    for i in range(4):
+        conversation.append(Message(role="user", content=f"old q{i} " + "x" * 300))
+        conversation.append(Message(role="assistant", content=f"old a{i} " + "y" * 300))
+    history = [
+        Message(role="assistant", content="thinking now"),
+        Message(role="tool", content="rows now", tool_call_id="c1"),
+    ]
+    messages = builder.build("q", history=history, conversation=conversation)
+    contents = " ".join(m.content for m in messages)
+    assert "rows now" in contents  # current-run history is worth more: kept
+    assert "old q0" not in contents  # oldest conversation dropped first
+    # dropped in pairs: any surviving assistant reply keeps its user question
+    roles = [m.role for m in messages]
+    for i, role in enumerate(roles):
+        if role == "assistant" and messages[i].tool_calls == () and i > 0:
+            assert roles[i - 1] == "user"
+
+
 def test_budget_generous_enough_keeps_everything() -> None:
     builder = ContextBuilder(schema_text="TABLE t\n  id INT", dialect="sqlite")
     history = [

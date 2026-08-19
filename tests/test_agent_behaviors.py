@@ -305,3 +305,27 @@ def test_empty_response_treated_as_parse_failure(empty_text: str) -> None:
     assert isinstance(events[0], RetryEvent)
     assert isinstance(events[-1], AnswerEvent)
     assert events[-1].text == "recovered on the retry"
+
+
+def test_conversation_is_forwarded_to_backend_before_question() -> None:
+    from queryagent.llm.base import Message
+
+    backend = FakeLLMBackend([answer("done")])
+    conversation = [
+        Message(role="user", content="earlier question"),
+        Message(role="assistant", content="earlier answer"),
+    ]
+    events = list(
+        run_agent(
+            "follow-up",
+            backend=backend,
+            registry=ToolRegistry([]),
+            context_builder=make_builder(),
+            conversation=conversation,
+        )
+    )
+    assert isinstance(events[-1], AnswerEvent)
+    contents = [message.content for message in backend.calls[0]]
+    assert "earlier question" in contents
+    assert "earlier answer" in contents
+    assert contents.index("earlier answer") < contents.index("follow-up")
