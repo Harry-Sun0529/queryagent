@@ -26,7 +26,7 @@ from queryagent.connectors.sqlite import SQLiteConnector
 from queryagent.context import ContextBuilder
 from queryagent.errors import ConnectorError, QueryAgentError
 from queryagent.evals.cases import EvalCase, load_cases
-from queryagent.evals.checkpoint import ResultLog
+from queryagent.evals.checkpoint import ResultLog, ResumeMismatch
 from queryagent.evals.public import load_subset
 from queryagent.evals.runner import CaseResult, render_report, run_case, unscoreable_case
 from queryagent.events import (
@@ -425,7 +425,21 @@ def _cmd_eval(args: argparse.Namespace) -> int:
                 base_url=args.base_url or config.llm.base_url,
             ),
         )
-    log = ResultLog(Path(args.output).with_suffix(".partial.jsonl"), resume=args.resume)
+    source = args.public or args.cases
+    signature = (
+        f"{config.llm.backend}/{config.llm.model}"
+        f" · {Path(source).name} · turns={args.max_turns}"
+    )
+    try:
+        log = ResultLog(
+            Path(args.output).with_suffix(".partial.jsonl"),
+            resume=args.resume,
+            signature=signature,
+        )
+    except ResumeMismatch as exc:
+        print(f"[错误] 无法续跑：{exc}", file=sys.stderr)
+        print("  → 删除该 .partial.jsonl 重新开始，或改回原配置。", file=sys.stderr)
+        return 2
     if args.public:
         if not args.db_dir:
             print("--public requires --db-dir", file=sys.stderr)

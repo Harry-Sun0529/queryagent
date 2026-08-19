@@ -45,23 +45,41 @@ def _rebuild(cls: type, payload: dict[str, Any]) -> Any:
     return cls(**kwargs)
 
 
+class ResumeMismatch(Exception):
+    """The log on disk came from a differently configured run."""
+
+
 class ResultLog:
     """Append-only log of finished cases, next to the report.
 
-    ``resume`` decides whether an existing log is reused or replaced: a fresh
-    run must not silently inherit results from an older, differently
-    configured one.
+    The first line records the run's signature (model, cases source, turn
+    limit). ``--resume`` refuses a log whose signature differs: mixing two
+    models' results into one report produces a number nobody can explain,
+    which is worse than having no number. Without ``resume`` an existing log
+    is discarded rather than silently inherited.
     """
 
-    def __init__(self, path: Path, *, resume: bool = False) -> None:
+    def __init__(
+        self, path: Path, *, resume: bool = False, signature: str = ""
+    ) -> None:
         self.path = path
+        self.signature = signature
         self._done: dict[str, CaseResult] = {}
-        if resume and path.exists():
-            for result in _read(path):
-                self._done[result.case.id] = result
-        elif path.exists():
-            path.unlink()
         self._handle: TextIO | None = None
+        if not path.exists():
+            return
+        if not resume:
+            path.unlink()
+            return
+        previous = _read_signature(path)
+        # An empty signature means the caller is inspecting the log, not
+        # continuing a run; only a real run declares one and can conflict.
+        if signature and previous is not None and previous != signature:
+            raise ResumeMismatch(
+                f"{path} 来自不同的运行配置（之前：{previous}；现在：{signature}）"
+            )
+        for result in _read(path):
+            self._done[result.case.id] = result
 
     def completed(self) -> dict[str, CaseResult]:
         """Cases already scored in a previous run, by case id."""
@@ -71,7 +89,13 @@ class ResultLog:
         """Persist one finished case immediately."""
         if self._handle is None:
             self.path.parent.mkdir(parents=True, exist_ok=True)
+            fresh = not self.path.exists()
             self._handle = self.path.open("a", encoding="utf-8")
+            if fresh:
+                json.dump(
+                    {"_signature": self.signature}, self._handle, ensure_ascii=False
+                )
+                self._handle.write("\n")
         json.dump(result_to_dict(result), self._handle, ensure_ascii=False)
         self._handle.write("\n")
         self._handle.flush()  # the point is surviving an abrupt end
@@ -83,11 +107,29 @@ class ResultLog:
             self._handle = None
 
 
+def _read_signature(path: Path) -> str | None:
+    """The signature line written when the log was created, if present."""
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(payload, dict) and "_signature" in payload:
+            return str(payload["_signature"])
+        return None
+    return None
+
+
 def _read(path: Path) -> Iterator[CaseResult]:
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         try:
-            yield result_from_dict(json.loads(line))
+            payload = json.loads(line)
+            if isinstance(payload, dict) and "_signature" in payload:
+                continue
+            yield result_from_dict(payload)
         except (json.JSONDecodeError, ValueError, TypeError, KeyError):
             continue  # a partial tail line is expected after a kill
