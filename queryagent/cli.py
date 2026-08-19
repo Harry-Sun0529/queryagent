@@ -47,6 +47,7 @@ from queryagent.tools import ToolRegistry, make_clarify_tool, make_default_tools
 from queryagent.trace import (
     TRACE_DIR_NAME,
     TraceWriter,
+    count_trace_lines,
     new_trace_path,
     prune_traces,
     read_trace,
@@ -185,8 +186,17 @@ def _finish_trace(writer: TraceWriter | None) -> None:
 
 def _cmd_replay(args: argparse.Namespace) -> int:
     """Re-render a recorded trace (always full detail — that is the point)."""
-    for event in read_trace(args.path):
+    events = read_trace(args.path)
+    for event in events:
         _render_event(event, verbose=True)
+    skipped = count_trace_lines(args.path) - len(events)
+    if skipped > 0:
+        # Never hide corruption: a partial tail usually means the run was
+        # killed, which is itself part of what the replay should tell you.
+        print(
+            f"[warn] {skipped} 行无法解析（通常是进程中断留下的残缺尾行），已跳过",
+            file=sys.stderr,
+        )
     return 0
 
 

@@ -293,3 +293,17 @@ def test_interrupt_exits_cleanly(
     assert code == 130  # conventional exit code for SIGINT
     assert "Traceback" not in err
     assert backend.closed, "resources are released on interrupt too"
+
+
+def test_replay_reports_skipped_lines(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    trace = tmp_path / "t.jsonl"
+    trace.write_text(
+        '{"type": "ThinkEvent", "text": "kept"}\n{"broken": \n',
+        encoding="utf-8",
+    )
+    assert main(["replay", str(trace)]) == 0
+    captured = capsys.readouterr()
+    assert "kept" in captured.out
+    assert "1" in captured.err  # the unreadable line is reported, not hidden

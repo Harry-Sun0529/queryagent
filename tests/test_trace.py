@@ -125,3 +125,31 @@ def test_two_traces_in_the_same_second_do_not_collide(tmp_path: Path) -> None:
     TraceWriter(first).write(AnswerEvent(text="a"))
     second = new_trace_path(tmp_path, "同一个问题")
     assert second != first
+
+
+def test_crash_truncated_tail_does_not_lose_the_whole_trace(tmp_path: Path) -> None:
+    # A process killed mid-write leaves a partial last line — which is exactly
+    # the run you most want to replay.
+    path = tmp_path / "t.jsonl"
+    writer = TraceWriter(path)
+    writer.write(ThinkEvent(text="第一步"))
+    writer.write(ThinkEvent(text="第二步"))
+    writer.close()
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write('{"type": "AnswerEvent", "text": "被截断')
+
+    events = read_trace(path)
+    assert events == [ThinkEvent(text="第一步"), ThinkEvent(text="第二步")]
+
+
+def test_unknown_event_type_skips_only_that_line(tmp_path: Path) -> None:
+    # A trace written by a newer version must stay readable by an older one.
+    path = tmp_path / "t.jsonl"
+    path.write_text(
+        '{"type": "ThinkEvent", "text": "before"}\n'
+        '{"type": "FutureEvent", "x": 1}\n'
+        '{"type": "AnswerEvent", "text": "after"}\n',
+        encoding="utf-8",
+    )
+    events = read_trace(path)
+    assert events == [ThinkEvent(text="before"), AnswerEvent(text="after")]
