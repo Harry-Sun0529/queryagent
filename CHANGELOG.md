@@ -6,6 +6,27 @@ versioning: [SemVer](https://semver.org/). CLI arguments and config structure
 enter the semver contract at v0.2.0; `metrics.yaml` required fields are
 frozen from v0.1.1 (spec §四).
 
+## [0.2.0] — 2026-08-19
+
+### Added
+
+- **Multi-turn chat**: follow-up questions see the session's earlier turns
+  (`run_agent(..., conversation=)`); the context budget trims old
+  conversation before the current run's tool exchanges, always in pairs.
+- **`queryagent ask`** — one-shot, scriptable question (exit 0 on
+  answer/clarify, 2 on a terminal error).
+- **Transient-failure retry** in the OpenAI-compatible backend: transport
+  errors, HTTP 429 and 5xx retried twice with linear backoff; plain 4xx
+  fails immediately.
+- Decision records `docs/adr/001–004`, repo-level `CONTEXT.md` (domain
+  language + seam map), `docs/specs/` for in-flight work.
+
+### Changed
+
+- Example configs now default to DeepSeek via the OpenAI-compatible backend
+  (the Anthropic block stays as a commented alternative); README quickstart
+  leads with `OPENAI_API_KEY`.
+
 ## [0.1.0] — 2026-08-17
 
 First public release.
