@@ -167,69 +167,63 @@ float tolerance; five metrics including **clarify-behaviour accuracy**
 public benchmark serves as an external anchor, with a hard rule that prompts
 are never tuned against it ([eval/README.md](eval/README.md)).
 
-### Results (2026-08-19, DeepSeek v4, temperature 0)
+### Results (2026-08-20, `deepseek-v4-flash`, temperature 0)
 
-Self-built numbers are **ranges over 3 consecutive runs** — DeepSeek exposes
-no sampling seed, so single-run benchmark numbers on such APIs are noise.
+**Self-built suite** (20 cases, ranges over 3 runs — DeepSeek exposes no
+sampling seed, so single-run numbers are noise):
 
 | metric | v4-flash (weak) | v4-pro (strong) |
 |---|---|---|
-| first-execution pass rate | 11–13/18 (61–72%) | **14–15/18 (78–83%)** |
-| pass rate after self-repair | **17–18/18 (94–100%)** | 16–18/18 (89–100%) |
-| metric citation | 2–3/4 | **3–4/4** |
+| first-execution pass rate | 11–14/18 | **14–15/18** |
+| pass rate after self-repair | **17–18/18 (94–100%)** | 16–18/18 |
 | clarify-behaviour accuracy | **4/4 (all runs)** | **4/4 (all runs)** |
-| tokens per case | 3,122–3,582 | 2,987–3,094 |
-| prompt cache hit rate | 88–90% | 86–89% |
-| latency per case | 3.9–4.3s | 6.1–6.5s |
 | cost per case (upper bound) | $0.0007–0.0008 | $0.0019–0.0020 |
 
-**The strong model wins at getting it right first, not at getting it right.**
-After the self-repair loop the two converge — the architecture buys a weak
-model the same final accuracy at roughly a third of the cost, paying in one
-extra tool call. Clarify behaviour is identical (4/4 both, all runs): it is
-produced by the prompt protocol, not by model strength. Full breakdown:
-[dual-model-analysis.md](eval/results/dual-model-analysis.md).
+The strong model wins at getting it right *first*; after the self-repair
+loop the two converge, so the architecture buys a weak model the same final
+accuracy at about a third of the cost. Clarify behaviour is identical —
+it comes from the prompt protocol, not model strength
+([dual-model-analysis.md](eval/results/dual-model-analysis.md)).
 
-### Public benchmark: dev/test split (BIRD mini-dev)
+**Public benchmark** (BIRD mini-dev, dev/test split — [ADR-004](docs/adr/004-public-subset-external-anchor.md)):
 
-Two fixed-seed 30-case samples, both committed, provably disjoint
-([ADR-004](docs/adr/004-public-subset-external-anchor.md)):
-
-| | before | after | delta |
-|---|---|---|---|
-| **dev** (seed 7 — analysed, drives improvement) | 10/30 (33%) | **14/30 (47%)** | +14pp |
-| **test** (seed 42 — sealed, run once per release) | 14/30 (47%)¹ | **16/30 (53%)** | +6pp |
-
-¹ the v0.1.0 acceptance run.
-
-**The dev gain generalised at under half strength.** That gap is the
-overfitting measurement, and it is the entire reason for the split.
+| | dev (100 cases, analysed) | test (200 cases, sealed) |
+|---|---|---|
+| first-execution pass rate | 39% | 32% |
+| pass rate after self-repair | **49%** | **48%** |
+| tokens / latency / cost per case | 9,612 / 12.4s / $0.0022 | 8,699 / 11.8s / $0.0019 |
 
 Honest notes, in the order they matter:
 
-- **The two test numbers are not a controlled comparison.** v0.1.0 ran the
-  `deepseek-chat` alias (non-thinking mode) on older code; v0.3.0 runs
-  v4-flash in thinking mode with every change since. The clean before/after
-  exists only on dev — test is an acceptance number, by design, because the
-  discipline says it runs once.
-- **What the improvement actually was**: dev failure analysis showed **half
-  of all failures were shape, not substance** — the agent computed the right
-  value but returned extra context columns, or omitted DISTINCT. One general
-  prompt rule ("select exactly what was asked; put context in the answer
-  text") fixed that class. A further quarter of the failures are gold-SQL
-  ambiguities that should not be fixed (e.g. "how many patients" whose gold
-  counts join rows, not patients). Details:
-  [dev-failure-analysis.md](eval/results/dev-failure-analysis.md).
-- **The self-built set is iterated on — that is its job.** Its history
-  (metric-matching noise, unstable clarify trigger, brittle case wording) is
-  in git.
-- **A bug the eval caught that unit tests could not**: DeepSeek v4 requires
-  `reasoning_content` echoed back, so turn 2 of every tool-using
-  conversation returned HTTP 400. 210 unit tests were green and single-turn
-  `ask` worked; only the multi-turn benchmark exposed it.
-- Self-built denominators: 18 result-checked cases; the 2 ask-clarify cases
-  score behaviour, not result sets. Costs are peak-rate upper bounds
-  (off-peak is half). Raw reports: [eval/results/](eval/results/).
+- **A previous claim of ours did not survive a bigger sample.** At 30 cases
+  per set we measured a dev gain of +14pp against a test gain of +6pp and
+  called the gap an overfitting measurement. At 100/200 cases the two sets
+  agree within **1pp** — the earlier gap is best explained as noise, which
+  is exactly what the power analysis predicted (±25pp for a difference at
+  n=30). The samples were expanded *because* of that analysis, and the
+  result corrected us.
+- **What the numbers can and cannot support.** A before/after comparison on
+  the same questions is paired and needs 57–114 cases to detect a real
+  effect — 200 covers it. A cross-sample comparison (dev gain vs test gain)
+  needs ~1089 per group for 6pp, which is out of reach here; such
+  comparisons are reported as directional only.
+- **The sealed set stays sealed.** The governing rule is *never change the
+  system in response to test results* — not "run it once". It ran once this
+  release, on 200 questions freshly sampled from those never used before.
+- **Where the remaining failures are** (from dev analysis at the previous
+  size, still the operative picture): half were shape rather than substance —
+  the right value returned with extra columns — and one general prompt rule
+  fixed that class; a quarter are gold-SQL ambiguities that should not be
+  fixed; a quarter are genuine capability gaps
+  ([dev-failure-analysis.md](eval/results/dev-failure-analysis.md)).
+- **Version-over-version numbers are decomposed, not hand-waved.** v0.2.0
+  reported 83% first-execution and v0.3.0 reported 61–72%; a controlled
+  three-cell run showed the code was a +5pp *improvement* and the entire
+  drop came from enabling the model's thinking mode, which lowers
+  first-attempt accuracy without lowering final accuracy
+  ([version-decomposition.md](eval/results/version-decomposition.md)).
+- Costs are peak-rate upper bounds (off-peak is half). Raw reports:
+  [eval/results/](eval/results/).
 
 ## Architecture
 
