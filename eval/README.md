@@ -6,19 +6,23 @@ Two tracks (spec §三 v0.2.0), both runnable with one command:
    actually adds — metric-aware SQL, self-repair, clarify behaviour. Used for
    A/B runs with/without `metrics.yaml`.
 2. **Public benchmark, split in two** (`public/`, ADR-004): a **dev** subset
-   (seed 7) that failure analysis may use freely, and a **sealed test**
-   subset (seed 42) that runs once per release and is never analysed. The
-   gap between dev and test improvement is the overfitting measurement.
+   of 100 cases (seed 11) that failure analysis may use freely, and a
+   **sealed test** subset of 200 cases (seed 2026). 198 questions are held
+   in reserve, because exhausting the pool would be irreversible.
 
 ## Discipline (non-negotiable)
 
-- Prompts and matching algorithms are **never tuned against the test
-  subset** (seed 42). It runs once per version acceptance and the README
-  reports it as-is, including failures. The dev subset (seed 7) exists
-  precisely so improvement work has a legitimate surface.
-- The sampling seed is fixed (`SAMPLE_SEED = 42` in
-  `queryagent/evals/public.py`) and the sampled `subset.json` is committed,
-  so anyone can reproduce both the subset and the numbers.
+- **Never change the system in response to test results.** That is the rule;
+  "run it once" was only ever a proxy for it. Re-running unchanged code
+  under a different configuration leaks nothing; editing a prompt after
+  seeing a test score does, however few times it is run. The dev subset
+  exists so improvement work has a legitimate surface.
+- Both samples are committed with their seeds, so anyone can reproduce the
+  split and the numbers.
+- **What the numbers support**: a before/after comparison on the same
+  questions is paired and needs 57–114 cases; a cross-sample comparison
+  (dev gain vs test gain) needs ~1089 per group to resolve 6pp and is out of
+  reach here, so such comparisons are reported as directional only.
 - Development iteration runs on DeepSeek (`--backend openai_compatible`);
   final report numbers additionally run one strong model. Both sets of
   numbers are published side by side.
