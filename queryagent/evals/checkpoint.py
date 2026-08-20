@@ -18,6 +18,7 @@ from typing import Any, TextIO
 from queryagent.evals.cases import EvalCase
 from queryagent.evals.cost import TokenTotals
 from queryagent.evals.runner import CaseResult
+from queryagent.serde import rebuild_dataclass
 
 
 def result_to_dict(result: CaseResult) -> dict[str, Any]:
@@ -28,21 +29,9 @@ def result_to_dict(result: CaseResult) -> dict[str, Any]:
 def result_from_dict(data: dict[str, Any]) -> CaseResult:
     """Rebuild a scored case, restoring tuple-typed fields JSON flattened."""
     payload = dict(data)
-    case = _rebuild(EvalCase, payload.pop("case", {}))
-    usage = _rebuild(TokenTotals, payload.pop("usage", {}))
-    return _rebuild(CaseResult, {**payload, "case": case, "usage": usage})
-
-
-def _rebuild(cls: type, payload: dict[str, Any]) -> Any:
-    kwargs: dict[str, Any] = {}
-    for field in dataclasses.fields(cls):
-        if field.name not in payload:
-            continue
-        value = payload[field.name]
-        if isinstance(value, list) and "tuple" in str(field.type):
-            value = tuple(value)
-        kwargs[field.name] = value
-    return cls(**kwargs)
+    case = rebuild_dataclass(EvalCase, payload.pop("case", {}))
+    usage = rebuild_dataclass(TokenTotals, payload.pop("usage", {}))
+    return rebuild_dataclass(CaseResult, {**payload, "case": case, "usage": usage})
 
 
 class ResumeMismatch(Exception):

@@ -32,6 +32,7 @@ from queryagent.events import (
     ToolCallEvent,
     UsageEvent,
 )
+from queryagent.serde import rebuild_dataclass
 
 TRACE_DIR_NAME = ".queryagent/traces"
 DEFAULT_KEEP = 50
@@ -74,15 +75,7 @@ def event_from_dict(data: Mapping[str, Any]) -> AgentEvent:
     event_type = _EVENT_TYPES.get(name)
     if event_type is None:
         raise ValueError(f"unknown event type in trace: {name!r}")
-    kwargs: dict[str, Any] = {}
-    for field in dataclasses.fields(event_type):
-        if field.name not in payload:
-            continue
-        value = payload[field.name]
-        if isinstance(value, list) and "tuple" in str(field.type):
-            value = tuple(value)
-        kwargs[field.name] = value
-    return event_type(**kwargs)
+    return rebuild_dataclass(event_type, payload)
 
 
 class TraceWriter:

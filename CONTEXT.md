@@ -18,7 +18,14 @@ specs for in-flight work in `docs/specs/`.
 - **Self-repair** — failed SQL comes back as an error observation the model
   reads and fixes; capped by `max_retries`.
 - **Case / anchor** — eval cases are self-built (iterated on) or public
-  anchor (BIRD subset, never tuned against — ADR-004).
+  anchor (BIRD, split into an analysable dev set and a sealed test set —
+  ADR-004).
+- **Unmeasured** — a case the provider could not be reached for. It is not a
+  wrong answer: it leaves the pass-rate denominators, is never written to the
+  resume log, and five consecutive ones abort the run.
+- **Trace** — one run's event stream persisted as JSONL, replayable
+  (ADR-005). **Checkpoint** — the eval's per-case result log, which
+  `--resume` reuses when the run signature matches.
 
 ## Seam map (where the interfaces are)
 
@@ -27,13 +34,21 @@ specs for in-flight work in `docs/specs/`.
 | LLM | `LLMBackend.complete(messages, tools) -> ModelResponse` | Anthropic, OpenAI-compatible (DeepSeek etc.), test fake |
 | Data source | `Connector.get_schema/execute/close` (+ `dialect`) | MySQL, SQLite, ClickHouse |
 | Metrics | `MetricStore.match/get` | YAML store (embedding impl reserved) |
-| Agent output | `Iterator[AgentEvent]` from `run_agent` | chat CLI, ask CLI, eval runner |
+| Agent output | `Iterator[AgentEvent]` from `run_agent` | chat CLI, ask CLI, eval runner, trace writer |
+| Persisted records | `serde.rebuild_dataclass` | trace events, eval checkpoints |
 | Tool dispatch | `ToolRegistry.validate_and_dispatch -> Observation` | get_schema, execute_sql, ask_clarification |
 
 Rules that keep the seams honest: agent code never touches provider SDK
 types; renderers never live in `agent.py`; tool failures return error
 `Observation`s (only `SafetyViolation` raises — it terminates the run);
-new database = new `Connector` file, nothing else changes.
+new database = new `Connector` file, nothing else changes; anything written
+to disk must survive being read by a different version and by a process that
+was killed mid-write.
+
+## Exit codes (ADR-006)
+
+`2` the user's environment or input · `70` a defect in QueryAgent · `75`
+upstream trouble, retryable · `130` interrupted.
 
 ## Safety model
 
