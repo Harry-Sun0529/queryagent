@@ -24,7 +24,7 @@ from queryagent.connectors import make_connector
 from queryagent.connectors.base import Connector
 from queryagent.connectors.sqlite import SQLiteConnector
 from queryagent.context import ContextBuilder
-from queryagent.errors import ConnectorError, QueryAgentError
+from queryagent.errors import ConnectorError, QueryAgentError, is_transient
 from queryagent.evals.cases import EvalCase, load_cases
 from queryagent.evals.checkpoint import ResultLog, ResumeMismatch
 from queryagent.evals.public import load_subset
@@ -169,18 +169,8 @@ def _report_error(exc: BaseException, *, verbose: bool) -> int:
 
 
 def _is_temporary(exc: BaseException, text: str) -> bool:
-    """Upstream trouble that a later retry could plausibly survive."""
-    if isinstance(exc, (TimeoutError, ConnectionError)):
-        return True
-    if type(exc).__module__.startswith("httpx") and "Transport" in str(
-        type(exc).__mro__
-    ):
-        return True
-    if type(exc).__name__ in {"ConnectError", "ReadTimeout", "ConnectTimeout", "PoolTimeout"}:
-        return True
-    if "HTTP 429" in text:
-        return True
-    return any(f"HTTP {code}" in text for code in range(500, 600))
+    """Kept as a named seam for the CLI; the definition lives in errors."""
+    return is_transient(exc)
 
 
 def _explain(exc: BaseException) -> tuple[str, str, int]:
