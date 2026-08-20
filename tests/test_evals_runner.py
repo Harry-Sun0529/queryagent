@@ -307,3 +307,48 @@ def test_usage_is_kept_when_the_reference_sql_is_broken() -> None:
     assert result.usage.input_tokens == 900
     assert result.usage.calls == 1
     assert result.model == "deepseek-v4-flash"
+
+
+def upstream_outage(question: str) -> Iterator[AgentEvent]:
+    raise RuntimeError("LLM request failed with HTTP 503: upstream unavailable")
+    yield  # pragma: no cover
+
+
+def test_upstream_outage_is_not_a_wrong_answer() -> None:
+    # Counting an outage as a wrong answer silently depresses the score: a
+    # partial outage would bias the published number with no visible sign.
+    result = run_case(
+        simple_case(), run_question=upstream_outage, connector=FakeConnector({})
+    )
+    assert not result.passed
+    assert result.unmeasured, "an outage means the case was never measured"
+
+
+def test_a_genuine_wrong_answer_is_still_measured() -> None:
+    events = sql_events("SELECT agent") + [AnswerEvent(text="7")]
+    connector = FakeConnector({"SELECT ref": ((42,),), "SELECT agent": ((7,),)})
+    result = run_case(
+        simple_case(), run_question=lambda q: scripted(events), connector=connector
+    )
+    assert not result.passed
+    assert not result.unmeasured
+
+
+def test_unmeasured_cases_leave_the_pass_rate_denominator() -> None:
+    connector = FakeConnector({"SELECT ref": ((42,),), "SELECT agent": ((42,),)})
+    good = run_case(
+        simple_case(),
+        run_question=lambda q: scripted(sql_events("SELECT agent") + [AnswerEvent(text="42")]),
+        connector=connector,
+    )
+    outage = run_case(
+        simple_case(id="t2"), run_question=upstream_outage, connector=FakeConnector({})
+    )
+    stats = aggregate([good, outage])
+    assert stats.result_cases == 1, "the unmeasured case is not part of the denominator"
+    assert stats.final_pass == 1
+    assert stats.unmeasured == 1
+
+    report = render_report([good, outage], title="T", model_label="m")
+    assert "100%" in report  # 1/1 measured cases passed, not 1/2
+    assert "unmeasured" in report.lower()

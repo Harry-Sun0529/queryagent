@@ -28,22 +28,35 @@ TEST_SIZE = 200
 DEV_SIZE = 100
 
 
-def build(source: str | Path) -> tuple[list[EvalCase], list[EvalCase]]:
+def build(
+    source: str | Path,
+    *,
+    retired: set[str] | None = None,
+    test_size: int = TEST_SIZE,
+    dev_size: int = DEV_SIZE,
+) -> tuple[list[EvalCase], list[EvalCase]]:
     """Return (test, dev) exactly as committed.
 
     Args:
         source: BIRD mini-dev question JSON.
+        retired: Ids whose results were previously observed; excluded from
+            the sealed set and carried into dev. Defaults to the committed
+            list. Injectable so the derivation can be tested without the
+            large upstream file.
+        test_size: Size of the sealed sample.
+        dev_size: Size of the dev sample.
 
     Returns:
         The sealed test sample and the dev sample, disjoint by construction.
     """
     pool = load_source_cases(source)
-    retired = set(json.loads((HERE / "retired-ids.json").read_text(encoding="utf-8")))
-    test = sample_cases(pool, TEST_SIZE, seed=TEST_SEED, exclude=retired)
+    if retired is None:
+        retired = set(json.loads((HERE / "retired-ids.json").read_text(encoding="utf-8")))
+    test = sample_cases(pool, test_size, seed=TEST_SEED, exclude=retired)
     test_ids = {c.id for c in test}
     carried = [c for c in pool if c.id in retired]
     topup = sample_cases(
-        pool, DEV_SIZE - len(carried), seed=DEV_SEED, exclude=test_ids | retired
+        pool, dev_size - len(carried), seed=DEV_SEED, exclude=test_ids | retired
     )
     dev = sorted(carried + topup, key=lambda c: c.id)
     return test, dev
