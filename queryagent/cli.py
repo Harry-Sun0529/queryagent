@@ -28,7 +28,12 @@ from queryagent.errors import ConnectorError, QueryAgentError
 from queryagent.evals.cases import EvalCase, load_cases
 from queryagent.evals.checkpoint import ResultLog, ResumeMismatch
 from queryagent.evals.public import load_subset
-from queryagent.evals.runner import CaseResult, render_report, run_case, unscoreable_case
+from queryagent.evals.runner import (
+    CaseResult,
+    render_report,
+    run_case,
+    unscoreable_case,
+)
 from queryagent.events import (
     AgentEvent,
     AnswerEvent,
@@ -55,6 +60,32 @@ from queryagent.trace import (
 )
 
 _trace_notice_shown = False
+
+# Consecutive cases lost to an unreachable provider before a run gives up.
+# Burning a 200-case suite against a dead endpoint produces a report that
+# reads like a measurement of 0%; stopping early keeps it honest and, thanks
+# to checkpointing, costs nothing to resume.
+MAX_CONSECUTIVE_OUTAGES = 5
+
+
+class UpstreamOutage(Exception):
+    """Too many consecutive cases could not reach the provider."""
+
+
+class _OutageGuard:
+    """Counts consecutive unmeasured cases across the whole suite."""
+
+    def __init__(self, limit: int = MAX_CONSECUTIVE_OUTAGES) -> None:
+        self._limit = limit
+        self._streak = 0
+
+    def record(self, result: CaseResult) -> None:
+        """Track one scored case; raise once the streak passes the limit."""
+        self._streak = self._streak + 1 if result.unmeasured else 0
+        if self._streak >= self._limit:
+            raise UpstreamOutage(
+                f"{self._streak} 个用例连续无法连上模型服务，已中止本次运行"
+            )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -440,6 +471,20 @@ def _cmd_eval(args: argparse.Namespace) -> int:
         print(f"[错误] 无法续跑：{exc}", file=sys.stderr)
         print("  → 删除该 .partial.jsonl 重新开始，或改回原配置。", file=sys.stderr)
         return 2
+    try:
+        return _run_eval(args, config, log)
+    except UpstreamOutage as exc:
+        log.close()
+        print(f"[错误] {exc}", file=sys.stderr)
+        print(
+            "  → 这是上游故障，不是测量结果。稍后用 --resume 续跑；"
+            "已完成的用例不会重付。",
+            file=sys.stderr,
+        )
+        return EXIT_TEMPORARY_FAILURE
+
+
+def _run_eval(args: argparse.Namespace, config: AppConfig, log: ResultLog) -> int:
     if args.public:
         if not args.db_dir:
             print("--public requires --db-dir", file=sys.stderr)
@@ -470,11 +515,29 @@ def _cmd_eval(args: argparse.Namespace) -> int:
     return 0 if passed == len(results) else 3
 
 
+def _record(
+    result: CaseResult,
+    results: list[CaseResult],
+    log: ResultLog,
+    guard: _OutageGuard,
+) -> None:
+    """Collect one result, persisting it only if it was actually measured.
+
+    An unmeasured case must be retried on the next run, so writing it to the
+    resume log would bake the outage into the final number.
+    """
+    results.append(result)
+    if not result.unmeasured:
+        log.append(result)
+    guard.record(result)
+
+
 def _eval_self_built(
     cases_path: str, config: AppConfig, max_turns: int, log: ResultLog
 ) -> list[CaseResult]:
     cases = load_cases(cases_path)
     done = log.completed()
+    guard = _OutageGuard()
     with contextlib.ExitStack() as stack:
         connector = make_connector(config.database)
         stack.callback(connector.close)
@@ -485,8 +548,7 @@ def _eval_self_built(
                 results.append(done[case.id])
                 continue
             result = run_case(case, run_question=run_question, connector=connector)
-            log.append(result)
-            results.append(result)
+            _record(result, results, log, guard)
         return results
 
 
@@ -496,6 +558,7 @@ def _eval_public(
     """Public-benchmark mode: one SQLite database (and runtime) per db_id."""
     cases = load_subset(subset_path)
     done = log.completed()
+    guard = _OutageGuard()
     results: list[CaseResult] = []
     by_db: dict[str, list[EvalCase]] = {}
     for case in cases:
@@ -509,10 +572,10 @@ def _eval_public(
             reason = f"database '{db_id}' unusable: {exc}"
             print(f"[warn] {reason}", file=sys.stderr)
             for case in db_cases:
-                result = done.get(case.id) or unscoreable_case(case, reason)
-                if case.id not in done:
-                    log.append(result)
-                results.append(result)
+                if case.id in done:
+                    results.append(done[case.id])
+                    continue
+                _record(unscoreable_case(case, reason), results, log, guard)
             continue
         try:
             with contextlib.ExitStack() as stack:
@@ -523,8 +586,9 @@ def _eval_public(
                         results.append(done[case.id])
                         continue
                     result = run_case(case, run_question=run_question, connector=connector)
-                    log.append(result)
-                    results.append(result)
+                    _record(result, results, log, guard)
+        except UpstreamOutage:
+            raise
         except Exception as exc:  # noqa: BLE001
             reason = f"database '{db_id}' aborted: {type(exc).__name__}: {exc}"
             print(f"[warn] {reason}", file=sys.stderr)

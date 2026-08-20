@@ -107,6 +107,7 @@ class CaseResult:
     usage: TokenTotals = TokenTotals()
     model: str = ""
     agent_sql: str = ""  # the SQL that was scored — failure analysis needs it
+    unmeasured: bool = False  # upstream was unreachable: never scored, not wrong
 
 
 def unscoreable_case(case: EvalCase, reason: str) -> CaseResult:
@@ -133,7 +134,14 @@ def run_case(
     try:
         summary = summarize_events(run_question(case.question))
     except Exception as exc:  # noqa: BLE001 - any agent crash is a case failure
-        return _failed(case, f"agent raised {type(exc).__name__}: {exc}")
+        # An unreachable provider means the case was never measured. Scoring
+        # it as a wrong answer would let a partial outage quietly depress the
+        # published number with nothing to show for it.
+        return _failed(
+            case,
+            f"agent raised {type(exc).__name__}: {exc}",
+            unmeasured=is_upstream_failure(exc),
+        )
     retries = sum(1 for _, was_error in summary.executed_sql if was_error)
 
     if case.kind == "clarify":
@@ -245,6 +253,19 @@ def _matches(
     return rows_match(expected_rows, actual.rows)
 
 
+_UPSTREAM_MARKERS = ("HTTP 429",) + tuple(f"HTTP {code}" for code in range(500, 600))
+
+
+def is_upstream_failure(exc: BaseException) -> bool:
+    """True when the provider, not the agent, is why the case has no answer."""
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return True
+    if type(exc).__name__ in {"ConnectError", "ReadTimeout", "ConnectTimeout", "PoolTimeout"}:
+        return True
+    text = str(exc)
+    return any(marker in text for marker in _UPSTREAM_MARKERS)
+
+
 def _failed(
     case: EvalCase,
     reason: str,
@@ -255,6 +276,7 @@ def _failed(
     metrics_mentioned: bool | None = None,
     usage: TokenTotals | None = None,
     model: str = "",
+    unmeasured: bool = False,
 ) -> CaseResult:
     return CaseResult(
         case=case,
@@ -267,6 +289,7 @@ def _failed(
         failure_reason=reason,
         usage=usage or TokenTotals(),
         model=model,
+        unmeasured=unmeasured,
     )
 
 
@@ -283,16 +306,17 @@ class EvalStats:
     clarify_cases: int
     clarify_correct: int
     avg_tool_calls: float
+    unmeasured: int = 0  # cases the provider was unreachable for
     usage: TokenTotals = TokenTotals()
     model: str = ""
-    agent_sql: str = ""  # the SQL that was scored — failure analysis needs it
 
 
 def aggregate(results: Sequence[CaseResult]) -> EvalStats:
     """Compute the aggregate counters from per-case results."""
-    result_cases = [r for r in results if r.case.kind != "clarify"]
-    metric_results = [r for r in results if r.metrics_mentioned is not None]
-    clarify_results = [r for r in results if r.clarify_correct is not None]
+    measured = [r for r in results if not r.unmeasured]
+    result_cases = [r for r in measured if r.case.kind != "clarify"]
+    metric_results = [r for r in measured if r.metrics_mentioned is not None]
+    clarify_results = [r for r in measured if r.clarify_correct is not None]
     total = len(results)
     return EvalStats(
         total=total,
@@ -303,7 +327,10 @@ def aggregate(results: Sequence[CaseResult]) -> EvalStats:
         metric_hits=sum(1 for r in metric_results if r.metrics_mentioned),
         clarify_cases=len(clarify_results),
         clarify_correct=sum(1 for r in clarify_results if r.clarify_correct),
-        avg_tool_calls=(sum(r.tool_calls for r in results) / total) if total else 0.0,
+        avg_tool_calls=(
+            sum(r.tool_calls for r in measured) / len(measured) if measured else 0.0
+        ),
+        unmeasured=sum(1 for r in results if r.unmeasured),
         usage=sum((r.usage for r in results), TokenTotals()),
         model=next((r.model for r in results if r.model), ""),
     )
@@ -335,6 +362,7 @@ def render_report(results: Sequence[CaseResult], *, title: str, model_label: str
         f"| latency per case | {stats.usage.latency_ms / cases / 1000:.1f}s |",
         f"| cost per case (upper bound) | "
         f"{'$%.4f' % (cost / cases) if cost is not None else 'n/a'} |",
+        f"| unmeasured (upstream unreachable) | {stats.unmeasured} |",
         "",
         "## Cases",
         "",
@@ -347,6 +375,14 @@ def render_report(results: Sequence[CaseResult], *, title: str, model_label: str
             f"| {_mark(result.first_attempt_passed)} | {result.retries} "
             f"| {result.tool_calls} | {result.failure_reason} |"
         )
+    if stats.unmeasured:
+        lines += [
+            f"> **{stats.unmeasured} of {stats.total} cases could not be measured** — "
+            "the provider was unreachable for them. They are excluded from the rates "
+            "above rather than counted as wrong answers; rerun with `--resume` to "
+            "fill them in before treating this as a measurement.",
+            "",
+        ]
     failures = [r for r in results if not r.passed and r.agent_sql]
     if failures:
         lines += ["", "## Failing cases — SQL comparison", ""]

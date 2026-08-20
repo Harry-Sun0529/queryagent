@@ -536,3 +536,89 @@ def test_resume_accepts_a_matching_run(
     main(args)
     assert main([*args, "--resume"]) == 3  # ran to completion, cases failed
     assert "a1" in report.read_text(encoding="utf-8")
+
+
+class OutageBackend:
+    """Always fails the way an unreachable provider does."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.closed = False
+
+    def complete(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        self.calls += 1
+        raise RuntimeError("LLM request failed with HTTP 503: upstream unavailable")
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def outage_args(tmp_path: Path, ids: list[str]) -> tuple[list[str], Path]:
+    config = tmp_path / "config.yaml"
+    config.write_text(EVAL_CONFIG.format(db=real_db(tmp_path)), encoding="utf-8")
+    report = tmp_path / "report.md"
+    db_dir = tmp_path / "databases"
+    (db_dir / "d").mkdir(parents=True, exist_ok=True)
+    import shutil
+
+    # A usable database, so the LLM is the only thing broken in this scenario.
+    shutil.copy(real_db(tmp_path), db_dir / "d" / "d.sqlite")
+    import json
+
+    subset = tmp_path / "subset.json"
+    subset.write_text(
+        json.dumps(
+            [
+                {"id": i, "db_id": "d", "question": f"q{i}", "gold_sql": "SELECT 1"}
+                for i in ids
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return (
+        [
+            "eval",
+            "--config", str(config),
+            "--public", str(subset),
+            "--db-dir", str(db_dir),
+            "--output", str(report),
+        ],
+        report,
+    )
+
+
+def test_an_outage_aborts_instead_of_scoring_the_whole_suite_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Burning 200 paid cases against a dead provider produces a report that
+    # looks like a measurement of 0%. Stop early and say why.
+    backend = OutageBackend()
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setattr("queryagent.cli.make_backend", lambda _config: backend)
+    args, _report = outage_args(tmp_path, [f"c{i}" for i in range(20)])
+
+    code = main(args)
+
+    err = capsys.readouterr().err
+    assert code == 75  # EX_TEMPFAIL: retryable, not a result
+    assert backend.calls < 20, "the suite must stop, not run every case into the wall"
+    assert "resume" in err.lower() or "重试" in err
+
+
+def test_unmeasured_cases_are_not_recorded_as_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Persisting them would let --resume skip questions that were never
+    # actually answered, baking the outage into the published number.
+    backend = OutageBackend()
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setattr("queryagent.cli.make_backend", lambda _config: backend)
+    args, report = outage_args(tmp_path, ["c0", "c1"])
+
+    main(args)
+
+    from queryagent.evals.checkpoint import ResultLog
+
+    partial = report.with_suffix(".partial.jsonl")
+    recovered = ResultLog(partial, resume=True).completed() if partial.exists() else {}
+    assert recovered == {}, "an unmeasured case must be retried, not resumed as done"

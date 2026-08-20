@@ -170,3 +170,35 @@ def test_committed_samples_are_reproducible_from_the_script() -> None:
     test_cases, dev_cases = module.build(source)
     assert test_cases == load_subset(root / "eval" / "public" / "subset.json")
     assert dev_cases == load_subset(root / "eval" / "public" / "dev-subset.json")
+
+
+def test_sample_derivation_carries_retired_questions_into_dev(tmp_path: Path) -> None:
+    """The derivation itself — independent of the large upstream file, which
+    a given machine may not have, so this must not depend on it."""
+    import importlib.util
+
+    root = Path(__file__).parent.parent
+    spec = importlib.util.spec_from_file_location(
+        "rebuild_samples", root / "eval" / "public" / "rebuild_samples.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    items = [
+        {"question_id": i, "db_id": f"db{i % 3}", "question": f"q{i}", "SQL": f"SELECT {i}"}
+        for i in range(60)
+    ]
+    source = write_json(tmp_path, "pool.json", items)
+    retired = {f"db{i % 3}_{i}" for i in range(10)}
+
+    test_cases, dev_cases = module.build(
+        source, retired=retired, test_size=20, dev_size=15
+    )
+
+    test_ids = {c.id for c in test_cases}
+    dev_ids = {c.id for c in dev_cases}
+    assert len(test_cases) == 20 and len(dev_cases) == 15
+    assert not (test_ids & dev_ids), "dev and test must be disjoint"
+    assert not (test_ids & retired), "the sealed set must exclude observed questions"
+    assert retired <= dev_ids, "retired questions are carried into dev, not discarded"
