@@ -16,7 +16,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 
 from queryagent.connectors.base import Connector
-from queryagent.errors import QueryError
+from queryagent.errors import QueryError, is_transient
 from queryagent.evals.cases import EvalCase
 from queryagent.evals.compare import rows_match
 from queryagent.evals.cost import TokenTotals, estimate_cost_usd
@@ -253,17 +253,13 @@ def _matches(
     return rows_match(expected_rows, actual.rows)
 
 
-_UPSTREAM_MARKERS = ("HTTP 429",) + tuple(f"HTTP {code}" for code in range(500, 600))
-
-
 def is_upstream_failure(exc: BaseException) -> bool:
-    """True when the provider, not the agent, is why the case has no answer."""
-    if isinstance(exc, (TimeoutError, ConnectionError)):
-        return True
-    if type(exc).__name__ in {"ConnectError", "ReadTimeout", "ConnectTimeout", "PoolTimeout"}:
-        return True
-    text = str(exc)
-    return any(marker in text for marker in _UPSTREAM_MARKERS)
+    """True when the provider, not the agent, is why the case has no answer.
+
+    Shares one definition with the CLI's exit-code classification: the two
+    must never disagree about whose fault a failure is.
+    """
+    return is_transient(exc)
 
 
 def _failed(

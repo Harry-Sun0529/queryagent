@@ -352,3 +352,29 @@ def test_unmeasured_cases_leave_the_pass_rate_denominator() -> None:
     report = render_report([good, outage], title="T", model_label="m")
     assert "100%" in report  # 1/1 measured cases passed, not 1/2
     assert "unmeasured" in report.lower()
+
+
+def test_transient_classification_matches_the_cli() -> None:
+    """One definition of 'the provider is at fault'. Two copies had already
+    drifted: an httpx protocol error counted as retryable at the CLI but as a
+    wrong answer in scoring — breaking the integrity rule it was meant to
+    uphold."""
+    import httpx
+
+    from queryagent.cli import _is_temporary
+    from queryagent.evals.runner import is_upstream_failure
+
+    cases: list[BaseException] = [
+        httpx.RemoteProtocolError("server disconnected"),
+        httpx.ReadError("boom"),
+        httpx.ConnectError("refused"),
+        TimeoutError("slow"),
+        RuntimeError("LLM request failed with HTTP 503: down"),
+        RuntimeError("LLM request failed with HTTP 429: slow down"),
+        RuntimeError("LLM request failed with HTTP 401: bad key"),
+        ValueError("config broken"),
+    ]
+    for exc in cases:
+        assert is_upstream_failure(exc) == _is_temporary(exc, str(exc)), (
+            f"classification disagrees for {type(exc).__name__}"
+        )
