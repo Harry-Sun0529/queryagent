@@ -1,5 +1,5 @@
 ---
-status: open
+status: closed
 type: task
 blocked_by: [21]
 claimed_by: fable-session
@@ -22,3 +22,18 @@ claimed_by: fable-session
 
 ## Done when
 - 两个 seam 测试绿；真机跑 dev 100 题，结果与串行一致、耗时显著下降。
+
+## Resolution (closed 2026-08-22)
+
+- `--concurrency N`（默认 1）。**结果在主线程按提交顺序消费**，因此续跑
+  日志天然单写者（不需要锁），「连续未测量」的语义与串行完全一致。
+- **每个工作线程独占一个 connector**：SQLite 的超时守卫装在*连接*上，
+  共用会让并发查询互相摘掉对方的 deadline，查询可能在没有超时保护的
+  情况下运行。有测试钉住这个不变量。
+- 构建过程中我自己引入并被测试抓到两个缺陷：ExitStack 在主线程回收却去
+  close 工作线程建的 SQLite 连接；公开集路径最初共用连接器。
+- **耗时验证通过**：dev 100 题 3 分 29 秒（串行 22 分钟）。
+
+**未完成的部分见 [T26](26-parallel-live-equivalence.md)**：那次真机运行
+被 DeepSeek 余额耗尽废掉（64/100 返回 402），所以「并行与串行准确率一致」
+**尚未在真机上验证**，只有测试层面的等价性保证。

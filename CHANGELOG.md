@@ -6,6 +6,53 @@ versioning: [SemVer](https://semver.org/). CLI arguments and config structure
 enter the semver contract at v0.2.0; `metrics.yaml` required fields are
 frozen from v0.1.1 (spec §四).
 
+## [0.5.0] — 2026-08-22
+
+### Added
+
+- **A public API.** `queryagent` exports the agent loop, the event types,
+  the wiring pieces and the exception hierarchy with an explicit `__all__`;
+  the README gained a library-usage section whose snippet is executed by the
+  test suite. The package called itself a library while
+  `from queryagent import *` returned nothing.
+- **`--concurrency N` for eval** — 100 cases finished in 3m29s against 22
+  minutes serially. Each worker thread owns its connector: SQLite's timeout
+  guard lives on the connection, so sharing one lets concurrent queries strip
+  each other's deadline.
+- `trace_dir` in config, and the startup notice prints an absolute path.
+
+### Changed
+
+- **A refused request is now "unmeasured", not a wrong answer.** A run whose
+  provider balance ran out scored 64 of 100 cases as failures and reported
+  "14%" — a number that looks like a measurement and means the account ran
+  out of money. Retryability and measurability are now separate questions
+  with separate functions, and an aborted run exits 75 for an outage but 2
+  for a refusal, since telling a retry loop to wait on an empty account would
+  spin forever.
+- **Clarify and metric-citation rates got real denominators**: clarify 2→8
+  cases, must-not-ask controls 2→8, metric citation 4→8. Four more metrics
+  gained a `caution` so ambiguity has more than one shape. At four cases,
+  "4/4" was a good-looking number with almost no evidence behind it; at
+  sixteen the clarify result held (15–16/16 across three runs).
+- Offset-aware datetimes normalise to UTC before comparison — 12:00Z and
+  12:00+08:00 previously compared equal.
+- `__version__` comes from package metadata rather than a second literal that
+  had already drifted to 0.1.0, and every runtime dependency has an upper
+  bound after `anthropic` 1.0 turned CI red without a line of our code
+  changing.
+- Chat keeps the 20 most recent turns in memory instead of every turn.
+
+### Documented
+
+- **How far each backend is actually verified.** Every published number, live
+  smoke test and failure analysis came through the OpenAI-compatible backend
+  against DeepSeek. The Anthropic backend has contract tests but has never
+  made a live call, and was broken against `anthropic` 1.x until CI caught
+  it. `llm.temperature` has no effect there — the Messages API dropped the
+  parameter — so the backend warns rather than letting a run believe it was
+  deterministic.
+
 ## [0.4.0] — 2026-08-20
 
 ### Added
