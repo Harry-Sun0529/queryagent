@@ -208,20 +208,26 @@ are never tuned against it ([eval/README.md](eval/README.md)).
 
 ### Results (2026-08-20, `deepseek-v4-flash`, temperature 0)
 
-**Self-built suite** (20 cases, ranges over 3 runs — DeepSeek exposes no
+**Self-built suite** (36 cases, ranges over 3 runs — DeepSeek exposes no
 sampling seed, so single-run numbers are noise):
 
-| metric | v4-flash (weak) | v4-pro (strong) |
-|---|---|---|
-| first-execution pass rate | 11–14/18 | **14–15/18** |
-| pass rate after self-repair | **17–18/18 (94–100%)** | 16–18/18 |
-| clarify-behaviour accuracy | **4/4 (all runs)** | **4/4 (all runs)** |
-| cost per case (upper bound) | $0.0007–0.0008 | $0.0019–0.0020 |
+| metric | `deepseek-v4-flash` |
+|---|---|
+| first-execution pass rate | 20–23/28 (71–82%) |
+| pass rate after self-repair | **26–27/28 (93–96%)** |
+| metric-citation rate | 6–8/8 |
+| **clarify-behaviour accuracy** | **15–16/16 (94–100%)** |
 
-The strong model wins at getting it right *first*; after the self-repair
-loop the two converge, so the architecture buys a weak model the same final
-accuracy at about a third of the cost. Clarify behaviour is identical —
-it comes from the prompt protocol, not model strength
+Clarify accuracy counts both arms: the eight questions that *should* draw a
+question, and the eight that must **not** — a system that asks about
+everything would score zero here. The denominator was four until v0.5.0,
+where "4/4" was a good-looking number with almost no evidence behind it;
+quadrupling it left the result standing.
+
+An earlier strong/weak comparison (`v4-flash` vs `v4-pro`, on the smaller
+case set) found the strong model wins at getting it right *first* while the
+self-repair loop converges the two, so the architecture buys a weak model
+the same final accuracy at about a third of the cost
 ([dual-model-analysis.md](eval/results/dual-model-analysis.md)).
 
 **Public benchmark** (BIRD mini-dev, dev/test split — [ADR-004](docs/adr/004-public-subset-external-anchor.md)):
