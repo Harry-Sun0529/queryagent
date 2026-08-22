@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Sequence
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -39,6 +39,12 @@ def normalize_value(value: Any) -> Any:
     if isinstance(value, (float, Decimal)):
         return round(float(value), _FLOAT_DECIMALS)
     if isinstance(value, datetime):
+        # An offset-aware value is converted to UTC first: formatting without
+        # the offset made 12:00Z and 12:00+08:00 — eight hours apart — compare
+        # equal. Naive values are left as written; inventing a zone for them
+        # would be guessing.
+        if value.tzinfo is not None:
+            value = value.astimezone(timezone.utc)
         return value.strftime("%Y-%m-%d %H:%M:%S")
     if isinstance(value, date):
         return value.isoformat()

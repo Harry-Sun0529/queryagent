@@ -50,3 +50,29 @@ def test_none_and_bool_normalisation() -> None:
 def test_empty_sets_match() -> None:
     assert rows_match([], [])
     assert not rows_match([(1,)], [])
+
+
+def test_aware_datetimes_at_different_instants_differ() -> None:
+    # 12:00 UTC and 12:00+08:00 are eight hours apart. Formatting without the
+    # offset made them compare equal — in the comparison layer the whole
+    # evaluation rests on.
+    from datetime import timedelta, timezone
+
+    utc_noon = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    shanghai_noon = datetime(2026, 1, 1, 12, 0, tzinfo=timezone(timedelta(hours=8)))
+    assert not rows_match([(utc_noon,)], [(shanghai_noon,)])
+
+
+def test_the_same_instant_in_two_zones_matches() -> None:
+    from datetime import timedelta, timezone
+
+    utc = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    shanghai = datetime(2026, 1, 1, 20, 0, tzinfo=timezone(timedelta(hours=8)))
+    assert rows_match([(utc,)], [(shanghai,)])
+
+
+def test_naive_datetimes_are_left_alone() -> None:
+    # The three shipped dialects return naive values; guessing a zone for
+    # them would invent information.
+    a = datetime(2026, 7, 1, 12, 30, 0)
+    assert rows_match([(a,)], [("2026-07-01 12:30:00",)])

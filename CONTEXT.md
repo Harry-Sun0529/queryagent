@@ -31,7 +31,7 @@ specs for in-flight work in `docs/specs/`.
 
 | Seam | Interface | Adapters today |
 |---|---|---|
-| LLM | `LLMBackend.complete(messages, tools) -> ModelResponse` | Anthropic, OpenAI-compatible (DeepSeek etc.), test fake |
+| LLM | `LLMBackend.complete(messages, tools) -> ModelResponse` | OpenAI-compatible (DeepSeek — the verified path), Anthropic (contract-tested only, never called live), test fake |
 | Data source | `Connector.get_schema/execute/close` (+ `dialect`) | MySQL, SQLite, ClickHouse |
 | Metrics | `MetricStore.match/get` | YAML store (embedding impl reserved) |
 | Agent output | `Iterator[AgentEvent]` from `run_agent` | chat CLI, ask CLI, eval runner, trace writer |
