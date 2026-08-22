@@ -1,8 +1,8 @@
 ---
-status: open
+status: closed
 type: task
 blocked_by: []
-claimed_by:
+claimed_by: fable-session
 ---
 # T25 — trace 落点与长会话内存
 
@@ -22,3 +22,11 @@ claimed_by:
 
 ## Done when
 - 两个 seam 测试绿。
+
+## Resolution (closed 2026-08-22)
+
+- config 新增 `trace_dir`；未配置时仍相对 CWD，但**提示里打印绝对路径**，
+  用户至少知道东西在哪。
+- chat 的 conversation 保留最近 20 轮，与 context 侧的裁剪方向一致——
+  提示侧本来就有预算裁剪，缺的是会话自身那个列表的上界。
+- 2 个 seam 测试。

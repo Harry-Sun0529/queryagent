@@ -622,3 +622,57 @@ def test_unmeasured_cases_are_not_recorded_as_done(
     partial = report.with_suffix(".partial.jsonl")
     recovered = ResultLog(partial, resume=True).completed() if partial.exists() else {}
     assert recovered == {}, "an unmeasured case must be retried, not resumed as done"
+
+
+TRACE_CONFIG = """\
+llm:
+  backend: openai_compatible
+  model: deepseek-v4-flash
+  base_url: https://api.deepseek.com
+database:
+  type: sqlite
+  path: {db}
+trace_dir: {trace_dir}
+"""
+
+
+def test_trace_directory_can_be_pinned_in_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The default is relative to the working directory, so the same user
+    # running from two places scatters traces and cannot find them again.
+    backend = RecordingBackend()
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setattr("queryagent.cli.make_backend", lambda _config: backend)
+    traces = tmp_path / "chosen-traces"
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        TRACE_CONFIG.format(db=real_db(tmp_path), trace_dir=traces), encoding="utf-8"
+    )
+
+    main(["ask", "q", "--config", str(config)])
+
+    assert list(traces.glob("*.jsonl")), "the configured directory should hold the trace"
+
+
+def test_chat_keeps_only_recent_turns_in_memory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The prompt side is trimmed by the context budget; the list itself grew
+    # without limit for the life of the session.
+    from queryagent.cli import MAX_REMEMBERED_TURNS
+
+    backend = ScriptedBackend([f"答案{i}" for i in range(MAX_REMEMBERED_TURNS + 3)])
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setattr("queryagent.cli.make_backend", lambda _config: backend)
+    questions = [f"问题{i}" for i in range(MAX_REMEMBERED_TURNS + 3)] + ["exit"]
+    asked = iter(questions)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(asked))
+
+    main(["chat", "--config", str(write_config(tmp_path, db=real_db(tmp_path)))])
+
+    last_call = backend.calls[-1]
+    remembered = [m for m in last_call if m.role == "assistant"]  # type: ignore[attr-defined]
+    assert len(remembered) <= MAX_REMEMBERED_TURNS
+    texts = " ".join(m.content for m in last_call)  # type: ignore[attr-defined]
+    assert "问题0" not in texts, "the oldest turn should have been dropped"

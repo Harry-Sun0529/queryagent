@@ -67,6 +67,11 @@ _trace_notice_shown = False
 # to checkpointing, costs nothing to resume.
 MAX_CONSECUTIVE_OUTAGES = 5
 
+# Chat turns kept in memory. The prompt side is already trimmed by the
+# context budget; this bounds the session's own list, which otherwise grew
+# for as long as the session lived.
+MAX_REMEMBERED_TURNS = 20
+
 
 class UpstreamOutage(Exception):
     """Too many consecutive cases could not reach the provider."""
@@ -229,7 +234,7 @@ def _make_trace_writer(config: AppConfig, disabled: bool, question: str) -> Trac
     """Build a trace writer unless tracing is off; prunes old traces first."""
     if disabled or not config.trace:
         return None
-    directory = Path(TRACE_DIR_NAME)
+    directory = Path(config.trace_dir) if config.trace_dir else Path(TRACE_DIR_NAME)
     if directory.exists():
         prune_traces(directory, reserve=1)
     return TraceWriter(new_trace_path(directory, question))
@@ -245,7 +250,7 @@ def _finish_trace(writer: TraceWriter | None) -> None:
     if started and not _trace_notice_shown:
         _trace_notice_shown = True
         print(
-            f"[trace] 已记录到 {writer.path.parent}/ —— 含问题、SQL 与查询结果，"
+            f"[trace] 已记录到 {writer.path.parent.resolve()}/ —— 含问题、SQL 与查询结果，"
             "可能包含业务数据；该目录已在 .gitignore 中。"
             "关闭方式：--no-trace 或 config 里 trace: false",
             file=sys.stderr,
@@ -369,6 +374,7 @@ def _cmd_chat(args: argparse.Namespace) -> int:
                 # that disambiguation, so it is what goes into the memory.
                 conversation.append(Message(role="user", content=asked))
                 conversation.append(Message(role="assistant", content=answered))
+                del conversation[: max(len(conversation) - 2 * MAX_REMEMBERED_TURNS, 0)]
     return 0
 
 
