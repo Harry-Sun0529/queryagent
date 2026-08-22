@@ -11,7 +11,9 @@ requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Sun Weizhuo" }]
 dependencies = [
-    "anthropic>=0.40",
+    # Bounded on purpose: 1.0 removed Messages.create(temperature=...) and
+    # broke CI without a line of our code changing. A major bump needs a look.
+    "anthropic>=1.0,<2",
     # openai_compatible backend is hand-written over httpx instead of pulling
     # in the openai package (spec §四 dependency minimalism; ADR pending).
     "httpx>=0.27",
