@@ -1,8 +1,8 @@
 ---
-status: open
+status: closed
 type: task
 blocked_by: []
-claimed_by:
+claimed_by: fable-session
 ---
 # T22 — 结果比对不得把不同时刻判为相等
 
@@ -21,3 +21,12 @@ claimed_by:
 
 ## Done when
 - 三个 seam 测试绿；既有比对测试全部不变绿。
+
+## Resolution (closed 2026-08-22)
+
+- offset-aware 的 datetime 先 `astimezone(utc)` 再格式化；naive 的**保持
+  原样**——给它臆测一个时区等于凭空造信息。
+- 3 个 seam 测试：不同时刻不相等 / 同一时刻的不同表示相等 / naive 行为
+  不变（回归保护）。
+- 当前三个方言多返回 naive 值所以没暴露过，但比对层是整个评测的地基，
+  地基里的等价判断错了，上面所有数字都不可信。

@@ -65,9 +65,10 @@ definitions today, with zero new infrastructure*. Lightness is the feature.
 - **Three dialects out of the box**: MySQL, SQLite (stdlib, Docker-free
   demo), ClickHouse (`pip install queryagent[clickhouse]`). New sources
   implement one 3-method protocol.
-- **Two providers, one abstraction**: Anthropic + any OpenAI-compatible
-  endpoint (DeepSeek / Qwen / GLM / vLLM / Ollama) via `base_url`. Provider
-  tool-call formats never leak into the agent.
+- **Two providers, one abstraction**: any OpenAI-compatible endpoint
+  (DeepSeek / Qwen / GLM / vLLM / Ollama) via `base_url`, plus Anthropic.
+  Provider tool-call formats never leak into the agent. **Verification is
+  not equal between them** — see the note below.
 - **Event-stream architecture**: the agent yields `AgentEvent`s; the CLI,
   the eval runner, and any future UI are just different consumers. This is
   the load-bearing seam of the codebase.
@@ -107,6 +108,17 @@ llm:
   backend: anthropic          # reads ANTHROPIC_API_KEY
   model: claude-sonnet-5
 ```
+
+> **How far each backend is verified.** Everything published here — the
+> numbers, the live smoke tests across three dialects, the failure analysis —
+> was produced through the **OpenAI-compatible backend against DeepSeek**.
+> The Anthropic backend has contract-level tests (message conversion,
+> tool_use and tool_result blocks, usage parsing) but **has never made a call
+> to the live API**, because the maintainer has no key. It was in fact broken
+> against `anthropic` 1.x until CI caught it. Treat it as untried in
+> production, and note that `llm.temperature` has no effect there: the
+> Messages API dropped the parameter, and the backend warns rather than
+> letting a run believe it was deterministic.
 
 ### MySQL / ClickHouse (Docker)
 
