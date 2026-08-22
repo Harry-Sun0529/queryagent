@@ -790,3 +790,46 @@ def test_each_thread_gets_its_own_worker() -> None:
 
     assert len(built) == 4, "each thread builds exactly one worker"
     assert len({id(w) for w in seen}) == 4, "no two threads share a worker"
+
+
+class RefusingBackend:
+    """Fails the way a provider that will not serve you fails."""
+
+    def __init__(self, message: str) -> None:
+        self.message = message
+        self.closed = False
+
+    def complete(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError(self.message)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_exhausted_balance_does_not_tell_a_script_to_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Exit 75 means "wait and try again". An empty account will not refill on
+    # its own, so a retry loop would spin forever.
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setattr(
+        "queryagent.cli.make_backend",
+        lambda _config: RefusingBackend(
+            "LLM request failed with HTTP 402: Insufficient Balance"
+        ),
+    )
+    code = main(selfbuilt_args(tmp_path, "out.md"))
+    err = capsys.readouterr().err
+    assert code == 2, "a refused request needs a human, not a retry"
+    assert "402" in err or "余额" in err
+
+
+def test_an_outage_still_tells_a_script_to_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setattr(
+        "queryagent.cli.make_backend",
+        lambda _config: RefusingBackend("LLM request failed with HTTP 503: down"),
+    )
+    assert main(selfbuilt_args(tmp_path, "out2.md")) == 75

@@ -76,7 +76,21 @@ MAX_REMEMBERED_TURNS = 20
 
 
 class UpstreamOutage(Exception):
-    """Too many consecutive cases could not reach the provider."""
+    """Too many consecutive cases went unmeasured.
+
+    Carries the last case's reason so the exit code can match the cause: a
+    provider outage is worth retrying, an exhausted balance or a rejected key
+    is not, and telling a retry loop otherwise makes it spin forever.
+    """
+
+    def __init__(self, message: str, *, reason: str = "") -> None:
+        super().__init__(message)
+        self.reason = reason
+
+    @property
+    def retryable(self) -> bool:
+        """Whether waiting could plausibly change the outcome."""
+        return is_transient(RuntimeError(self.reason))
 
 
 class _OutageGuard:
@@ -91,7 +105,9 @@ class _OutageGuard:
         self._streak = self._streak + 1 if result.unmeasured else 0
         if self._streak >= self._limit:
             raise UpstreamOutage(
-                f"{self._streak} 个用例连续无法连上模型服务，已中止本次运行"
+                f"{self._streak} 个用例连续未能测量，已中止本次运行"
+                f"（最后一次：{result.failure_reason[:160]}）",
+                reason=result.failure_reason,
             )
 
 
@@ -481,12 +497,19 @@ def _cmd_eval(args: argparse.Namespace) -> int:
     except UpstreamOutage as exc:
         log.close()
         print(f"[错误] {exc}", file=sys.stderr)
+        if exc.retryable:
+            print(
+                "  → 这是上游故障，不是测量结果。稍后用 --resume 续跑；"
+                "已完成的用例不会重付。",
+                file=sys.stderr,
+            )
+            return EXIT_TEMPORARY_FAILURE
         print(
-            "  → 这是上游故障，不是测量结果。稍后用 --resume 续跑；"
-            "已完成的用例不会重付。",
+            "  → 服务方拒绝了请求（余额、配额或 key 的问题），重试不会好转。"
+            "处理后用 --resume 续跑；已完成的用例不会重付。",
             file=sys.stderr,
         )
-        return EXIT_TEMPORARY_FAILURE
+        return EXIT_USER_ERROR
 
 
 def _run_eval(args: argparse.Namespace, config: AppConfig, log: ResultLog) -> int:
