@@ -76,3 +76,21 @@ def is_transient(exc: BaseException) -> bool:
         return True
     text = str(exc)
     return any(marker in text for marker in _RETRYABLE_HTTP)
+
+
+_REFUSAL_HTTP = ("HTTP 401", "HTTP 402", "HTTP 403", "HTTP 404")
+
+
+def blocks_measurement(exc: BaseException) -> bool:
+    """True when the provider never produced an answer to score.
+
+    Separate from :func:`is_transient` on purpose — the two answer different
+    questions and conflating them cost a real measurement once. "Will waiting
+    help?" decides the exit code; "did we get an answer?" decides scoring.
+    A depleted balance (HTTP 402) answers *no* to the first and *no* to the
+    second, and scoring it as a wrong answer is how a report comes to read
+    14% when it means the account ran out of money mid-run.
+    """
+    if is_transient(exc):
+        return True
+    return any(marker in str(exc) for marker in _REFUSAL_HTTP)

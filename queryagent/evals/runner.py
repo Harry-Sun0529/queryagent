@@ -16,7 +16,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 
 from queryagent.connectors.base import Connector
-from queryagent.errors import QueryError, is_transient
+from queryagent.errors import QueryError, blocks_measurement
 from queryagent.evals.cases import EvalCase
 from queryagent.evals.compare import rows_match
 from queryagent.evals.cost import TokenTotals, estimate_cost_usd
@@ -256,10 +256,11 @@ def _matches(
 def is_upstream_failure(exc: BaseException) -> bool:
     """True when the provider, not the agent, is why the case has no answer.
 
-    Shares one definition with the CLI's exit-code classification: the two
-    must never disagree about whose fault a failure is.
+    Broader than the CLI's retryability test: a refused request (bad key,
+    exhausted balance) will not fix itself, but the case was still never
+    measured and must not be scored as a wrong answer.
     """
-    return is_transient(exc)
+    return blocks_measurement(exc)
 
 
 def _failed(

@@ -354,27 +354,72 @@ def test_unmeasured_cases_leave_the_pass_rate_denominator() -> None:
     assert "unmeasured" in report.lower()
 
 
-def test_transient_classification_matches_the_cli() -> None:
-    """One definition of 'the provider is at fault'. Two copies had already
-    drifted: an httpx protocol error counted as retryable at the CLI but as a
-    wrong answer in scoring — breaking the integrity rule it was meant to
-    uphold."""
+def test_the_two_classifiers_agree_on_transient_failures() -> None:
+    """They agree where they must, and differ where they should.
+
+    An earlier version asserted they agree on *everything*. That encoded the
+    conflation this pair exists to avoid, and a real run proved it wrong: an
+    exhausted balance is not retryable, yet the case was still never measured.
+    """
     import httpx
 
     from queryagent.cli import _is_temporary
     from queryagent.evals.runner import is_upstream_failure
 
-    cases: list[BaseException] = [
+    transient: list[BaseException] = [
         httpx.RemoteProtocolError("server disconnected"),
         httpx.ReadError("boom"),
         httpx.ConnectError("refused"),
         TimeoutError("slow"),
         RuntimeError("LLM request failed with HTTP 503: down"),
         RuntimeError("LLM request failed with HTTP 429: slow down"),
-        RuntimeError("LLM request failed with HTTP 401: bad key"),
-        ValueError("config broken"),
     ]
-    for exc in cases:
-        assert is_upstream_failure(exc) == _is_temporary(exc, str(exc)), (
-            f"classification disagrees for {type(exc).__name__}"
-        )
+    for exc in transient:
+        assert _is_temporary(exc, str(exc)), type(exc).__name__
+        assert is_upstream_failure(exc), type(exc).__name__
+
+    not_our_problem: list[BaseException] = [ValueError("config broken")]
+    for exc in not_our_problem:
+        assert not _is_temporary(exc, str(exc))
+        assert not is_upstream_failure(exc)
+
+
+def test_a_refused_request_is_unmeasured_even_when_retrying_will_not_help() -> None:
+    """Two different questions, conflated once already.
+
+    "Will waiting help?" decides the exit code. "Did we get an answer?"
+    decides scoring. A depleted balance answers no to both — and scoring it
+    as a wrong answer is how a report ends up reading 14% when it actually
+    means the account ran out of money mid-run.
+    """
+    from queryagent.errors import is_transient
+    from queryagent.evals.runner import is_upstream_failure
+
+    broke = RuntimeError(
+        'LLM request failed with HTTP 402: {"error":{"message":"Insufficient Balance"}}'
+    )
+    assert not is_transient(broke), "waiting does not refill an account"
+    assert is_upstream_failure(broke), "the case was never measured"
+
+
+def test_payment_failure_leaves_the_denominator() -> None:
+    def refused(question: str) -> Iterator[AgentEvent]:
+        raise RuntimeError("LLM request failed with HTTP 402: Insufficient Balance")
+        yield  # pragma: no cover
+
+    result = run_case(
+        simple_case(), run_question=refused, connector=FakeConnector({})
+    )
+    assert result.unmeasured
+    assert aggregate([result]).result_cases == 0
+
+
+def test_a_bad_key_mid_run_is_also_unmeasured() -> None:
+    def rejected(question: str) -> Iterator[AgentEvent]:
+        raise RuntimeError("LLM request failed with HTTP 401: invalid api key")
+        yield  # pragma: no cover
+
+    result = run_case(
+        simple_case(), run_question=rejected, connector=FakeConnector({})
+    )
+    assert result.unmeasured, "a case the provider refused to serve was not scored"
