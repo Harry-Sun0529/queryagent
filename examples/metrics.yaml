@@ -37,7 +37,10 @@ metrics:
     display_name: 客单价
     aliases: [平均订单金额, average order value]
     definition: >
-      status='paid' 订单的 amount 平均值。
+      status='paid' 订单的 amount 平均值（按订单口径）。
+    caution: >
+      运营常用的是「人均消费」口径：总金额除以下单用户数，而非除以订单数。
+      两者在复购多的时段差异很大；未指明时需与用户确认按订单还是按用户。
     tables: [orders]
     sql_hint: "AVG(amount) FROM orders WHERE status = 'paid'"
 
@@ -45,14 +48,21 @@ metrics:
     display_name: 复购率
     aliases: [复购, 回购率]
     definition: >
-      下过 2 单及以上（status='paid'）的用户数，除以下过至少 1 单的用户数。
+      全期内下过 2 单及以上（status='paid'）的用户数，除以下过至少 1 单的
+      用户数。
+    caution: >
+      也有按固定窗口计算的口径（如「首单后 30 天内是否再次下单」），结果与
+      全期口径差异显著；未指明统计窗口时需确认。
     tables: [users, orders]
 
   - name: refund_rate
     display_name: 退款率
     aliases: [退款占比]
     definition: >
-      status='refunded' 的订单数除以同期全部订单数（按订单数计，非金额）。
+      status='refunded' 的订单数除以同期全部订单数（按订单数口径）。
+    caution: >
+      财务关注的是金额口径：退款金额占总金额的比例。两个口径的数字不同，
+      未指明按订单数还是按金额时需确认。
     tables: [orders]
     sql_hint: "SUM(status = 'refunded') * 1.0 / COUNT(*) FROM orders"
 
@@ -60,6 +70,9 @@ metrics:
     display_name: 活跃购买用户
     aliases: [活跃买家, 下单用户数]
     definition: >
-      统计周期内产生过 status='paid' 订单的去重用户数。
+      统计周期内产生过 status='paid' 订单的去重用户数（支付口径）。
+    caution: >
+      也有「下过单即算活跃」的口径，包含 canceled/refunded 的订单；
+      未指明是否只算已支付时需确认。
     tables: [orders]
     sql_hint: "COUNT(DISTINCT user_id) FROM orders WHERE status = 'paid'"
