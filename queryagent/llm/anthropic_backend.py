@@ -7,6 +7,7 @@ All Anthropic-specific message/tool-call format handling lives here;
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import Sequence
 from typing import Any, cast
 
@@ -21,22 +22,42 @@ class AnthropicBackend:
     """LLMBackend over the Anthropic Messages API."""
 
     def __init__(
-        self, model: str, *, max_tokens: int = 2048, temperature: float | None = None
+        self,
+        model: str,
+        *,
+        max_tokens: int = 2048,
+        temperature: float | None = None,
+        client: Any = None,
     ) -> None:
         """Create a backend; the API key is read from ``ANTHROPIC_API_KEY``.
+
+        Args:
+            model: Anthropic model id.
+            max_tokens: Completion token cap.
+            temperature: Accepted for config symmetry but **not applied** —
+                the Messages API dropped it in anthropic 1.x. A warning says
+                so rather than letting an eval believe it ran deterministically.
+            client: Injectable SDK client; tests pass a fake so this backend
+                has contract coverage without a live key.
 
         Raises:
             ValueError: If the environment variable is not set (keys are never
                 accepted via config or arguments, spec §二).
         """
-        if not os.environ.get("ANTHROPIC_API_KEY"):
+        if client is None and not os.environ.get("ANTHROPIC_API_KEY"):
             raise ValueError(
                 "ANTHROPIC_API_KEY is not set; API keys are read from the environment only"
             )
-        self._client = Anthropic()
+        self._client = client if client is not None else Anthropic()
         self._model = model
         self._max_tokens = max_tokens
-        self._temperature = temperature
+        if temperature is not None:
+            print(
+                "[warn] llm.temperature is ignored by the anthropic backend: the "
+                "Messages API no longer accepts it. Runs will not be deterministic; "
+                "use an OpenAI-compatible backend if that matters.",
+                file=sys.stderr,
+            )
 
     def complete(
         self,
@@ -49,7 +70,6 @@ class AnthropicBackend:
         response = self._client.messages.create(
             model=self._model,
             max_tokens=self._max_tokens,
-            temperature=self._temperature if self._temperature is not None else omit,
             system=system if system else omit,
             messages=converted,
             tools=[_convert_tool(t) for t in tools] if tools else omit,
@@ -72,7 +92,7 @@ class AnthropicBackend:
                 output_tokens=response.usage.output_tokens,
                 cached_input_tokens=getattr(response.usage, "cache_read_input_tokens", 0)
                 or 0,
-                model=response.model,
+                model=str(response.model),
             ),
         )
 
