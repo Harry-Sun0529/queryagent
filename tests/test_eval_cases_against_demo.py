@@ -26,13 +26,20 @@ CASES = load_cases(ROOT / "eval" / "cases.yaml")
 RESULT_CASES = [case for case in CASES if case.expected_sql]
 
 
-def test_case_mix_matches_spec() -> None:
+def test_case_mix_carries_enough_weight_per_metric() -> None:
+    """Minimums per kind, not a magic total.
+
+    Each reported rate needs a denominator big enough to say anything: at
+    four cases a "4/4" is a nice-sounding number with no evidence behind it.
+    Clarify behaviour is this project's differentiator, so its two arms —
+    should-ask and must-not-ask — carry the largest minimums.
+    """
     kinds = [case.kind for case in CASES]
-    assert len(CASES) == 20
-    assert kinds.count("clarify") >= 2
-    assert kinds.count("no_clarify") >= 2
-    assert kinds.count("metric") >= 4
+    assert kinds.count("clarify") >= 8, "should-ask arm too small to mean anything"
+    assert kinds.count("no_clarify") >= 8, "must-not-ask control too small"
+    assert kinds.count("metric") >= 8, "metric-citation rate needs a real denominator"
     assert kinds.count("multistep") >= 4
+    assert kinds.count("simple") >= 8
 
 
 @pytest.mark.parametrize("case", RESULT_CASES, ids=lambda c: c.id)

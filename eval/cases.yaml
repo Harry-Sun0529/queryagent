@@ -89,14 +89,16 @@ cases:
 
   - id: metric_aov_overall
     kind: metric
-    question: 我们的客单价是多少？
+    # aov 现在带 caution（按订单 vs 按用户），所以问题必须点明口径，
+    # 否则它就变成一条 clarify 用例了。
+    question: 按订单口径算，我们的客单价是多少？
     expected_sql: SELECT avg(amount) FROM orders WHERE status = 'paid'
     expected_metrics: [客单价]
     tags: [metric]
 
   - id: metric_active_buyers_last_month
     kind: metric
-    question: 上个月的活跃购买用户有多少？
+    question: 只算已支付订单，上个月的活跃购买用户有多少？
     expected_sql: >
       SELECT count(DISTINCT user_id) FROM orders
       WHERE status = 'paid'
@@ -179,4 +181,123 @@ cases:
     expected_sql: >
       SELECT count(*) FROM orders
       WHERE strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now', '-1 month')
+    tags: [clarify-control]
+
+  # ---- metric citation (扩充) ---------------------------------------------
+  - id: metric_refund_rate_by_count
+    kind: metric
+    question: 按订单数口径，退款率是多少？
+    expected_sql: >
+      SELECT sum(CASE WHEN status = 'refunded' THEN 1 ELSE 0 END) * 1.0 / count(*)
+      FROM orders
+    expected_metrics: [退款率]
+    tags: [metric, ratio]
+
+  - id: metric_repurchase_full_period
+    kind: metric
+    question: 按全期口径，复购率是多少？（保留 4 位小数）
+    expected_sql: >
+      SELECT round(
+        (SELECT count(*) FROM (SELECT user_id FROM orders WHERE status = 'paid'
+                               GROUP BY user_id HAVING count(*) >= 2)) * 1.0
+        / (SELECT count(DISTINCT user_id) FROM orders WHERE status = 'paid'), 4)
+    expected_metrics: [复购率]
+    tags: [metric, ratio]
+
+  - id: metric_gmv_by_region_paid
+    kind: metric
+    question: 按支付口径，各地区的成交额分别是多少？返回地区和金额两列。
+    expected_sql: >
+      SELECT u.region, sum(o.amount) FROM orders o JOIN users u ON u.id = o.user_id
+      WHERE o.status = 'paid' GROUP BY u.region ORDER BY u.region
+    expected_metrics: [成交额]
+    tags: [metric, join]
+
+  - id: metric_new_users_by_channel_registration
+    kind: metric
+    question: 按注册口径，各渠道分别新增了多少用户？返回渠道和用户数两列。
+    expected_sql: >
+      SELECT channel, count(*) FROM users
+      WHERE channel <> 'internal_test' GROUP BY channel ORDER BY channel
+    expected_metrics: [新增用户]
+    tags: [metric, groupby]
+
+  # ---- clarify: 该问的（扩充到 8 条）---------------------------------------
+  - id: clarify_aov_ambiguous
+    kind: clarify
+    question: 我们的客单价是多少？
+    expected_metrics: [aov]
+    tags: [clarify]
+
+  - id: clarify_active_buyers_ambiguous
+    kind: clarify
+    question: 上个月有多少活跃购买用户？
+    expected_metrics: [active_buyers]
+    tags: [clarify]
+
+  - id: clarify_refund_rate_ambiguous
+    kind: clarify
+    question: 我们的退款率是多少？
+    expected_metrics: [refund_rate]
+    tags: [clarify]
+
+  - id: clarify_repurchase_ambiguous
+    kind: clarify
+    question: 我们的复购率是多少？
+    expected_metrics: [repurchase_rate]
+    tags: [clarify]
+
+  - id: clarify_new_users_by_channel
+    kind: clarify
+    question: 各渠道分别新增了多少用户？
+    expected_metrics: [new_users]
+    tags: [clarify]
+
+  - id: clarify_gmv_reconciliation
+    kind: clarify
+    question: 做财务对账用，上个月成交额是多少？
+    expected_metrics: [gmv]
+    tags: [clarify]
+
+  # ---- no_clarify: 不该问的对照（扩充到 8 条）------------------------------
+  - id: no_clarify_aov_by_order
+    kind: no_clarify
+    question: 按订单口径（总金额除以订单数），客单价是多少？
+    expected_sql: SELECT avg(amount) FROM orders WHERE status = 'paid'
+    tags: [clarify-control]
+
+  - id: no_clarify_refund_by_order_count
+    kind: no_clarify
+    question: 按订单数口径（不按金额），退款率是多少？
+    expected_sql: >
+      SELECT sum(CASE WHEN status = 'refunded' THEN 1 ELSE 0 END) * 1.0 / count(*)
+      FROM orders
+    tags: [clarify-control]
+
+  - id: no_clarify_active_buyers_paid_only
+    kind: no_clarify
+    question: 只算已支付订单，上个月有多少去重用户下过单？
+    expected_sql: >
+      SELECT count(DISTINCT user_id) FROM orders
+      WHERE status = 'paid'
+        AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now', '-1 month')
+    tags: [clarify-control]
+
+  - id: no_clarify_region_lookup
+    kind: no_clarify
+    # 完全不涉及任何带 caution 的口径，绝不该追问。
+    question: 数据库里有哪些地区？返回去重后的地区名一列。
+    expected_sql: SELECT DISTINCT region FROM users ORDER BY region
+    tags: [clarify-control]
+
+  - id: no_clarify_sku_count
+    kind: no_clarify
+    question: order_items 表里一共有多少行？
+    expected_sql: SELECT count(*) FROM order_items
+    tags: [clarify-control]
+
+  - id: no_clarify_max_amount
+    kind: no_clarify
+    question: 所有订单里最大的单笔金额是多少？（只返回金额一个值）
+    expected_sql: SELECT max(amount) FROM orders
     tags: [clarify-control]

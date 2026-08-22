@@ -2,7 +2,7 @@
 status: open
 type: task
 blocked_by: []
-claimed_by:
+claimed_by: fable-session
 ---
 # T21 — 把追问与口径标注补到能说话的样本量
 
