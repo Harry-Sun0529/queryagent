@@ -69,6 +69,7 @@ class AppConfig:
     safety: SafetyConfig
     metrics_path: str | None = None
     trace: bool = True  # record event streams to .queryagent/traces/
+    trace_dir: str | None = None  # where; default is relative to the cwd
 
 
 def load_config(path: str | Path) -> AppConfig:
@@ -93,6 +94,7 @@ def load_config(path: str | Path) -> AppConfig:
         safety=_load_safety(raw.get("safety") or {}),
         metrics_path=_opt_str(raw, "metrics_path"),
         trace=_opt_bool(raw, "trace", default=True),
+        trace_dir=_opt_str(raw, "trace_dir"),
     )
 
 
