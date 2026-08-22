@@ -118,6 +118,33 @@ make demo-up-ch   # additionally ClickHouse on :9001
 queryagent chat --config examples/demo_ecommerce/config.clickhouse.yaml
 ```
 
+### Using it as a library
+
+The CLI is one consumer of the event stream; your code can be another. The
+public surface is what `queryagent` exports — everything else may move.
+
+```python
+from queryagent import AnswerEvent, ContextBuilder, ToolRegistry, run_agent
+from queryagent.connectors.sqlite import SQLiteConnector
+from queryagent.llm import make_backend
+from queryagent.schema import render_schema
+from queryagent.tools import make_default_tools
+
+connector = SQLiteConnector(path="examples/demo_ecommerce/demo_shop.db")
+builder = ContextBuilder(
+    schema_text=render_schema(connector.get_schema()), dialect=connector.dialect
+)
+registry = ToolRegistry(make_default_tools(connector, timeout_s=10, max_rows=200))
+
+for event in run_agent("有多少用户？", backend=backend, registry=registry,
+                       context_builder=builder):
+    if isinstance(event, AnswerEvent):
+        print(event.text)
+```
+
+This snippet is executed by `tests/test_public_api.py` — documented code
+that was never run is how a library's first impression breaks.
+
 ### Your own database
 
 Create a **read-only** account (this is a load-bearing part of the security
