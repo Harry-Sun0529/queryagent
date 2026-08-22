@@ -13,8 +13,10 @@ import argparse
 import contextlib
 import dataclasses
 import sys
+import threading
 import traceback
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Protocol
 
@@ -130,6 +132,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="reuse cases already scored in <output>.partial.jsonl instead of paying again",
     )
     evalp.add_argument("--max-turns", type=int, default=8)
+    evalp.add_argument(
+        "--concurrency",
+        type=int,
+        default=1,
+        help="run this many cases at once (default 1). Higher values finish "
+        "sooner but push harder against provider rate limits.",
+    )
 
     args = parser.parse_args(argv)
     handlers = {
@@ -490,14 +499,21 @@ def _run_eval(args: argparse.Namespace, config: AppConfig, log: ResultLog) -> in
         public_config = dataclasses.replace(config, metrics_path=None)
         try:
             results = _eval_public(
-                args.public, Path(args.db_dir), public_config, args.max_turns, log
+                args.public,
+                Path(args.db_dir),
+                public_config,
+                args.max_turns,
+                log,
+                args.concurrency,
             )
         finally:
             log.close()
         title = "QueryAgent Eval Report — public subset"
     else:
         try:
-            results = _eval_self_built(args.cases, config, args.max_turns, log)
+            results = _eval_self_built(
+                args.cases, config, args.max_turns, log, args.concurrency
+            )
         finally:
             log.close()
         title = "QueryAgent Eval Report — self-built cases"
@@ -509,6 +525,68 @@ def _run_eval(args: argparse.Namespace, config: AppConfig, log: ResultLog) -> in
     passed = sum(1 for r in results if r.passed)
     print(f"{passed}/{len(results)} cases passed; report -> {args.output}")
     return 0 if passed == len(results) else 3
+
+
+class _WorkerPool:
+    """One connector and one wired runner per thread.
+
+    SQLite connections cannot be shared between threads, and a per-thread
+    backend keeps one slow call from blocking another. Everything created
+    here is closed by the caller's ExitStack.
+    """
+
+    def __init__(
+        self,
+        build: Callable[[contextlib.ExitStack], tuple[Connector, SessionRunQuestion]],
+        stack: contextlib.ExitStack,
+    ) -> None:
+        self._build = build
+        self._stack = stack
+        self._local = threading.local()
+        self._lock = threading.Lock()
+
+    def get(self) -> tuple[Connector, SessionRunQuestion]:
+        """The calling thread's worker, built on first use."""
+        worker = getattr(self._local, "worker", None)
+        if worker is None:
+            with self._lock:  # ExitStack registration is not thread-safe
+                worker = self._build(self._stack)
+            self._local.worker = worker
+        return worker
+
+
+def _run_batch(
+    cases: Sequence[EvalCase],
+    *,
+    pool: _WorkerPool,
+    done: dict[str, CaseResult],
+    results: list[CaseResult],
+    log: ResultLog,
+    guard: _OutageGuard,
+    concurrency: int,
+) -> None:
+    """Score ``cases``, in order, optionally several at a time.
+
+    Results are consumed in submission order on the calling thread, so the
+    log stays a single writer and "consecutive outages" keeps meaning what
+    it means serially — concurrency changes the speed, never the numbers.
+    """
+    pending = [case for case in cases if case.id not in done]
+    for case in cases:
+        if case.id in done:
+            results.append(done[case.id])
+
+    def score(case: EvalCase) -> CaseResult:
+        connector, run_question = pool.get()
+        return run_case(case, run_question=run_question, connector=connector)
+
+    if concurrency <= 1:
+        for case in pending:
+            _record(score(case), results, log, guard)
+        return
+    with ThreadPoolExecutor(max_workers=concurrency) as executor:
+        for result in executor.map(score, pending):
+            _record(result, results, log, guard)
 
 
 def _record(
@@ -529,27 +607,49 @@ def _record(
 
 
 def _eval_self_built(
-    cases_path: str, config: AppConfig, max_turns: int, log: ResultLog
+    cases_path: str,
+    config: AppConfig,
+    max_turns: int,
+    log: ResultLog,
+    concurrency: int = 1,
 ) -> list[CaseResult]:
     cases = load_cases(cases_path)
     done = log.completed()
     guard = _OutageGuard()
+    results: list[CaseResult] = []
     with contextlib.ExitStack() as stack:
-        connector = make_connector(config.database)
-        stack.callback(connector.close)
-        run_question = _make_run_question(connector, config, max_turns, stack)
-        results = []
-        for case in cases:
-            if case.id in done:
-                results.append(done[case.id])
-                continue
-            result = run_case(case, run_question=run_question, connector=connector)
-            _record(result, results, log, guard)
-        return results
+        pool = _WorkerPool(
+            lambda st: _build_worker(config, max_turns, st), stack
+        )
+        _run_batch(
+            cases,
+            pool=pool,
+            done=done,
+            results=results,
+            log=log,
+            guard=guard,
+            concurrency=concurrency,
+        )
+    results.sort(key=lambda r: [c.id for c in cases].index(r.case.id))
+    return results
+
+
+def _build_worker(
+    config: AppConfig, max_turns: int, stack: contextlib.ExitStack
+) -> tuple[Connector, SessionRunQuestion]:
+    """A connector plus its wired runner, both released by ``stack``."""
+    connector = make_connector(config.database)
+    stack.callback(connector.close)
+    return connector, _make_run_question(connector, config, max_turns, stack)
 
 
 def _eval_public(
-    subset_path: str, db_dir: Path, config: AppConfig, max_turns: int, log: ResultLog
+    subset_path: str,
+    db_dir: Path,
+    config: AppConfig,
+    max_turns: int,
+    log: ResultLog,
+    concurrency: int = 1,
 ) -> list[CaseResult]:
     """Public-benchmark mode: one SQLite database (and runtime) per db_id."""
     cases = load_subset(subset_path)
@@ -561,7 +661,10 @@ def _eval_public(
         by_db.setdefault(case.db_id, []).append(case)
     for db_id, db_cases in by_db.items():
         try:
-            connector = SQLiteConnector(path=str(db_dir / db_id / f"{db_id}.sqlite"))
+            db_path = str(db_dir / db_id / f"{db_id}.sqlite")
+            # Opened once up front so an unusable database fails fast, before
+            # any worker or paid call; workers open their own below.
+            connector = SQLiteConnector(path=db_path)
         except Exception as exc:  # noqa: BLE001
             # One unusable database costs its own cases, not the whole run —
             # a public suite is 30 paid minutes and must survive to a report.
@@ -576,13 +679,31 @@ def _eval_public(
         try:
             with contextlib.ExitStack() as stack:
                 stack.callback(connector.close)
-                run_question = _make_run_question(connector, config, max_turns, stack)
-                for case in db_cases:
-                    if case.id in done:
-                        results.append(done[case.id])
-                        continue
-                    result = run_case(case, run_question=run_question, connector=connector)
-                    _record(result, results, log, guard)
+                def build(
+                    st: contextlib.ExitStack, path: str = db_path
+                ) -> tuple[Connector, SessionRunQuestion]:
+                    """A fresh connector per worker.
+
+                    Sharing one would let concurrent queries strip each
+                    other's timeout: SQLite's deadline guard is installed on
+                    the connection, not the statement.
+                    """
+                    worker_connector = SQLiteConnector(path=path)
+                    st.callback(worker_connector.close)
+                    return worker_connector, _make_run_question(
+                        worker_connector, config, max_turns, st
+                    )
+
+                pool = _WorkerPool(build, stack)
+                _run_batch(
+                    db_cases,
+                    pool=pool,
+                    done=done,
+                    results=results,
+                    log=log,
+                    guard=guard,
+                    concurrency=concurrency,
+                )
         except UpstreamOutage:
             raise
         except Exception as exc:  # noqa: BLE001

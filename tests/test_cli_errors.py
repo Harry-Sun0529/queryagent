@@ -676,3 +676,117 @@ def test_chat_keeps_only_recent_turns_in_memory(
     assert len(remembered) <= MAX_REMEMBERED_TURNS
     texts = " ".join(m.content for m in last_call)  # type: ignore[attr-defined]
     assert "问题0" not in texts, "the oldest turn should have been dropped"
+
+
+class CountingBackend:
+    """Answers every question the same way; counts calls across threads."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.closed = 0
+
+    def complete(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        from queryagent.llm.base import ModelResponse
+
+        self.calls += 1
+        return ModelResponse(text="42", stop_reason="stop")
+
+    def close(self) -> None:
+        self.closed += 1
+
+
+def selfbuilt_args(tmp_path: Path, output: str) -> list[str]:
+    config = tmp_path / "config.yaml"
+    config.write_text(EVAL_CONFIG.format(db=real_db(tmp_path)), encoding="utf-8")
+    cases = tmp_path / "cases.yaml"
+    cases.write_text(
+        "cases:\n"
+        + "".join(
+            f"  - id: c{i}\n    kind: simple\n    question: q{i}\n"
+            f"    expected_sql: SELECT {i}\n"
+            for i in range(12)
+        ),
+        encoding="utf-8",
+    )
+    return [
+        "eval",
+        "--config", str(config),
+        "--cases", str(cases),
+        "--output", str(tmp_path / output),
+    ]
+
+
+def test_parallel_and_serial_agree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Concurrency is a speed change, never a result change.
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setattr("queryagent.cli.make_backend", lambda _config: CountingBackend())
+
+    main(selfbuilt_args(tmp_path, "serial.md"))
+    main([*selfbuilt_args(tmp_path, "parallel.md"), "--concurrency", "4"])
+
+    def summary(name: str) -> list[str]:
+        text = (tmp_path / name).read_text(encoding="utf-8")
+        return [line for line in text.splitlines() if line.startswith("| c")]
+
+    assert summary("serial.md") == summary("parallel.md")
+
+
+def test_every_case_is_recorded_exactly_once_under_concurrency(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setattr("queryagent.cli.make_backend", lambda _config: CountingBackend())
+
+    args = [*selfbuilt_args(tmp_path, "p.md"), "--concurrency", "4"]
+    main(args)
+
+    from queryagent.evals.checkpoint import ResultLog
+
+    recovered = ResultLog(
+        (tmp_path / "p.partial.jsonl"), resume=True
+    ).completed()
+    assert sorted(recovered) == sorted(f"c{i}" for i in range(12))
+
+
+def test_each_thread_gets_its_own_worker() -> None:
+    """The invariant the parallel design rests on.
+
+    SQLite's timeout guard is set on the connection, so two queries sharing
+    one connection can strip each other's deadline — a query would silently
+    lose its timeout. Per-thread workers remove the race rather than relying
+    on sqlite's serialized mode to paper over it.
+    """
+    import contextlib
+    import threading
+
+    from queryagent.cli import _WorkerPool
+
+    built: list[object] = []
+
+    def build(stack: contextlib.ExitStack) -> tuple[object, object]:
+        worker = (object(), object())
+        built.append(worker)
+        return worker  # type: ignore[return-value]
+
+    with contextlib.ExitStack() as stack:
+        pool = _WorkerPool(build, stack)  # type: ignore[arg-type]
+        seen: list[object] = []
+        lock = threading.Lock()
+
+        def use() -> None:
+            worker = pool.get()
+            again = pool.get()
+            with lock:
+                seen.append(worker)
+            assert worker is again, "one worker per thread, reused"
+
+        threads = [threading.Thread(target=use) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+    assert len(built) == 4, "each thread builds exactly one worker"
+    assert len({id(w) for w in seen}) == 4, "no two threads share a worker"
