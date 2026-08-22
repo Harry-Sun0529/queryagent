@@ -2,7 +2,7 @@
 status: open
 type: task
 blocked_by: [21]
-claimed_by:
+claimed_by: fable-session
 ---
 # T24 — eval 并行执行
 

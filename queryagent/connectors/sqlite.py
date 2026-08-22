@@ -33,7 +33,12 @@ class SQLiteConnector:
         """
         if path != ":memory:" and not Path(path).exists():
             raise ConnectorError(f"SQLite database not found: {path}")
-        self._conn = sqlite3.connect(path)
+        # check_same_thread=False because a parallel eval builds one
+        # connector per worker thread and closes them from the main thread as
+        # its ExitStack unwinds. The invariant that makes this safe is that a
+        # connection is never *used* by two threads: each worker owns its own,
+        # and closing happens only after every worker has finished.
+        self._conn = sqlite3.connect(path, check_same_thread=False)
 
     def get_schema(self) -> list[TableSchema]:
         """Read table/column metadata via sqlite_master and PRAGMA table_info."""
