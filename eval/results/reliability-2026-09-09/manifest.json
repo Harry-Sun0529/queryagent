@@ -1,0 +1,11 @@
+[
+  {
+    "run": "self-built",
+    "concurrency": 1,
+    "wall_seconds": 193.65,
+    "exit_code": 3,
+    "recorded": 36,
+    "sql_hits": 33,
+    "completed_hits": 32
+  }
+]

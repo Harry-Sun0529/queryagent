@@ -1,0 +1,2 @@
+[错误] 5 个用例连续未能测量，已中止本次运行（最后一次：agent raised ConnectError: [Errno 61] Connection refused）
+  → 服务方拒绝了请求（余额、配额或 key 的问题），重试不会好转。处理后用 --resume 续跑；已完成的用例不会重付。

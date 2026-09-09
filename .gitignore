@@ -25,3 +25,6 @@ eval_report.md
 
 # Agent traces (may contain business data)
 .queryagent/
+
+# Eval launcher process artifacts (the .md/.jsonl evidence IS committed)
+eval/results/*.pid

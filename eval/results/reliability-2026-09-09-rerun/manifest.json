@@ -1,0 +1,46 @@
+[
+  {
+    "run": "serial-1",
+    "concurrency": 1,
+    "exit_code": 3,
+    "wall_seconds": 1533.48,
+    "recorded": 100,
+    "sql_hits": 43,
+    "completed_hits": 43,
+    "tokens": 1306823,
+    "estimated_usd_upper_bound": 0.313041608
+  },
+  {
+    "run": "parallel-1",
+    "concurrency": 4,
+    "exit_code": 3,
+    "wall_seconds": 529.55,
+    "recorded": 100,
+    "sql_hits": 43,
+    "completed_hits": 42,
+    "tokens": 1187834,
+    "estimated_usd_upper_bound": 0.288841824
+  },
+  {
+    "run": "parallel-2",
+    "concurrency": 4,
+    "exit_code": 3,
+    "wall_seconds": 561.67,
+    "recorded": 100,
+    "sql_hits": 47,
+    "completed_hits": 46,
+    "tokens": 1175764,
+    "estimated_usd_upper_bound": 0.268286352
+  },
+  {
+    "run": "serial-2",
+    "concurrency": 1,
+    "exit_code": 3,
+    "wall_seconds": 1440.78,
+    "recorded": 100,
+    "sql_hits": 44,
+    "completed_hits": 42,
+    "tokens": 1162336,
+    "estimated_usd_upper_bound": 0.27623998400000005
+  }
+]

@@ -1,0 +1,11 @@
+[
+  {
+    "run": "serial-1",
+    "concurrency": 1,
+    "wall_seconds": 85.42,
+    "exit_code": 2,
+    "recorded": 2,
+    "sql_hits": 0,
+    "completed_hits": 0
+  }
+]
