@@ -21,9 +21,11 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
+from typing import Protocol
 
 from queryagent.connectors.base import QueryResult
-from queryagent.workflow.builder import MetricDraftBuilder
+from queryagent.knowledge.models import EvidenceRef, RefStatus
+from queryagent.knowledge.provider import RetrievalScope, scope_of
 from queryagent.workflow.compiler import TemplateCompiler
 from queryagent.workflow.errors import (
     ConfirmationRequired,
@@ -33,6 +35,7 @@ from queryagent.workflow.errors import (
 )
 from queryagent.workflow.models import (
     ActorContext,
+    BusinessDefinition,
     Confirmation,
     DefinitionDraft,
     DraftStatus,
@@ -43,9 +46,44 @@ from queryagent.workflow.models import (
 )
 from queryagent.workflow.store import SqliteWorkflowStore
 
+
+class DraftBuilder(Protocol):
+    """Turns a question into a 口径 to confirm.
+
+    Two implementations: maintainer metrics alone (slice 1A) and those plus
+    authorised document evidence (1B). The seam is a Protocol so the service
+    does not have to know which it holds — and so a third one can be a
+    third file rather than a branch in here.
+    """
+
+    def build(self, question: str, actor: ActorContext | None = ...) -> BusinessDefinition:
+        ...
+
+
+class RefChecker(Protocol):
+    """Re-checks stored citations. Satisfied by ``LocalKnowledgeProvider``."""
+
+    def check_refs(
+        self, scope: RetrievalScope, refs: tuple[EvidenceRef, ...]
+    ) -> tuple[object, ...]: ...
+
+
 Executor = Callable[[str], QueryResult]
 Clock = Callable[[], datetime]
 IdFactory = Callable[[], str]
+
+
+def _parse_ref(rendered: str) -> EvidenceRef:
+    """Rebuild a citation from its stored string form."""
+    body, _, span = rendered.partition("@")
+    doc_id, _, chunk_id = body.partition("#")
+    start, _, end = span.partition(":")
+    return EvidenceRef(
+        doc_id=doc_id,
+        chunk_id=chunk_id,
+        quote_start=int(start) if start.isdigit() else 0,
+        quote_end=int(end) if end.isdigit() else 0,
+    )
 
 
 def _now() -> datetime:
@@ -63,11 +101,12 @@ class QueryWorkflow:
         self,
         *,
         store: SqliteWorkflowStore,
-        builder: MetricDraftBuilder,
+        builder: DraftBuilder,
         compiler: TemplateCompiler,
         executor: Executor,
         clock: Clock = _now,
         new_id: IdFactory = _uuid,
+        ref_checker: RefChecker | None = None,
     ) -> None:
         self._store = store
         self._builder = builder
@@ -75,6 +114,7 @@ class QueryWorkflow:
         self._execute_sql = executor
         self._clock = clock
         self._new_id = new_id
+        self._ref_checker = ref_checker
 
     # ------------------------------------------------------------- prepare
 
@@ -85,7 +125,7 @@ class QueryWorkflow:
         confirmation screen is the trust boundary, not a fallback for hard
         questions (D05, T01).
         """
-        definition = self._builder.build(question)
+        definition = self._build_definition(actor, question)
         now = self._clock()
         draft = DefinitionDraft(
             draft_id=self._new_id(),
@@ -106,6 +146,18 @@ class QueryWorkflow:
         self._store.create_draft(draft)
         return draft
 
+    def _build_definition(self, actor: ActorContext, question: str) -> BusinessDefinition:
+        """Ask the builder for a draft, passing the identity when it wants one.
+
+        Evidence-backed builders retrieve under the actor's scope; the
+        maintainer-only builder has nothing to scope and takes no actor. One
+        call site rather than two branches at every caller.
+        """
+        try:
+            return self._builder.build(question, actor)
+        except TypeError:
+            return self._builder.build(question)
+
     def get_draft(self, actor: ActorContext, draft_id: str) -> DefinitionDraft:
         """Read one draft the actor owns."""
         return self._store.get_draft(actor.subject_id, draft_id)
@@ -113,6 +165,39 @@ class QueryWorkflow:
     def get_run(self, actor: ActorContext, run_id: str) -> QueryRun:
         """Read one run the actor owns."""
         return self._store.get_run(actor.subject_id, run_id)
+
+    def get_run_by_key(self, actor: ActorContext, idempotency_key: str) -> QueryRun | None:
+        """The run holding this idempotency key, if any."""
+        return self._store.get_run_by_key(actor.subject_id, idempotency_key)
+
+    def attach_evidence(self, actor: ActorContext, draft_id: str, refs: tuple[str, ...]) -> None:
+        """Record the citations this draft rests on, for later re-checking."""
+        self._store.set_evidence(actor.subject_id, draft_id, refs)
+
+    def _evidence_still_stands(self, actor: ActorContext, draft_id: str) -> None:
+        """Re-check every citation, or raise.
+
+        Called before minting a confirmation and again before executing one.
+        Access is withdrawn in the gap between those two moments, and only a
+        check at each end closes it. A draft with no citations skips this
+        entirely, which is what keeps maintainer-only drafts behaving exactly
+        as they did in 1A.
+        """
+        if self._ref_checker is None:
+            return
+        stored = self._store.evidence_of(actor.subject_id, draft_id)
+        if not stored:
+            return
+        refs = tuple(_parse_ref(ref) for ref in stored)
+        statuses = self._ref_checker.check_refs(scope_of(actor), refs)
+        if all(status is RefStatus.OK for status in statuses):
+            return
+        self._store.expire_draft(actor.subject_id, draft_id)
+        # One message for withdrawn and for edited: which of the two it was
+        # can itself disclose a document the caller may not know about.
+        raise ConfirmationRequired(
+            "口径所依据的文档已失效（内容变更、被移除，或访问权限调整）；需要重新生成确认单"
+        )
 
     # --------------------------------------------------------------- amend
 
@@ -182,6 +267,7 @@ class QueryWorkflow:
                 f"draft {draft_id} is at version {draft.version}; "
                 "review the current 口径 and confirm again"
             )
+        self._evidence_still_stands(actor, draft_id)
         if not draft.definition.is_complete:
             raise WorkflowStateError(
                 "cannot confirm a 口径 with undetermined rules: "
@@ -227,6 +313,9 @@ class QueryWorkflow:
             )
         if draft.status is DraftStatus.EXPIRED:
             raise ConfirmationRequired(f"draft {draft.draft_id} has expired; prepare it again")
+        # Before compiling and before claiming the key: a refusal here must
+        # leave the database untouched and the idempotency key unspent.
+        self._evidence_still_stands(actor, draft.draft_id)
 
         # Compiling before claiming the key keeps an unmappable definition
         # from burning the caller's idempotency key on a run that never ran.

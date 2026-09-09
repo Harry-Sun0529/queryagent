@@ -388,3 +388,140 @@ def test_amend_refuses_maintainer_sourced_rules_too(
             expected_version=draft.version,
             rules=(Rule("variant", "registered", RuleSource.MAINTAINER),),
         )
+
+
+# ------------------------------------------------------------ K5: 依据失效
+
+
+class StubRefChecker:
+    """Reports a scripted status for every ref; counts how often it was asked."""
+
+    def __init__(self, status: object) -> None:
+        self.status = status
+        self.calls = 0
+
+    def check_refs(self, scope: object, refs: tuple) -> tuple:  # type: ignore[type-arg]
+        self.calls += 1
+        return tuple(self.status for _ in refs)
+
+
+def _doc_backed(tmp_path: Path, status: object) -> tuple[QueryWorkflow, CountingExecutor, object]:
+    from queryagent.knowledge.models import RefStatus  # noqa: F401
+
+    executor = CountingExecutor()
+    checker = StubRefChecker(status)
+    workflow = QueryWorkflow(
+        store=SqliteWorkflowStore(tmp_path / "wf.db"),
+        builder=MetricDraftBuilder(StubMetricStore((NEW_USERS, GMV))),
+        compiler=TemplateCompiler(TEMPLATES),
+        executor=executor.run,
+        clock=lambda: datetime(2026, 9, 9, tzinfo=timezone.utc),
+        ref_checker=checker,
+    )
+    return workflow, executor, checker
+
+
+def _confirmed_doc_draft(workflow: QueryWorkflow):  # type: ignore[no-untyped-def]
+    """A draft whose chosen variant carries a document citation."""
+    draft = workflow.prepare(ALICE, "上个月新增用户多少？", request_id="r1")
+    amended = workflow.amend(
+        ALICE,
+        draft.draft_id,
+        expected_version=draft.version,
+        rules=(Rule("variant", "registered", RuleSource.USER),),
+    )
+    return draft, amended
+
+
+def test_evidence_withdrawn_before_confirming_refuses_and_expires(tmp_path: Path) -> None:
+    """K5/T07: what the sheet cited is gone; it cannot be confirmed."""
+    from queryagent.knowledge.models import RefStatus
+
+    workflow, executor, checker = _doc_backed(tmp_path, RefStatus.UNAVAILABLE)
+    draft, amended = _confirmed_doc_draft(workflow)
+    workflow.attach_evidence(ALICE, draft.draft_id, ("d1#c1@0:5",))
+    with pytest.raises(ConfirmationRequired, match="依据"):
+        workflow.confirm(
+            ALICE,
+            draft.draft_id,
+            version=amended.version,
+            definition_hash=amended.definition_hash,
+        )
+    assert workflow.get_draft(ALICE, draft.draft_id).status is DraftStatus.EXPIRED
+    assert executor.executed == []
+
+
+def test_expiring_a_draft_keeps_its_version_and_hash(tmp_path: Path) -> None:
+    """§4.5.6: bumping the version would mask 'evidence gone' as '口径 changed'."""
+    from queryagent.knowledge.models import RefStatus
+
+    workflow, _, _ = _doc_backed(tmp_path, RefStatus.UNAVAILABLE)
+    draft, amended = _confirmed_doc_draft(workflow)
+    workflow.attach_evidence(ALICE, draft.draft_id, ("d1#c1@0:5",))
+    with pytest.raises(ConfirmationRequired):
+        workflow.confirm(
+            ALICE,
+            draft.draft_id,
+            version=amended.version,
+            definition_hash=amended.definition_hash,
+        )
+    expired = workflow.get_draft(ALICE, draft.draft_id)
+    assert expired.version == amended.version
+    assert expired.definition_hash == amended.definition_hash
+
+
+def test_evidence_withdrawn_between_confirm_and_execute_runs_no_sql(
+    tmp_path: Path,
+) -> None:
+    """The gap the second check exists for."""
+    from queryagent.knowledge.models import RefStatus
+
+    workflow, executor, checker = _doc_backed(tmp_path, RefStatus.OK)
+    draft, amended = _confirmed_doc_draft(workflow)
+    workflow.attach_evidence(ALICE, draft.draft_id, ("d1#c1@0:5",))
+    confirmation = workflow.confirm(
+        ALICE,
+        draft.draft_id,
+        version=amended.version,
+        definition_hash=amended.definition_hash,
+    )
+    checker.status = RefStatus.CHANGED
+    with pytest.raises(ConfirmationRequired):
+        workflow.execute(ALICE, confirmation.confirmation_id, idempotency_key="k1")
+    assert executor.executed == []
+
+
+def test_a_refused_execute_does_not_burn_the_idempotency_key(tmp_path: Path) -> None:
+    """1A's property must survive the new check being inserted before claim_run."""
+    from queryagent.knowledge.models import RefStatus
+
+    workflow, executor, checker = _doc_backed(tmp_path, RefStatus.OK)
+    draft, amended = _confirmed_doc_draft(workflow)
+    workflow.attach_evidence(ALICE, draft.draft_id, ("d1#c1@0:5",))
+    confirmation = workflow.confirm(
+        ALICE,
+        draft.draft_id,
+        version=amended.version,
+        definition_hash=amended.definition_hash,
+    )
+    checker.status = RefStatus.UNAVAILABLE
+    with pytest.raises(ConfirmationRequired):
+        workflow.execute(ALICE, confirmation.confirmation_id, idempotency_key="k1")
+    assert workflow.get_run_by_key(ALICE, "k1") is None
+
+
+def test_a_draft_with_no_citations_never_calls_the_checker(tmp_path: Path) -> None:
+    """Maintainer-only drafts have nothing to re-check; 1A behaviour unchanged."""
+    from queryagent.knowledge.models import RefStatus
+
+    workflow, executor, checker = _doc_backed(tmp_path, RefStatus.OK)
+    draft, amended = _confirmed_doc_draft(workflow)
+    confirmation = workflow.confirm(
+        ALICE,
+        draft.draft_id,
+        version=amended.version,
+        definition_hash=amended.definition_hash,
+    )
+    workflow.execute(ALICE, confirmation.confirmation_id, idempotency_key="k1")
+    assert checker.calls == 0
+    assert len(executor.executed) == 1

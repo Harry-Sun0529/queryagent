@@ -43,6 +43,11 @@ CREATE TABLE IF NOT EXISTS drafts (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS draft_evidence (
+    draft_id TEXT NOT NULL,
+    evidence_ref TEXT NOT NULL,
+    PRIMARY KEY (draft_id, evidence_ref)
+);
 CREATE TABLE IF NOT EXISTS confirmations (
     confirmation_id TEXT PRIMARY KEY,
     draft_id TEXT NOT NULL,
@@ -138,6 +143,38 @@ class SqliteWorkflowStore:
         if cursor.rowcount != 1:  # pragma: no cover - lost race under concurrency
             raise StaleVersion(f"draft {draft.draft_id} changed during update")
 
+    def expire_draft(self, subject_id: str, draft_id: str) -> None:
+        """Mark a draft's evidence no longer valid.
+
+        Status only: version and content hash stay put. Bumping the version
+        would make ``execute``'s version check fire first and report "the
+        口径 changed" for what is actually "the evidence is gone" — two
+        different things for the user to do about (§4.5.6).
+        """
+        self.get_draft(subject_id, draft_id)  # ownership first
+        self._conn.execute(
+            "UPDATE drafts SET status = ? WHERE draft_id = ?",
+            (DraftStatus.EXPIRED.value, draft_id),
+        )
+
+    def set_evidence(self, subject_id: str, draft_id: str, refs: tuple[str, ...]) -> None:
+        """Record which citations a draft rests on."""
+        self.get_draft(subject_id, draft_id)
+        self._conn.execute("DELETE FROM draft_evidence WHERE draft_id = ?", (draft_id,))
+        self._conn.executemany(
+            "INSERT OR REPLACE INTO draft_evidence VALUES (?,?)",
+            [(draft_id, ref) for ref in refs],
+        )
+
+    def evidence_of(self, subject_id: str, draft_id: str) -> tuple[str, ...]:
+        """The citations a draft rests on, for re-checking before it is used."""
+        self.get_draft(subject_id, draft_id)
+        rows = self._conn.execute(
+            "SELECT evidence_ref FROM draft_evidence WHERE draft_id = ? ORDER BY evidence_ref",
+            (draft_id,),
+        ).fetchall()
+        return tuple(row["evidence_ref"] for row in rows)
+
     # --------------------------------------------------------- confirmations
 
     def save_confirmation(self, confirmation: Confirmation) -> None:
@@ -216,6 +253,17 @@ class SqliteWorkflowStore:
                 run.run_id,
             ),
         )
+
+    def get_run_by_key(self, subject_id: str, idempotency_key: str) -> QueryRun | None:
+        """The run holding this key, or None when it was never claimed."""
+        row = self._conn.execute(
+            "SELECT * FROM runs WHERE idempotency_key = ?", (idempotency_key,)
+        ).fetchone()
+        if row is None:
+            return None
+        if row["subject_id"] != subject_id:
+            raise PermissionDenied("not permitted")
+        return _decode_run(row)
 
     def get_run(self, subject_id: str, run_id: str) -> QueryRun:
         row = self._conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
