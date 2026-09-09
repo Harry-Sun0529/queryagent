@@ -20,6 +20,10 @@ YAML schema (required fields frozen at v0.1.1; optional fields may be added):
         caution: 运营口径按 first_order_at……   # optional; v0.2.0 clarify fuel
         tables: [users]            # optional
         sql_hint: "COUNT(*) ..."   # optional
+        variants:                  # optional; selectable competing readings
+          - key: registered
+            label: 注册口径
+            definition: 按 users.created_at 归属日期
 """
 
 from __future__ import annotations
@@ -30,7 +34,7 @@ from typing import Any
 
 import yaml
 
-from queryagent.metrics.base import Metric
+from queryagent.metrics.base import Metric, MetricVariant
 
 _CJK_RUN = re.compile(r"[一-鿿]+")
 _ASCII_WORD = re.compile(r"[a-z0-9_]+")
@@ -93,9 +97,7 @@ class YamlMetricStore:
             for phrase in (metric.display_name, *metric.aliases):
                 if phrase and phrase.lower() in question_lower:
                     score += _PHRASE_HIT_SCORE
-            metric_tokens = _tokens(
-                " ".join((metric.name, metric.display_name, *metric.aliases))
-            )
+            metric_tokens = _tokens(" ".join((metric.name, metric.display_name, *metric.aliases)))
             score += len(question_tokens & metric_tokens)
             if score >= _MIN_SCORE:
                 scored.append((score, metric))
@@ -121,7 +123,37 @@ def _parse_metric(item: Any, index: int) -> Metric:
         caution=_opt_str(item, "caution", where),
         tables=_str_tuple(item, "tables", where),
         sql_hint=_opt_str(item, "sql_hint", where),
+        variants=_variants(item, where),
     )
+
+
+def _variants(item: dict[str, Any], where: str) -> tuple[MetricVariant, ...]:
+    """Parse optional competing readings; every field is required per entry.
+
+    A variant with no label or no definition cannot be shown to a user as a
+    choice, so a partial one is a config error rather than something to
+    render half of.
+    """
+    value = item.get("variants") or []
+    if not isinstance(value, list):
+        raise ValueError(f"{where}: 'variants' must be a list when present")
+    parsed: list[MetricVariant] = []
+    seen: set[str] = set()
+    for index, entry in enumerate(value):
+        at = f"{where}.variants[{index}]"
+        if not isinstance(entry, dict):
+            raise ValueError(f"{at}: each variant must be a mapping")
+        fields = {}
+        for key in ("key", "label", "definition"):
+            text = entry.get(key)
+            if not isinstance(text, str) or not text.strip():
+                raise ValueError(f"{at}: '{key}' is required and must be a non-empty string")
+            fields[key] = text.strip()
+        if fields["key"] in seen:
+            raise ValueError(f"{at}: duplicate variant key '{fields['key']}'")
+        seen.add(fields["key"])
+        parsed.append(MetricVariant(**fields))
+    return tuple(parsed)
 
 
 def _opt_str(item: dict[str, Any], key: str, where: str) -> str:

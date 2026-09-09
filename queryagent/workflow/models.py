@@ -1,0 +1,220 @@
+"""Data model for a confirmable business definition (handoff §9.1).
+
+Everything here is immutable and hashable by *meaning*. The hash is what
+binds "what the user confirmed" to "what gets executed": a version number
+alone can be replayed, but a content hash cannot be made to agree with
+semantics it does not describe.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import Enum
+
+
+class RuleSource(Enum):
+    """Where one rule of a 口径 came from.
+
+    Kept explicit because the whole product problem is that people cannot
+    tell a documented rule from someone's assumption. ``DOC`` therefore
+    requires a citation; ``USER`` marks a convention agreed for this request
+    only and must never be rendered as if the document said it (D07).
+    """
+
+    DOC = "doc"
+    USER = "user"
+    MAINTAINER = "maintainer"
+
+
+@dataclass(frozen=True)
+class Rule:
+    """One semantic field of a business definition, with its provenance."""
+
+    key: str
+    value: str
+    source: RuleSource
+    evidence_ref: str = ""
+    note: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.key:
+            raise ValueError("rule key must not be empty")
+        if self.source is RuleSource.DOC and not self.evidence_ref:
+            raise ValueError("a doc-sourced rule needs an evidence_ref to cite")
+
+    @property
+    def is_user_supplied(self) -> bool:
+        """True for rules the user agreed this time, not documented facts."""
+        return self.source is RuleSource.USER
+
+
+@dataclass(frozen=True)
+class Candidate:
+    """One competing reading of the same metric (D02: conflicts stay visible)."""
+
+    key: str
+    label: str
+    summary: str
+    evidence_ref: str = ""
+
+
+@dataclass(frozen=True)
+class BusinessDefinition:
+    """The structured 口径 a user is asked to confirm.
+
+    ``missing`` names rules that are genuinely undetermined. They are part of
+    the hash on purpose: "we do not know how refunds are handled" is a
+    different statement than any particular answer to it, and confirming one
+    must not silently satisfy the other.
+    """
+
+    metric: str
+    display_name: str
+    rules: tuple[Rule, ...] = ()
+    missing: tuple[str, ...] = ()
+    candidates: tuple[Candidate, ...] = ()
+
+    @property
+    def is_complete(self) -> bool:
+        """True when nothing required is still undetermined."""
+        return not self.missing
+
+    def rule(self, key: str) -> Rule | None:
+        """Look one rule up by key."""
+        return next((r for r in self.rules if r.key == key), None)
+
+    def candidate(self, key: str) -> Candidate | None:
+        """Look one competing reading up by key."""
+        return next((c for c in self.candidates if c.key == key), None)
+
+    def with_rules(self, added: tuple[Rule, ...]) -> BusinessDefinition:
+        """Return a copy with ``added`` replacing same-key rules.
+
+        Supplying a rule also removes its key from ``missing``: answering the
+        open question is what closes it.
+        """
+        replaced = {rule.key: rule for rule in added}
+        kept = tuple(r for r in self.rules if r.key not in replaced)
+        return BusinessDefinition(
+            metric=self.metric,
+            display_name=self.display_name,
+            rules=kept + added,
+            missing=tuple(k for k in self.missing if k not in replaced),
+            candidates=self.candidates,
+        )
+
+    def content_hash(self) -> str:
+        """Hash of meaning: rule keys/values/sources and what is still missing.
+
+        Rules are sorted, so reordering the confirmation screen does not
+        invalidate a confirmation. ``note`` is excluded — it is commentary.
+        """
+        payload = {
+            "metric": self.metric,
+            "rules": sorted(
+                [rule.key, rule.value, rule.source.value, rule.evidence_ref] for rule in self.rules
+            ),
+            "missing": sorted(self.missing),
+            # Candidate wording is on the screen the user approves, so it is
+            # part of what they approved. Silently rewording an option they
+            # chose between must invalidate the confirmation.
+            "candidates": sorted(
+                [c.key, c.label, c.summary, c.evidence_ref] for c in self.candidates
+            ),
+        }
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class ActorContext:
+    """A trusted caller identity (D11).
+
+    Constructed only by a trusted entry point — the local CLI user, a Web
+    session, an MCP host that authenticated the caller. Never parsed out of
+    model output or tool arguments: a ``subject_id`` a model proposed is a
+    string, not an authorisation.
+    """
+
+    subject_id: str
+    workspace_id: str
+    roles: frozenset[str] = field(default_factory=frozenset)
+
+    def __post_init__(self) -> None:
+        if not self.subject_id:
+            raise ValueError("subject_id must not be empty")
+        if not self.workspace_id:
+            raise ValueError("workspace_id must not be empty")
+
+
+class DraftStatus(Enum):
+    """Draft lifecycle (handoff §9.2)."""
+
+    NEEDS_INPUT = "needs_input"
+    AWAITING_CONFIRMATION = "awaiting_confirmation"
+    CONFIRMED = "confirmed"
+    EXPIRED = "expired"
+
+
+class RunStatus(Enum):
+    """Execution lifecycle."""
+
+    EXECUTING = "executing"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class DefinitionDraft:
+    """A versioned, persisted draft belonging to exactly one subject."""
+
+    draft_id: str
+    request_id: str
+    subject_id: str
+    workspace_id: str
+    question: str
+    version: int
+    status: DraftStatus
+    definition: BusinessDefinition
+    created_at: datetime
+    updated_at: datetime
+
+    @property
+    def definition_hash(self) -> str:
+        return self.definition.content_hash()
+
+
+@dataclass(frozen=True)
+class Confirmation:
+    """Proof that a subject approved one exact draft version.
+
+    Binds all three of draft, version and content hash. Executing needs all
+    three to still agree with what the store holds (§9.2 invariants 4-5).
+    """
+
+    confirmation_id: str
+    draft_id: str
+    draft_version: int
+    definition_hash: str
+    subject_id: str
+    confirmed_at: datetime
+
+
+@dataclass(frozen=True)
+class QueryRun:
+    """One execution attempt against a confirmation."""
+
+    run_id: str
+    draft_id: str
+    confirmation_id: str
+    subject_id: str
+    idempotency_key: str
+    status: RunStatus
+    sql: str = ""
+    columns: tuple[str, ...] = ()
+    rows: tuple[tuple[object, ...], ...] = ()
+    truncated: bool = False
+    error: str = ""

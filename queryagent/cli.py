@@ -1,5 +1,11 @@
 """QueryAgent CLI: ``chat`` (interactive, multi-turn), ``ask`` (one-shot),
-``eval`` (scored suites) — all pure consumers of the AgentEvent stream
+``eval`` (scored suites) — all pure consumers of the AgentEvent stream —
+plus ``flow``, which is not.
+
+``flow`` drives the trusted workflow layer instead: it prepares a 口径, shows
+it, requires an explicit confirmation, and only then executes a
+maintainer-declared query. It shares no execution path with ``ask``/``chat``;
+that is the point of it (docs/specs/workflow-slice-1a-2026-09.md).
 
 ``--verbose`` renders the full THINK/ACT/OBSERVE trace; the default shows
 answers only. In chat, a ClarifyEvent renders the agent's question, folds
@@ -12,9 +18,11 @@ from __future__ import annotations
 import argparse
 import contextlib
 import dataclasses
+import os
 import sys
 import threading
 import traceback
+import uuid
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
@@ -61,6 +69,27 @@ from queryagent.trace import (
     prune_traces,
     read_trace,
 )
+from queryagent.workflow.builder import VARIANT_RULE_KEY, MetricDraftBuilder
+from queryagent.workflow.compiler import TemplateCompiler
+from queryagent.workflow.errors import (
+    ConfirmationRequired,
+    MappingNotFound,
+    PermissionDenied,
+    StaleVersion,
+    WorkflowError,
+)
+from queryagent.workflow.execution import make_connector_executor
+from queryagent.workflow.mappings import load_mappings
+from queryagent.workflow.models import (
+    ActorContext,
+    DefinitionDraft,
+    DraftStatus,
+    Rule,
+    RuleSource,
+)
+from queryagent.workflow.render import render_definition_summary, render_draft
+from queryagent.workflow.service import QueryWorkflow
+from queryagent.workflow.store import SqliteWorkflowStore
 
 _trace_notice_shown = False
 
@@ -128,6 +157,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     ask.add_argument("--max-turns", type=int, default=8)
     ask.add_argument("--no-trace", action="store_true", help="do not record traces")
 
+    flow = subparsers.add_parser(
+        "flow", help="confirmation-gated query: show the 口径, confirm it, then execute"
+    )
+    flow.add_argument("question", help="natural-language question")
+    flow.add_argument("--config", default="config.yaml", help="path to config.yaml")
+    flow.add_argument("--subject", default=os.environ.get("USER", "local"), help="acting user id")
+    flow.add_argument("--workspace", default="default", help="business workspace id")
+    flow.add_argument(
+        "--variant", help="pick a 口径 non-interactively (still requires --yes to execute)"
+    )
+    flow.add_argument(
+        "--yes",
+        action="store_true",
+        help="confirm the 口径 without prompting. The confirmation record is still "
+        "created server-side and bound to this exact version — this flag automates "
+        "the human, it does not bypass the gate.",
+    )
+
     replay = subparsers.add_parser("replay", help="re-render a recorded trace")
     replay.add_argument("path", help="path to a .jsonl trace file")
 
@@ -161,6 +208,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     handlers = {
         "chat": _cmd_chat,
         "ask": _cmd_ask,
+        "flow": _cmd_flow,
         "replay": _cmd_replay,
         "eval": _cmd_eval,
     }
@@ -204,6 +252,22 @@ def _is_temporary(exc: BaseException, text: str) -> bool:
     return is_transient(exc)
 
 
+def _workflow_fix(exc: WorkflowError) -> str:
+    """Who can actually resolve this refusal."""
+    if isinstance(exc, MappingNotFound):
+        return (
+            "这是维护者的工作：在 workflow.mappings_path 指向的映射文件里为该口径"
+            "声明经过评审的 SQL。系统不会自行猜测查询。"
+        )
+    if isinstance(exc, StaleVersion):
+        return "口径已被改动。重新查看当前版本的确认单，再确认一次。"
+    if isinstance(exc, ConfirmationRequired):
+        return "先确认口径再执行；未确认或已失效的口径不会执行任何查询。"
+    if isinstance(exc, PermissionDenied):
+        return "当前身份没有该对象的访问权限。"
+    return "查看上面的说明后重试。"
+
+
 def _explain(exc: BaseException) -> tuple[str, str, int]:
     """Map a failure to (what went wrong, what to do, exit code)."""
     text = str(exc)
@@ -225,6 +289,11 @@ def _explain(exc: BaseException) -> tuple[str, str, int]:
     for env_var in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
         if env_var in text and "not set" in text:
             return (f"{env_var} 未设置。", f"export {env_var}=<你的 key>", EXIT_USER_ERROR)
+    if isinstance(exc, WorkflowError):
+        # A refusal from the trusted layer is the system working, not failing.
+        # Each refusal has a different person who can act on it, so generic
+        # "try again" advice would send every one of them to the wrong place.
+        return (text, _workflow_fix(exc), EXIT_USER_ERROR)
     if isinstance(exc, ConnectorError) and "not found" in text:
         return (
             f"{text}。",
@@ -462,6 +531,100 @@ def _cmd_ask(args: argparse.Namespace) -> int:
             if isinstance(event, ErrorEvent):
                 exit_code = 2
     return exit_code
+
+
+def _cmd_flow(args: argparse.Namespace) -> int:
+    """Prepare a 口径, require an explicit confirmation, then execute it.
+
+    Exit codes: 0 executed, 2 refused or declined. A decline is not an error
+    in the CLI sense but it is a non-zero outcome, because a script that
+    treats "the user said no" as success is a script that will eventually
+    report a number nobody approved.
+    """
+    config = load_config(args.config)
+    if not config.metrics_path:
+        raise ValueError(
+            "flow needs declared business metrics; set metrics_path in the config file"
+        )
+    if not config.workflow.mappings_path:
+        raise ValueError(
+            "flow needs a maintainer mapping file; set workflow.mappings_path in the config "
+            "file (see examples/query_mappings.yaml)"
+        )
+    actor = ActorContext(subject_id=args.subject, workspace_id=args.workspace)
+
+    with contextlib.ExitStack() as stack:
+        connector = make_connector(config.database)
+        stack.callback(connector.close)
+        store = SqliteWorkflowStore(config.workflow.state_path)
+        stack.callback(store.close)
+        workflow = QueryWorkflow(
+            store=store,
+            builder=MetricDraftBuilder(YamlMetricStore(config.metrics_path)),
+            compiler=TemplateCompiler(load_mappings(config.workflow.mappings_path)),
+            executor=make_connector_executor(
+                connector,
+                timeout_s=config.safety.timeout_s,
+                max_rows=config.safety.max_rows,
+            ),
+        )
+        return _run_flow(workflow, actor, args)
+
+
+def _run_flow(workflow: QueryWorkflow, actor: ActorContext, args: argparse.Namespace) -> int:
+    request_id = uuid.uuid4().hex
+    draft = workflow.prepare(actor, args.question, request_id=request_id)
+    print(render_draft(draft))
+
+    if draft.status is DraftStatus.NEEDS_INPUT:
+        choice = args.variant or _prompt_variant(draft)
+        if not choice:
+            print("\n[已取消] 未选择口径，没有执行任何查询。")
+            return 2
+        valid = {c.key for c in draft.definition.candidates}
+        if choice not in valid:
+            raise ValueError(f"未知口径 '{choice}'；可选：{', '.join(sorted(valid))}")
+        draft = workflow.amend(
+            actor,
+            draft.draft_id,
+            expected_version=draft.version,
+            rules=(Rule(VARIANT_RULE_KEY, choice, RuleSource.USER),),
+        )
+        print()
+        print(render_draft(draft))
+
+    if not args.yes and not _prompt_confirm():
+        print("\n[已取消] 未确认口径，没有执行任何查询。")
+        return 2
+
+    confirmation = workflow.confirm(
+        actor, draft.draft_id, version=draft.version, definition_hash=draft.definition_hash
+    )
+    run = workflow.execute(actor, confirmation.confirmation_id, idempotency_key=request_id)
+    print()
+    print(f"结果（按已确认口径：{render_definition_summary(draft.definition)}）")
+    print("  " + " | ".join(run.columns))
+    for row in run.rows:
+        print("  " + " | ".join("NULL" if v is None else str(v) for v in row))
+    if run.truncated:
+        print("  （结果已在行数上限处截断）")
+    print(f"\n执行的 SQL（维护者映射 {draft.definition.metric}）：\n  {run.sql}")
+    return 0
+
+
+def _prompt_variant(draft: DefinitionDraft) -> str:
+    keys = ", ".join(c.key for c in draft.definition.candidates)
+    try:
+        return input(f"\n选择口径 [{keys}]（回车取消）： ").strip()
+    except EOFError:
+        return ""
+
+
+def _prompt_confirm() -> bool:
+    try:
+        return input("\n确认按以上口径执行？[y/N] ").strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
 
 
 def _cmd_eval(args: argparse.Namespace) -> int:

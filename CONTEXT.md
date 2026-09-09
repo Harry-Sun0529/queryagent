@@ -24,6 +24,23 @@ specs for in-flight work in `docs/specs/`.
   wrong answer: it leaves the pass-rate denominators, is never written to the
   resume log, and five consecutive completions stop new submissions. Measured in-flight
   results are saved before exit.
+- **Variant（口径取法）** — a maintainer-declared competing reading of one
+  metric (`variants:` in `metrics.yaml`). `caution` is the same disagreement
+  as prose for a model to read; a variant is it made *selectable*, so a user
+  can pick one and a confirmation can be bound to the choice.
+- **Draft（口径确认单）／Confirmation／Run** — the workflow layer's three
+  records. A draft is a versioned structured 口径 belonging to one subject; a
+  confirmation is proof that subject approved one exact draft *version and
+  content hash*; a run is one execution against a confirmation. No valid
+  confirmation, no business SQL — this is stronger than **Clarify**, which is
+  a model decision the model can decline to make.
+- **Provenance（来源标注）** — every rule records whether it came from a
+  document, the maintainer's config, or the user's own agreement this time
+  (文档依据／系统映射／本次约定). Collapsing these is the failure mode the
+  product exists to prevent.
+- **Mapping（映射）** — the maintainer-declared 口径 → SQL table
+  (`query_mappings.yaml`). A confirmed 口径 with no mapping is refused, not
+  guessed.
 - **Trace** — one run's event stream persisted as JSONL, replayable
   (ADR-005). **Checkpoint** — the eval's per-case result log, which
   `--resume` reuses when the effective input/data/code signature matches.
@@ -41,6 +58,10 @@ specs for in-flight work in `docs/specs/`.
 | Agent output | `Iterator[AgentEvent]` from `run_agent` | chat CLI, ask CLI, eval runner, trace writer |
 | Persisted records | `serde.rebuild_dataclass` | trace events, eval checkpoints |
 | Tool dispatch | `ToolRegistry.validate_and_dispatch -> Observation` | get_schema, execute_sql, ask_clarification |
+| Draft building | `MetricDraftBuilder.build(question) -> BusinessDefinition` | maintainer metrics (document-evidence impl is the next slice) |
+| Plan compiling | `TemplateCompiler.compile(definition) -> sql` | maintainer mapping table (QueryPlan compiler reserved) |
+| Workflow state | `SqliteWorkflowStore` (drafts / confirmations / runs) | local SQLite file, single process |
+| Trusted identity | `ActorContext(subject_id, workspace_id, roles)` | CLI local user (Web session / MCP host reserved) |
 
 Rules that keep the seams honest: agent code never touches provider SDK
 types; renderers never live in `agent.py`; tool failures return error
@@ -48,6 +69,15 @@ types; renderers never live in `agent.py`; tool failures return error
 new database = new `Connector` file, nothing else changes; anything written
 to disk must survive being read by a different version and by a process that
 was killed mid-write.
+
+## Two paths, deliberately separate
+
+`ask`/`chat` run the ReAct loop: the model proposes SQL and executes it
+directly. `flow` runs the workflow layer: nothing reaches the database
+without a stored confirmation bound to the exact 口径 the user read. They
+share the connector and safety layer and nothing else. The gate is only
+worth anything if it cannot be walked around, so `flow` does not fall back
+to the agent loop when it has no mapping — it refuses.
 
 ## Exit codes (ADR-006)
 

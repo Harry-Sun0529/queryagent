@@ -9,7 +9,7 @@ and the loader actively rejects credential-looking keys.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +61,24 @@ class SafetyConfig:
 
 
 @dataclass(frozen=True)
+class WorkflowConfig:
+    """The confirmation-gated query flow (v0.6, `queryagent flow`).
+
+    ``mappings_path`` is the maintainer-declared 口径 → SQL table. Without
+    one the flow can prepare and confirm but has nothing it is allowed to
+    execute, which is the intended failure: guessing a query is the thing
+    this layer exists to prevent.
+
+    ``state_path`` holds drafts, confirmations and runs. It is a local
+    single-process store; running two replicas against one file has not been
+    designed for and must not be assumed to work.
+    """
+
+    mappings_path: str | None = None
+    state_path: str = ".queryagent/workflow.db"
+
+
+@dataclass(frozen=True)
 class AppConfig:
     """Top-level application config."""
 
@@ -68,6 +86,7 @@ class AppConfig:
     database: DatabaseConfig
     safety: SafetyConfig
     metrics_path: str | None = None
+    workflow: WorkflowConfig = field(default_factory=WorkflowConfig)
     trace: bool = True  # record event streams to .queryagent/traces/
     trace_dir: str | None = None  # where; default is relative to the cwd
 
@@ -93,8 +112,18 @@ def load_config(path: str | Path) -> AppConfig:
         database=_load_database(_section(raw, "database")),
         safety=_load_safety(raw.get("safety") or {}),
         metrics_path=_opt_str(raw, "metrics_path"),
+        workflow=_load_workflow(raw.get("workflow") or {}),
         trace=_opt_bool(raw, "trace", default=True),
         trace_dir=_opt_str(raw, "trace_dir"),
+    )
+
+
+def _load_workflow(section: dict[str, Any]) -> WorkflowConfig:
+    if not isinstance(section, dict):
+        raise ValueError("workflow section must be a mapping")
+    return WorkflowConfig(
+        mappings_path=_opt_str(section, "mappings_path"),
+        state_path=_opt_str(section, "state_path") or ".queryagent/workflow.db",
     )
 
 

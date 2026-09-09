@@ -1,0 +1,43 @@
+# Maintainer-declared 口径 → SQL mappings for the demo_shop dataset.
+#
+# This file is the reason the agent cannot invent a query: `queryagent flow`
+# executes what is written here and nothing else. A 口径 with no entry is
+# refused with MappingNotFound — which is the correct outcome, not a bug to
+# work around by loosening the executor.
+#
+# Reviewing a mapping change is reviewing a PR, same as metrics.yaml. The
+# numbers a whole team quotes come from these statements, so review them as
+# such: a plausible-looking WHERE clause here is indistinguishable from a
+# correct one at the point where someone reads the answer.
+
+mappings:
+  - metric: new_users
+    variant: registered
+    sql: >
+      SELECT COUNT(*) AS 新增用户数
+      FROM users
+      WHERE channel <> 'internal_test'
+
+  - metric: new_users
+    variant: first_order
+    sql: >
+      SELECT COUNT(*) AS 新增用户数
+      FROM users
+      WHERE first_order_at IS NOT NULL AND channel <> 'internal_test'
+
+  - metric: gmv
+    variant: paid
+    sql: >
+      SELECT ROUND(SUM(amount), 2) AS 成交额
+      FROM orders
+      WHERE status = 'paid'
+
+  - metric: gmv
+    variant: net
+    sql: >
+      SELECT ROUND(
+               SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END)
+               - SUM(CASE WHEN status = 'refunded' THEN amount ELSE 0 END), 2
+             ) AS 成交额净额
+      FROM orders
+      WHERE status IN ('paid', 'refunded')

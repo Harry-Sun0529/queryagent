@@ -12,6 +12,21 @@ from typing import Protocol
 
 
 @dataclass(frozen=True)
+class MetricVariant:
+    """One maintainer-declared competing reading of a metric (v0.6, D02/D09).
+
+    ``caution`` is prose meant for a model to read; a variant is the same
+    disagreement made selectable, so a user picks a reading and the choice
+    can be bound into a confirmation. Maintainers declare these — the model
+    does not get to invent a 口径 the business never agreed on.
+    """
+
+    key: str
+    label: str
+    definition: str
+
+
+@dataclass(frozen=True)
 class Metric:
     """One declared business metric.
 
@@ -28,6 +43,7 @@ class Metric:
             clarify feature triggers on this field.
         tables: Tables this metric touches (aids schema trimming later).
         sql_hint: Optional SQL fragment hint for the model.
+        variants: Competing readings a user may choose between.
     """
 
     name: str
@@ -37,6 +53,7 @@ class Metric:
     caution: str = ""
     tables: tuple[str, ...] = ()
     sql_hint: str = ""
+    variants: tuple[MetricVariant, ...] = ()
 
 
 class MetricStore(Protocol):
