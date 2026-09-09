@@ -1,8 +1,8 @@
 ---
-status: open
+status: closed
 type: task
 blocked_by: []
-claimed_by:
+claimed_by: opus-session-2026-09-09
 ---
 # T29 — amend 允许伪造「文档依据」来源
 
@@ -36,3 +36,16 @@ claimed_by:
 - K14：`amend` 传入 DOC 或 MAINTAINER 来源的规则被拒绝，且草案未被修改
   （版本不变、哈希不变）。
 - 现有 345 passed / 1 skipped 不回退。
+
+## Resolution（2026-09-09）
+
+`amend()` 现在显式拒绝任何 `source is not RuleSource.USER` 的规则，并在拒绝时
+保持草案原封不动（版本与哈希都不变）。379 passed / 1 skipped。
+
+**为什么修在服务层而不是收紧 `Rule`**：`Rule` 是值对象，DOC 来源的规则本身是
+合法的——1B 的抽取管线正要产出它们。不合法的是"**调用方在一次 amend 里自称
+文档依据**"。约束属于那个动作，不属于那个类型。
+
+顺带把 `Rule.__post_init__` 的 docstring 写清楚了：它只是非空断言，任意字符串
+都能过；引用是否真的解析到该主体看过的片段由抽取管线在服务端确立。否则未来
+一定有人以为类型系统已经保证了来源。

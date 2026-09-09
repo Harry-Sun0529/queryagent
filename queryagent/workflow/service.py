@@ -38,6 +38,7 @@ from queryagent.workflow.models import (
     DraftStatus,
     QueryRun,
     Rule,
+    RuleSource,
     RunStatus,
 )
 from queryagent.workflow.store import SqliteWorkflowStore
@@ -129,7 +130,20 @@ class QueryWorkflow:
         hash, which is what makes an earlier confirmation stop matching
         (§9.2 invariants 4-5). ``expected_version`` makes a second editor
         lose loudly instead of overwriting what the first one confirmed.
+
+        An amendment is, by definition, what this user agreed this time, so
+        every rule it carries is ``USER``-sourced. The service enforces that
+        rather than trusting callers to: ``Rule.__post_init__`` only checks
+        that a DOC rule's ``evidence_ref`` is non-empty, so any string would
+        buy a 「文档依据」 label on the confirmation sheet — the one
+        distinction this product exists to keep honest (D07).
         """
+        forged = [rule for rule in rules if rule.source is not RuleSource.USER]
+        if forged:
+            keys = ", ".join(sorted(rule.key for rule in forged))
+            raise WorkflowStateError(
+                f"用户补充的规则只能标为「本次约定」，不能自称文档依据或系统映射：{keys}"
+            )
         current = self._store.get_draft(actor.subject_id, draft_id)
         definition = current.definition.with_rules(rules)
         updated = DefinitionDraft(
