@@ -139,3 +139,56 @@ def test_clickhouse_config_defaults(tmp_path: Path) -> None:
     assert config.database.port == 9000  # native protocol default
     assert config.database.user == "default"
     assert config.database.password == ""  # CH default user has no password
+
+
+KNOWLEDGE_CONFIG = """\
+llm:
+  backend: openai_compatible
+  model: deepseek-v4-flash
+  base_url: https://api.deepseek.com
+database:
+  type: sqlite
+  path: shop.db
+knowledge:
+  root: {root}
+  sources:
+    - path: {source}
+      workspace: ops
+"""
+
+
+def test_knowledge_is_off_unless_sources_are_declared(tmp_path: Path) -> None:
+    """Presence is the switch — there is no half-configured state."""
+    assert load_config(write(tmp_path, VALID)).knowledge.enabled is False
+
+
+def test_a_source_outside_the_root_is_refused(tmp_path: Path) -> None:
+    """Import reads every file it finds; the root is what keeps it away from keys."""
+    root = tmp_path / "docs"
+    root.mkdir()
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        KNOWLEDGE_CONFIG.format(root=root, source=tmp_path / "elsewhere"), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="outside knowledge.root"):
+        load_config(path)
+
+
+def test_a_symlink_cannot_step_outside_the_root(tmp_path: Path) -> None:
+    """Resolving only one side would let a link inside the root point out of it."""
+    root = tmp_path / "docs"
+    root.mkdir()
+    outside = tmp_path / "secrets"
+    outside.mkdir()
+    (root / "link").symlink_to(outside)
+    path = tmp_path / "config.yaml"
+    path.write_text(KNOWLEDGE_CONFIG.format(root=root, source=root / "link"), encoding="utf-8")
+    with pytest.raises(ValueError, match="outside knowledge.root"):
+        load_config(path)
+
+
+def test_credential_keys_are_refused_in_the_embedding_section(tmp_path: Path) -> None:
+    """The check used to live inside the LLM loader, so new sections opted out."""
+    text = VALID + "knowledge:\n  embedding:\n    api_key: sk-oops\n"
+    with pytest.raises(ValueError, match="credential-like keys"):
+        load_config(write(tmp_path, text))

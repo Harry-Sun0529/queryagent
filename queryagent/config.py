@@ -79,6 +79,37 @@ class WorkflowConfig:
 
 
 @dataclass(frozen=True)
+class KnowledgeSource:
+    """One directory of documents, and the workspace that may see it."""
+
+    path: str
+    workspace: str
+
+
+@dataclass(frozen=True)
+class KnowledgeConfig:
+    """Document evidence (v0.6, slice 1B).
+
+    Absent means the feature is off: ``flow`` builds drafts from
+    ``metrics.yaml`` exactly as before. Presence is the switch, rather than a
+    boolean flag, so there is no half-configured state to reason about.
+
+    ``root`` confines every source path. Document import reads whatever it
+    finds, and that is a file-system read path which no other layer of this
+    codebase has — an unconfined one could pull `.env` or a credentials file
+    into a model prompt.
+    """
+
+    root: str = ""
+    index_path: str = ".queryagent/knowledge.db"
+    sources: tuple[KnowledgeSource, ...] = ()
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.sources)
+
+
+@dataclass(frozen=True)
 class AppConfig:
     """Top-level application config."""
 
@@ -87,6 +118,7 @@ class AppConfig:
     safety: SafetyConfig
     metrics_path: str | None = None
     workflow: WorkflowConfig = field(default_factory=WorkflowConfig)
+    knowledge: KnowledgeConfig = field(default_factory=KnowledgeConfig)
     trace: bool = True  # record event streams to .queryagent/traces/
     trace_dir: str | None = None  # where; default is relative to the cwd
 
@@ -113,9 +145,69 @@ def load_config(path: str | Path) -> AppConfig:
         safety=_load_safety(raw.get("safety") or {}),
         metrics_path=_opt_str(raw, "metrics_path"),
         workflow=_load_workflow(raw.get("workflow") or {}),
+        knowledge=_load_knowledge(raw.get("knowledge") or {}),
         trace=_opt_bool(raw, "trace", default=True),
         trace_dir=_opt_str(raw, "trace_dir"),
     )
+
+
+def _load_knowledge(section: dict[str, Any]) -> KnowledgeConfig:
+    if not isinstance(section, dict):
+        raise ValueError("knowledge section must be a mapping")
+    _reject_credential_keys(section, "knowledge")
+    _reject_credential_keys(section.get("embedding") or {}, "knowledge.embedding")
+    raw_sources = section.get("sources") or []
+    if not isinstance(raw_sources, list):
+        raise ValueError("knowledge.sources must be a list when present")
+    root = _opt_str(section, "root") or ""
+    sources = []
+    for index, item in enumerate(raw_sources):
+        where = f"knowledge.sources[{index}]"
+        if not isinstance(item, dict):
+            raise ValueError(f"{where}: each source must be a mapping")
+        path = _req_str(item, "path", where)
+        workspace = _req_str(item, "workspace", where)
+        if root and not _within(root, path):
+            raise ValueError(
+                f"{where}: '{path}' is outside knowledge.root '{root}'. "
+                "Document import reads every file it finds, so the root is what "
+                "keeps it away from credentials and unrelated data."
+            )
+        sources.append(KnowledgeSource(path=path, workspace=workspace))
+    return KnowledgeConfig(
+        root=root,
+        index_path=_opt_str(section, "index_path") or ".queryagent/knowledge.db",
+        sources=tuple(sources),
+    )
+
+
+def _within(root: str, path: str) -> bool:
+    """True when ``path`` resolves inside ``root``.
+
+    Resolves both sides so a symlink cannot step out of the root, which is
+    the whole reason the check exists.
+    """
+    try:
+        Path(path).resolve().relative_to(Path(root).resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _reject_credential_keys(section: Any, where: str) -> None:
+    """Refuse credential-looking keys in any config section.
+
+    Was inlined in the LLM loader, so every new section silently opted out of
+    it. Keys belong in environment variables (spec §二).
+    """
+    if not isinstance(section, dict):
+        return
+    forbidden = {key for key in section if str(key).lower() in _FORBIDDEN_LLM_KEYS}
+    if forbidden:
+        raise ValueError(
+            f"{where} section contains credential-like keys {sorted(forbidden)}; "
+            "API keys must come from environment variables, never config"
+        )
 
 
 def _load_workflow(section: dict[str, Any]) -> WorkflowConfig:
@@ -128,12 +220,7 @@ def _load_workflow(section: dict[str, Any]) -> WorkflowConfig:
 
 
 def _load_llm(section: dict[str, Any]) -> LLMConfig:
-    forbidden = {key for key in section if str(key).lower() in _FORBIDDEN_LLM_KEYS}
-    if forbidden:
-        raise ValueError(
-            f"llm section contains credential-like keys {sorted(forbidden)}; API keys must "
-            "come from environment variables (ANTHROPIC_API_KEY / OPENAI_API_KEY), never config"
-        )
+    _reject_credential_keys(section, "llm")
     backend = _req_str(section, "backend", "llm")
     if backend not in _SUPPORTED_LLM_BACKENDS:
         raise ValueError(

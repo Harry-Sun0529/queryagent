@@ -56,6 +56,7 @@ from queryagent.events import (
     ToolCallEvent,
     UsageEvent,
 )
+from queryagent.knowledge.index import SqliteKnowledgeIndex
 from queryagent.llm import make_backend
 from queryagent.llm.base import Message
 from queryagent.metrics.yaml_store import YamlMetricStore
@@ -175,6 +176,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "the human, it does not bypass the gate.",
     )
 
+    kb = subparsers.add_parser("kb", help="build and inspect the document evidence index")
+    kb.add_argument("kb_action", choices=["import", "list"], help="what to do")
+    kb.add_argument("--config", default="config.yaml", help="path to config.yaml")
+    kb.add_argument("--workspace", help="list only this business workspace")
+
     replay = subparsers.add_parser("replay", help="re-render a recorded trace")
     replay.add_argument("path", help="path to a .jsonl trace file")
 
@@ -209,6 +215,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "chat": _cmd_chat,
         "ask": _cmd_ask,
         "flow": _cmd_flow,
+        "kb": _cmd_kb,
         "replay": _cmd_replay,
         "eval": _cmd_eval,
     }
@@ -537,6 +544,41 @@ def _cmd_ask(args: argparse.Namespace) -> int:
             if isinstance(event, ErrorEvent):
                 exit_code = 2
     return exit_code
+
+
+def _cmd_kb(args: argparse.Namespace) -> int:
+    """Build or inspect the document index.
+
+    Import prints every file it took in *and* every file it could not read.
+    A document missing from the index is a set of business rules silently
+    absent from every future draft, and the operator is the only person in a
+    position to notice (K8).
+    """
+    config = load_config(args.config)
+    if not config.knowledge.enabled:
+        raise ValueError(
+            "配置里没有 knowledge.sources；文档证据未启用，flow 仍按 metrics.yaml 生成草案"
+        )
+    with contextlib.ExitStack() as stack:
+        index = SqliteKnowledgeIndex(config.knowledge.index_path)
+        stack.callback(index.close)
+        if args.kb_action == "import":
+            for source in config.knowledge.sources:
+                print(f"[{source.workspace}] {source.path}")
+                print(index.import_directory(source.path, workspace_id=source.workspace).render())
+            return 0
+        workspaces = (
+            [args.workspace]
+            if args.workspace
+            else sorted({source.workspace for source in config.knowledge.sources})
+        )
+        for workspace in workspaces:
+            chunks = index.chunks_in(workspace)
+            print(f"[{workspace}] {len(chunks)} 个片段")
+            for chunk in chunks:
+                print(f"  · {chunk.citation()}")
+                print(f"      {chunk.text[:60]}")
+        return 0
 
 
 def _cmd_flow(args: argparse.Namespace) -> int:
