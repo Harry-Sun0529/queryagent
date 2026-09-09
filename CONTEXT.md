@@ -38,6 +38,14 @@ specs for in-flight work in `docs/specs/`.
   document, the maintainer's config, or the user's own agreement this time
   (文档依据／系统映射／本次约定). Collapsing these is the failure mode the
   product exists to prevent.
+- **Evidence / citation（证据／引用）** — a chunk of an indexed document plus
+  where it sits (file, section, line). A rule marked 「文档依据」 carries one.
+  The model never emits a citation: it picks an index into a menu the server
+  built from what this subject may read, so a fabricated one is not
+  expressible rather than caught.
+- **Workspace（业务空间）** — the unit document permission is granted in.
+  Scoping happens in the retrieval query, not after it: text filtered out
+  afterwards has already been in the process that builds the prompt.
 - **Mapping（映射）** — the maintainer-declared 口径 → SQL table
   (`query_mappings.yaml`). A confirmed 口径 with no mapping is refused, not
   guessed.
@@ -58,7 +66,8 @@ specs for in-flight work in `docs/specs/`.
 | Agent output | `Iterator[AgentEvent]` from `run_agent` | chat CLI, ask CLI, eval runner, trace writer |
 | Persisted records | `serde.rebuild_dataclass` | trace events, eval checkpoints |
 | Tool dispatch | `ToolRegistry.validate_and_dispatch -> Observation` | get_schema, execute_sql, ask_clarification |
-| Draft building | `MetricDraftBuilder.build(question) -> BusinessDefinition` | maintainer metrics (document-evidence impl is the next slice) |
+| Draft building | `DraftBuilder.build(question, actor) -> BusinessDefinition` | maintainer metrics; maintainer + document evidence (`CompositeDraftBuilder`) |
+| Document evidence | `KnowledgeProvider.search/read/check_refs(scope, ...)` | local SQLite index, keyword or optional semantic |
 | Plan compiling | `TemplateCompiler.compile(definition) -> sql` | maintainer mapping table (QueryPlan compiler reserved) |
 | Workflow state | `SqliteWorkflowStore` (drafts / confirmations / runs) | local SQLite file, single process |
 | Trusted identity | `ActorContext(subject_id, workspace_id, roles)` | CLI local user (Web session / MCP host reserved) |

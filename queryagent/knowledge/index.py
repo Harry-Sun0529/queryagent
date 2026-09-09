@@ -17,6 +17,7 @@ import sqlite3
 from pathlib import Path
 
 from queryagent.knowledge.chunker import chunk_document
+from queryagent.knowledge.embedding import EmbeddingClient
 from queryagent.knowledge.errors import DocumentParseError, UnsupportedFormat
 from queryagent.knowledge.loaders import SUPPORTED_SUFFIXES, load_document
 from queryagent.knowledge.models import Chunk, Document, IndexedChunk
@@ -35,7 +36,8 @@ CREATE TABLE IF NOT EXISTS chunks (
     end INTEGER NOT NULL,
     unit TEXT NOT NULL,
     content_hash TEXT NOT NULL,
-    terms TEXT NOT NULL
+    terms TEXT NOT NULL,
+    vector TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS chunks_by_workspace ON chunks (workspace_id);
 """
@@ -103,7 +105,7 @@ class SqliteKnowledgeIndex:
         self, chunks: tuple[Chunk, ...], document: Document, workspace_id: str
     ) -> None:
         self._conn.executemany(
-            "INSERT OR REPLACE INTO chunks VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO chunks VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [
                 (
                     chunk.chunk_id,
@@ -118,10 +120,44 @@ class SqliteKnowledgeIndex:
                     chunk.unit,
                     chunk.content_hash,
                     json.dumps(sorted(tokens(chunk.text)), ensure_ascii=False),
+                    "",
                 )
                 for chunk in chunks
             ],
         )
+
+    def embed_missing(self, workspace_id: str, client: EmbeddingClient, *, batch: int = 32) -> int:
+        """Embed chunks that have no vector yet; returns how many were added.
+
+        Separate from import so a corpus can be indexed and searched with no
+        embeddings endpoint at all, and so re-running never re-pays for
+        chunks that already have one.
+        """
+        rows = self._conn.execute(
+            "SELECT chunk_id, text FROM chunks WHERE workspace_id = ? AND vector = ''",
+            (workspace_id,),
+        ).fetchall()
+        added = 0
+        for start in range(0, len(rows), batch):
+            window = rows[start : start + batch]
+            vectors = client.embed([row["text"] for row in window])
+            self._conn.executemany(
+                "UPDATE chunks SET vector = ? WHERE chunk_id = ?",
+                [
+                    (json.dumps(vector), row["chunk_id"])
+                    for row, vector in zip(window, vectors, strict=True)
+                ],
+            )
+            added += len(window)
+        return added
+
+    def vectors_in(self, workspace_id: str) -> dict[str, list[float]]:
+        """Stored vectors for one workspace. The workspace is in the WHERE."""
+        rows = self._conn.execute(
+            "SELECT chunk_id, vector FROM chunks WHERE workspace_id = ? AND vector != ''",
+            (workspace_id,),
+        ).fetchall()
+        return {row["chunk_id"]: json.loads(row["vector"]) for row in rows}
 
     def revoke_workspace(self, workspace_id: str) -> None:
         """Drop a whole workspace — the local stand-in for access being withdrawn."""

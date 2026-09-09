@@ -1,0 +1,32 @@
+{
+  "k": 3,
+  "cases": 13,
+  "workspace": "ops",
+  "keyword": {
+    "recall_at_k": 0.6923076923076923,
+    "hits": 9,
+    "total": 13,
+    "misses": [
+      {
+        "question": "内部测试的号算不算进去",
+        "intent": "test_account_filter"
+      },
+      {
+        "question": "同一个人买两次算几个人",
+        "intent": "active_buyers"
+      },
+      {
+        "question": "GMV 按什么状态统计",
+        "intent": "gmv_basis"
+      },
+      {
+        "question": "交易额归到哪一天",
+        "intent": "gmv_basis"
+      }
+    ]
+  },
+  "semantic": {
+    "measured": false,
+    "reason": "QUERYAGENT_EMBEDDING_API_KEY 未设置；本次只有关键词基线，不构成对照"
+  }
+}

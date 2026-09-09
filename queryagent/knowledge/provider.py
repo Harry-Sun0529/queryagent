@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from queryagent.knowledge.embedding import EmbeddingClient, cosine
 from queryagent.knowledge.errors import EvidenceUnavailable
 from queryagent.knowledge.index import SqliteKnowledgeIndex
 from queryagent.knowledge.models import Evidence, EvidenceHit, EvidenceRef, RefStatus
@@ -28,6 +29,11 @@ from queryagent.workflow.models import ActorContext
 _UNAVAILABLE = "引用不可用：文档已变更、被移除，或当前身份无权访问"
 
 MIN_SCORE = 2.0  # one shared bigram is noise, not a match (same as metric matching)
+
+# Cosine floor. Embeddings give every pair of texts *some* similarity, so
+# without a floor an unrelated question always retrieves the top chunk and
+# "no relevant evidence" becomes unreachable.
+MIN_SIMILARITY = 0.35
 
 
 @dataclass(frozen=True)
@@ -73,8 +79,21 @@ class KnowledgeProvider(Protocol):
 class LocalKnowledgeProvider:
     """Keyword retrieval over a local :class:`SqliteKnowledgeIndex`."""
 
-    def __init__(self, index: SqliteKnowledgeIndex) -> None:
+    def __init__(
+        self, index: SqliteKnowledgeIndex, embedder: EmbeddingClient | None = None
+    ) -> None:
         self.index = index
+        self._embedder = embedder
+
+    @property
+    def is_semantic(self) -> bool:
+        """Whether this provider ranks semantically. Reported, never assumed.
+
+        Degrading to keyword because no embeddings endpoint was configured is
+        a legitimate mode, but a silent one would let a demo claim semantic
+        retrieval it never performed (K10).
+        """
+        return self._embedder is not None
 
     def search(self, scope: RetrievalScope, query: str, *, limit: int) -> tuple[EvidenceHit, ...]:
         """Score every chunk *in this workspace* against the question.
@@ -83,6 +102,10 @@ class LocalKnowledgeProvider:
         matching: a single shared bigram means two texts both contain 用户,
         not that one answers the other.
         """
+        if self._embedder is not None:
+            semantic = self._semantic(scope, query, limit)
+            if semantic is not None:
+                return semantic
         wanted = tokens(query)
         scored: list[tuple[float, EvidenceHit]] = []
         for chunk in self.index.chunks_in(scope.workspace_id):
@@ -95,6 +118,35 @@ class LocalKnowledgeProvider:
                 content_hash=chunk.content_hash,
             )
             scored.append((float(overlap), EvidenceHit(ref=ref, chunk=chunk, score=float(overlap))))
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        return tuple(hit for _, hit in scored[:limit])
+
+    def _semantic(
+        self, scope: RetrievalScope, query: str, limit: int
+    ) -> tuple[EvidenceHit, ...] | None:
+        """Rank by cosine similarity, or None when nothing is embedded yet.
+
+        Falling back rather than returning empty: an un-embedded corpus is a
+        setup step not yet run, and answering "no evidence" for it would be
+        the same lie as answering it for a document that says nothing.
+        """
+        assert self._embedder is not None
+        vectors = self.index.vectors_in(scope.workspace_id)
+        if not vectors:
+            return None
+        query_vector = self._embedder.embed([query])[0]
+        scored: list[tuple[float, EvidenceHit]] = []
+        for chunk in self.index.chunks_in(scope.workspace_id):
+            vector = vectors.get(chunk.chunk_id)
+            if vector is None:
+                continue
+            score = cosine(query_vector, vector)
+            if score < MIN_SIMILARITY:
+                continue
+            ref = EvidenceRef(
+                doc_id=chunk.doc_id, chunk_id=chunk.chunk_id, content_hash=chunk.content_hash
+            )
+            scored.append((score, EvidenceHit(ref=ref, chunk=chunk, score=score)))
         scored.sort(key=lambda pair: pair[0], reverse=True)
         return tuple(hit for _, hit in scored[:limit])
 

@@ -26,14 +26,16 @@ SQL: SELECT count(*) FROM users WHERE strftime('%Y-%m', created_at) = ...
 
 On the complexity spectrum *Vanna (train a RAG model first) → WrenAI (deploy
 a multi-service platform) → DB-GPT (orchestrate multiple agents)*, QueryAgent
-takes the leftmost position: **no vector store, no services, no UI, no agent
-framework**. One process, one `config.yaml`, one `metrics.yaml`.
+takes the leftmost position: **no services, no UI, no agent framework, and
+no vector store in the base install**. One process, one `config.yaml`, one
+`metrics.yaml` — plus, optionally, a directory of documents and a local
+SQLite index (see [Document evidence](#document-evidence)).
 
 |  | Vanna | WrenAI | QueryAgent |
 |---|---|---|---|
 | Setup before first answer | train a RAG model | deploy multi-service platform + build MDL | write one config.yaml |
 | Semantic / metric layer | none formal (example retrieval) | MDL (full-featured, JSON) | one YAML file, git-diffable |
-| Infrastructure | vector store | services + vector store + UI | **none** |
+| Infrastructure | vector store | services + vector store + UI | **none** (a local SQLite file if you index documents) |
 | Conflicting metric definitions | — | governed centrally | **agent stops and asks you** |
 | Form factor | library | BI platform | library |
 | License | MIT | AGPL-3.0 engine | MIT |
@@ -55,7 +57,9 @@ definitions today, with zero new infrastructure*. Lightness is the feature.
   cost estimate are reported per run and per eval suite. On by default with
   a startup notice and an off-switch ([ADR-005](docs/adr/005-traces-on-by-default.md)).
 - **Metrics as YAML** (`metrics.yaml`): definitions are matched to the
-  question and injected into the prompt; answers cite the metric used.
+  question and injected into the prompt; answers cite the metric used. With
+  a knowledge base configured, `flow` adds rules drawn from your documents,
+  each carrying the file, section and line it came from.
   Metrics with a `caution` field trigger a **clarifying question** when the
   user's phrasing is ambiguous — and are forbidden from asking when it isn't.
 - **Confirmation-gated queries** (`queryagent flow`): the same question can
@@ -143,6 +147,44 @@ that reading. Answer nothing at either prompt and it exits 2 having queried
 nothing. `--variant` and `--yes` script the two answers; `--yes` automates
 the human, it does not bypass the gate — the confirmation record is still
 created and still bound to that exact draft version.
+
+### Document evidence
+
+Point `flow` at your handbooks and the confirmation sheet starts citing them:
+
+```bash
+queryagent kb import --config examples/demo_ecommerce/config.sqlite.yaml
+```
+
+```bash
+queryagent flow "上个月新增用户有多少？" --config examples/demo_ecommerce/config.sqlite.yaml --workspace ops
+```
+
+Rules extracted from documents are marked 「文档依据」 and carry the file,
+section and line, so the reader can open the source and check. Where two
+documents disagree, both readings appear with their own citation and neither
+is chosen for you. Where the documents are silent, the rule is listed as
+missing rather than filled with a default.
+
+Documents are scoped to a business workspace: an identity in one workspace
+does not retrieve — not "does not display" — another's. Document text is
+data, never instruction: it reaches the model inside a delimited block, on a
+call made with no tools at all, and what executes is still only a
+maintainer-declared mapping.
+
+Retrieval is keyword-based out of the box and needs no new dependency.
+Semantic retrieval is optional, off unless configured, and speaks the
+OpenAI-compatible `/v1/embeddings` protocol (`QUERYAGENT_EMBEDDING_API_KEY`)
+rather than embedding a vector database. **Enabling it sends document text
+to that endpoint** — a data-boundary decision for whoever deploys it. See
+[ADR-007](docs/adr/007-document-evidence-retrieval.md).
+
+Measured so far: keyword Recall@3 = 9/13 on a fixed paraphrase set
+([evidence](eval/results/retrieval-2026-09-09-keyword-baseline/README.md)).
+The semantic half is **not measured** — it needs an embeddings key this
+project does not have. The four misses are all zero-literal-overlap
+synonyms, which is an argument for semantic retrieval, not evidence that it
+works.
 
 ### MySQL / ClickHouse (Docker)
 
@@ -344,8 +386,7 @@ make demo-down   # tear down demo databases
 ## Roadmap
 
 - PostgreSQL connector (validates the Connector seam further)
-- Document-evidence drafts: retrieval with citations and per-subject ACLs,
-  replacing the maintainer-metric draft builder
+- Per-subject document ACLs (today's scoping is per business workspace)
 - A real QueryPlan compiler, replacing the mapping table
 - Cross-session memory for confirmed metric choices
 - Embedding-based matching as an optional MetricStore implementation
