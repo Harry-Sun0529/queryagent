@@ -171,3 +171,74 @@ def test_a_ref_survives_a_reimport_of_unchanged_content(
     before = provider.search(scope_of(ALICE), "新增用户", limit=1)[0].ref
     provider.index.import_directory(tmp_path / "ops", workspace_id="ops")
     assert provider.check_refs(scope_of(ALICE), (before,)) == (RefStatus.OK,)
+
+
+# --------------------------------------------------- K10: semantic mode
+
+
+class StubEmbedder:
+    """Maps a text to a vector by which business term it mentions."""
+
+    TERMS = ("注册日期", "首单日期", "测试账号", "去重")
+
+    def embed(self, texts: list[str]) -> tuple[list[float], ...]:
+        return tuple([1.0 if term in text else 0.0 for term in self.TERMS] for text in texts)
+
+
+def test_a_provider_without_an_embedder_reports_that_it_is_not_semantic(
+    provider: LocalKnowledgeProvider,
+) -> None:
+    """K10: degrading to keyword is legitimate; degrading silently is not."""
+    assert provider.is_semantic is False
+
+
+def test_semantic_search_falls_back_to_keyword_when_nothing_is_embedded(
+    tmp_path: Path, provider: LocalKnowledgeProvider
+) -> None:
+    """An un-embedded corpus is a setup step not yet run, not an empty one."""
+    semantic = LocalKnowledgeProvider(provider.index, StubEmbedder())  # type: ignore[arg-type]
+    assert semantic.is_semantic is True
+    assert semantic.search(scope_of(ALICE), "新增用户", limit=5)
+
+
+def test_semantic_search_ranks_by_similarity_once_embedded(
+    provider: LocalKnowledgeProvider,
+) -> None:
+    embedder = StubEmbedder()
+    provider.index.embed_missing("ops", embedder)  # type: ignore[arg-type]
+    semantic = LocalKnowledgeProvider(provider.index, embedder)  # type: ignore[arg-type]
+    hits = semantic.search(scope_of(ALICE), "按注册日期怎么算", limit=5)
+    assert hits
+    assert "注册日期" in hits[0].chunk.text
+
+
+def test_semantic_search_stays_inside_the_workspace(
+    provider: LocalKnowledgeProvider,
+) -> None:
+    """K3 again: a second ranking path is a second place scoping can break."""
+    embedder = StubEmbedder()
+    provider.index.embed_missing("ops", embedder)  # type: ignore[arg-type]
+    provider.index.embed_missing("finance", embedder)  # type: ignore[arg-type]
+    semantic = LocalKnowledgeProvider(provider.index, embedder)  # type: ignore[arg-type]
+    hits = semantic.search(scope_of(ALICE), "首单日期", limit=50)
+    assert all(hit.chunk.workspace_id == "ops" for hit in hits)
+    assert SECRET not in repr(hits)
+
+
+def test_semantic_search_returns_nothing_for_an_unrelated_question(
+    provider: LocalKnowledgeProvider,
+) -> None:
+    """Without a floor, embeddings always return the top chunk for anything."""
+    embedder = StubEmbedder()
+    provider.index.embed_missing("ops", embedder)  # type: ignore[arg-type]
+    semantic = LocalKnowledgeProvider(provider.index, embedder)  # type: ignore[arg-type]
+    assert semantic.search(scope_of(ALICE), "机房温度多少", limit=5) == ()
+
+
+def test_embedding_is_not_repaid_for_chunks_that_already_have_a_vector(
+    provider: LocalKnowledgeProvider,
+) -> None:
+    embedder = StubEmbedder()
+    first = provider.index.embed_missing("ops", embedder)  # type: ignore[arg-type]
+    assert first > 0
+    assert provider.index.embed_missing("ops", embedder) == 0  # type: ignore[arg-type]

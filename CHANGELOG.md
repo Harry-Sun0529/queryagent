@@ -10,7 +10,27 @@ frozen from v0.1.1 (spec §四).
 
 ### Added
 
-- `queryagent flow`: a confirmation-gated query path. It prepares a
+- Document evidence: `queryagent kb import` indexes Markdown and DOCX (PDF
+  via `pip install -e ".[docs]"`), and `flow` drafts 口径 from what the
+  asking identity is allowed to read. Rules drawn from documents are marked
+  「文档依据」 and carry file, section and line. Two documents disagreeing
+  become two cited candidates and neither is chosen; a rule the documents do
+  not state is listed as missing rather than defaulted. Evidence is
+  re-checked before confirming and before executing, and a withdrawn or
+  edited source expires the draft without changing its version or hash.
+- The model cannot fabricate a citation: it selects an index into a menu the
+  server built from authorised chunks, and every surviving rule must quote
+  its chunk verbatim, with the offsets computed server-side and every number
+  in the rule present in the quote. What it cannot do is prove the quote
+  *supports* the rule — that judgement stays with the reader, which is why
+  the quote and its location are on the sheet.
+- Semantic retrieval as an option (`QUERYAGENT_EMBEDDING_API_KEY`, any
+  OpenAI-compatible `/v1/embeddings`): no vector database, no numpy, off
+  unless configured, and it says so when it degrades to keyword. Enabling it
+  sends document text to that endpoint. Keyword baseline measured at
+  Recall@3 = 9/13 on a fixed paraphrase set; the semantic half is not
+  measured.
+- `queryagent flow` (slice 1A): a confirmation-gated query path. It prepares a
   structured 口径 from the declared metrics, shows it with every rule marked
   文档依据 / 系统映射 / 本次约定, and executes only after an explicit
   confirmation stored server-side and bound to the draft's version and
@@ -24,11 +44,20 @@ frozen from v0.1.1 (spec §四).
 - `query_mappings.yaml` (`workflow.mappings_path`): the maintainer-declared
   口径 → SQL table `flow` executes from. Nothing else is executable.
 
-Scope, stated plainly: this is the trust boundary, not the full product.
-Draft content comes from `metrics.yaml`, not from retrieved documents; there
-is no document ACL, no query budget, and workflow state is a local SQLite
-file for a single process. See
-`docs/specs/workflow-slice-1a-2026-09.md` for what is and is not claimed.
+### Fixed (unreleased)
+
+- `amend()` accepted rules claiming any provenance, so a caller could label
+  its own convention 「文档依据」 with a citation pointing nowhere. Not
+  reachable through the CLI, which hardcodes USER, but `amend` is the API a
+  Web or MCP entry point calls.
+- The credential-key rejection lived inside the LLM config loader, so every
+  new config section silently opted out of it.
+
+Scope, stated plainly. Document ACLs are per business workspace, not per
+subject. There is no query budget. Workflow and index state are local SQLite
+files for a single process. No OCR, no incremental sync, no reranker. See
+`docs/specs/workflow-slice-1a-2026-09.md` and
+`docs/specs/workflow-slice-1b-2026-09.md` for what is and is not claimed.
 
 ## [0.5.1] — 2026-09-09
 

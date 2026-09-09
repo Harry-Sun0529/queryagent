@@ -14,6 +14,10 @@ you would take toward user-supplied SQL.
    (`SELECT 1; DROP TABLE users`), comment tricks, CTE wrappers.
 3. **Resource exhaustion** — runaway queries (cartesian joins, unbounded
    recursion) starving the database.
+4. **Indexed documents** — when a knowledge base is configured, company
+   handbooks flow into the prompt too. This is the *easiest* of the four for
+   an insider to write to: anyone who can edit a Markdown file in an indexed
+   directory can put "ignore previous instructions" in front of the model.
 
 ## Defence in depth (three independent layers)
 
@@ -22,6 +26,7 @@ you would take toward user-supplied SQL.
 | 1. SQL whitelist (`safety.py`) | single SELECT only (CTE allowed); DML/DDL, multi-statement and comment-smuggling rejected by token-level parsing, not regex | nothing the model says |
 | 2. Connector limits | per-query timeout + row cap enforced in the driver layer (`MAX_EXECUTION_TIME` on MySQL, progress-handler deadline on SQLite) | not the SQL that passed layer 1 |
 | 3. Read-only account | documented setup: the agent's DB credentials have `SELECT` grants only | not this codebase |
+| 4. Evidence isolation (`knowledge/`) | retrieval is scoped by workspace in the query itself; extraction runs with no tools; the model cites by index into an authorised menu and never emits a document identifier | nothing a document says |
 
 Layer 3 is the backstop: even if a parser bug lets a write statement through
 layers 1–2, the database refuses it. This is why the README insists on a
@@ -37,9 +42,9 @@ cap plus one row to detect truncation. A truncated connection is discarded
 rather than draining its remaining rows into memory.
 
 A row cap is **not a scan, CPU or memory budget on the server**. Expensive
-joins and aggregations can still be costly before producing a row. This
-release does not provide the per-source total budgets, admission control or
-human confirmation required by the planned enterprise workflow.
+joins and aggregations can still be costly before producing a row. Human
+confirmation now exists (`queryagent flow`); per-source total budgets and
+admission control still do not.
 
 ## Prompt injection: honest boundary
 
@@ -50,12 +55,38 @@ row caps bound volume, the event stream makes every executed SQL visible and
 auditable, and deployments should grant the read-only account access only to
 tables the agent legitimately needs.
 
+## Indexed documents
+
+Document import is the only filesystem read path in this codebase, and it
+reads whatever it finds under a configured source. `knowledge.root` confines
+every source and both sides are resolved, so a symlink inside the root
+cannot point out of it — without that, a mis-set source could pull `.env` or
+a credentials file into a model prompt.
+
+What the code guarantees, and what it does not:
+
+- **Guaranteed**: a rule marked 「文档依据」 cites a chunk that exists, that
+  this subject was authorised for, and that verbatim contains the quoted
+  text. The model selects by index into a menu the server built, so it
+  cannot name a document it was not shown. Extraction is called with no
+  tools. Executable SQL still comes only from a maintainer mapping.
+- **Not guaranteed**: that the quoted text *supports* the rule stated. Whole
+  entailment is a model judgement, not a boundary. Numbers in the rule must
+  appear in the quote and unrelated citations are filtered by n-gram
+  overlap, but neither detects a rule that quotes a qualifying clause and
+  drops the sentence it qualified. The quote and its location are shown on
+  the confirmation sheet because the final judgement is the reader's.
+
+Semantic retrieval, when enabled, sends document text to the configured
+embeddings endpoint. It is off unless configured.
+
 ## Traces on disk
 
 By default every `chat` / `ask` run writes its full event stream — question,
 SQL, observations (including result rows) and token usage — to
 `.queryagent/traces/*.jsonl`. Against a real database that is business data
-at rest on the local filesystem.
+at rest on the local filesystem. With a knowledge base configured, document
+excerpts are part of that too.
 
 Mitigations: a stderr notice on the first write, `--no-trace` and config
 `trace: false`, a 50-file retention cap, and `.queryagent/` in `.gitignore`
@@ -67,8 +98,9 @@ including why partial redaction was rejected — is in
 ## Key handling
 
 API keys are read exclusively from environment variables
-(`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`); the config loader actively rejects
-credential-looking keys in `config.yaml`. Demo database credentials are
+(`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `QUERYAGENT_EMBEDDING_API_KEY`);
+the config loader actively rejects credential-looking keys in every section
+of `config.yaml`, not only the LLM one. Demo database credentials are
 throwaway local defaults that exist only in `docker-compose.yml`.
 
 ## Reporting
