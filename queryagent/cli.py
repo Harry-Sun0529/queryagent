@@ -57,6 +57,7 @@ from queryagent.events import (
     UsageEvent,
 )
 from queryagent.knowledge.index import SqliteKnowledgeIndex
+from queryagent.knowledge.provider import LocalKnowledgeProvider, scope_of
 from queryagent.llm import make_backend
 from queryagent.llm.base import Message
 from queryagent.metrics.yaml_store import YamlMetricStore
@@ -79,6 +80,7 @@ from queryagent.workflow.errors import (
     StaleVersion,
     WorkflowError,
 )
+from queryagent.workflow.evidence_builder import CompositeDraftBuilder, EvidenceDraftBuilder
 from queryagent.workflow.execution import make_connector_executor
 from queryagent.workflow.mappings import load_mappings
 from queryagent.workflow.models import (
@@ -606,23 +608,60 @@ def _cmd_flow(args: argparse.Namespace) -> int:
         stack.callback(connector.close)
         store = SqliteWorkflowStore(config.workflow.state_path)
         stack.callback(store.close)
+        provider = None
+        evidence = None
+        if config.knowledge.enabled:
+            index = SqliteKnowledgeIndex(config.knowledge.index_path)
+            stack.callback(index.close)
+            provider = LocalKnowledgeProvider(index)
+            evidence = EvidenceDraftBuilder(
+                provider,
+                make_backend(config.llm),
+                required_keys=(),  # gaps come from the maintainer metric, not extraction
+            )
         workflow = QueryWorkflow(
             store=store,
-            builder=MetricDraftBuilder(YamlMetricStore(config.metrics_path)),
+            builder=CompositeDraftBuilder(
+                MetricDraftBuilder(YamlMetricStore(config.metrics_path)), evidence
+            ),
             compiler=TemplateCompiler(load_mappings(config.workflow.mappings_path)),
             executor=make_connector_executor(
                 connector,
                 timeout_s=config.safety.timeout_s,
                 max_rows=config.safety.max_rows,
             ),
+            ref_checker=provider,
         )
-        return _run_flow(workflow, actor, args)
+        known = {source.workspace for source in config.knowledge.sources}
+        if provider is not None and actor.workspace_id not in known:
+            # Retrieving nothing because the workspace does not exist looks
+            # exactly like the documents being silent, and the second is a
+            # claim about the business. Say which it is.
+            print(
+                f"[提示] 业务空间 '{actor.workspace_id}' 没有配置任何文档来源"
+                f"（已配置：{', '.join(sorted(known))}）；本次不会有文档依据。",
+                file=sys.stderr,
+            )
+        return _run_flow(workflow, actor, args, provider)
 
 
-def _run_flow(workflow: QueryWorkflow, actor: ActorContext, args: argparse.Namespace) -> int:
+def _run_flow(
+    workflow: QueryWorkflow,
+    actor: ActorContext,
+    args: argparse.Namespace,
+    provider: LocalKnowledgeProvider | None = None,
+) -> int:
     request_id = uuid.uuid4().hex
     draft = workflow.prepare(actor, args.question, request_id=request_id)
-    print(render_draft(draft))
+    citations = _citations(provider, actor, args.question)
+    cited = tuple(
+        rule.evidence_ref for rule in draft.definition.rules if rule.evidence_ref
+    ) + tuple(c.evidence_ref for c in draft.definition.candidates if c.evidence_ref)
+    if cited:
+        workflow.attach_evidence(actor, draft.draft_id, cited)
+    print(render_draft(draft, citations))
+    if provider is not None and not citations:
+        print("\n（未检索到该身份可见的相关文档；以下口径仅来自系统映射）")
 
     if draft.status is DraftStatus.NEEDS_INPUT:
         choice = args.variant or _prompt_variant(draft)
@@ -639,7 +678,7 @@ def _run_flow(workflow: QueryWorkflow, actor: ActorContext, args: argparse.Names
             rules=(Rule(VARIANT_RULE_KEY, choice, RuleSource.USER),),
         )
         print()
-        print(render_draft(draft))
+        print(render_draft(draft, citations))
 
     if not args.yes and not _prompt_confirm():
         print("\n[已取消] 未确认口径，没有执行任何查询。")
@@ -658,6 +697,20 @@ def _run_flow(workflow: QueryWorkflow, actor: ActorContext, args: argparse.Names
         print("  （结果已在行数上限处截断）")
     print(f"\n执行的 SQL（维护者映射 {draft.definition.metric}）：\n  {run.sql}")
     return 0
+
+
+def _citations(
+    provider: LocalKnowledgeProvider | None, actor: ActorContext, question: str
+) -> dict[str, str]:
+    """Human-readable locations for whatever this identity can actually see.
+
+    Retrieval is scoped, so a document in another workspace simply is not in
+    the result — there is nothing to redact afterwards.
+    """
+    if provider is None:
+        return {}
+    hits = provider.search(scope_of(actor), question, limit=8)
+    return {f"{hit.ref.doc_id}#{hit.ref.chunk_id}": hit.chunk.citation() for hit in hits}
 
 
 def _prompt_variant(draft: DefinitionDraft) -> str:
