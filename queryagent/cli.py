@@ -279,6 +279,12 @@ def _explain(exc: BaseException) -> tuple[str, str, int]:
                 'pip install -e ".[clickhouse]"',
                 EXIT_USER_ERROR,
             )
+        if "pypdf" in missing:
+            return (
+                "缺少 PDF 可选驱动；Markdown 与 DOCX 不需要它。",
+                'pip install -e ".[docs]"',
+                EXIT_USER_ERROR,
+            )
         return (f"缺少依赖：{missing}。", 'pip install -e ".[dev]"', EXIT_USER_ERROR)
     if isinstance(exc, FileNotFoundError):
         return (
