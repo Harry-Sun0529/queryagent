@@ -1,8 +1,8 @@
 ---
-status: open
+status: closed
 type: task
 blocked_by: [27]
-claimed_by:
+claimed_by: opus-session-2026-09-09
 ---
 # T28 — 本地索引与授权检索（关键词基线）
 
@@ -44,3 +44,33 @@ claimed_by:
   撤权与删除。
 - `kb import` 打印实际纳入的文件清单；路径逃逸被拒绝且有测试。
 - `tests/test_metrics.py` 在分词器提取后行为不变。
+
+## Resolution（2026-09-09）
+
+`KnowledgeProvider` Protocol 的三个方法都收 `RetrievalScope`，**没有不带 scope
+的重载**，`scope_of(actor)` 是唯一构造点。"取回全量再过滤"在这个接口下不是
+"不该写"，而是**写不出来**——这比实现里的任何检查都重要，因为下一个 provider
+是别人照着 Protocol 写的，不是照着这个文件写的。
+
+`SqliteKnowledgeIndex` 的 workspace 在 SQL 的 WHERE 里。检索后再过滤的问题不是
+不严谨，是**那段正文已经进过构建 prompt 的进程了**，事后过滤撤不回来。
+
+**撤权与删除共用一个错误、一条消息**（`EvidenceUnavailable`）。能区分"你无权读"
+和"它不存在"的调用方，已经知道了它存在。`check_refs` 同理，两者都返回
+`UNAVAILABLE`。
+
+**`EvidenceRef.content_hash` 带在对象上但不进 `render()`**——渲染出的引用串才是
+写进 `Rule.evidence_ref`、进而进定义哈希的东西。这样改文档错别字不会让历史确认
+失效（§4.5.4），而变更检测照常工作。
+
+分词器从 `metrics/yaml_store.py` 提到 `text.py` 共用，`tests/test_metrics.py`
+行为不变。配置层顺带修了一处：凭据键拒绝原本内联在 `_load_llm` 里，**每加一个
+新配置段就自动豁免了这条检查**，已提成 `_reject_credential_keys` 并应用到
+`knowledge.embedding`。
+
+`knowledge.root` 约束所有 source 路径，两侧都 `resolve()` 后比较——只解析一侧的话，
+root 内的符号链接就能指到 root 外。文档导入是本仓库唯一的文件系统读取路径，
+不设边界就可能把 `.env` 或凭据文件读进 prompt。
+
+后续票据依赖的事实：`kb import` / `kb list` 已可用；演示语料在
+`examples/knowledge/{ops,finance}`，分属两个业务空间，默认演示身份在 ops。

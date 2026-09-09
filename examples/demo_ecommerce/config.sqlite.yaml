@@ -27,3 +27,13 @@ metrics_path: examples/metrics.yaml
 workflow:
   mappings_path: examples/query_mappings.yaml
   state_path: .queryagent/workflow.db
+
+# Document evidence (`queryagent kb import`, then `flow` cites what it finds).
+# `root` confines document import: it reads every file it finds under a
+# source, which is a filesystem read path no other layer here has.
+knowledge:
+  root: examples/knowledge
+  index_path: .queryagent/knowledge.db
+  sources:
+    - path: examples/knowledge/ops
+      workspace: ops

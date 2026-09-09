@@ -28,34 +28,16 @@ YAML schema (required fields frozen at v0.1.1; optional fields may be added):
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from queryagent.metrics.base import Metric, MetricVariant
-
-_CJK_RUN = re.compile(r"[一-鿿]+")
-_ASCII_WORD = re.compile(r"[a-z0-9_]+")
+from queryagent.text import tokens
 
 _PHRASE_HIT_SCORE = 10.0  # one verbatim alias hit outweighs any token overlap
 _MIN_SCORE = 2.0  # a single shared bigram/word is noise, not a match
-
-
-def _tokens(text: str) -> set[str]:
-    """Tokenise as lowercase ASCII words plus CJK bigrams.
-
-    CJK text has no whitespace to split on; character bigrams are the
-    zero-dependency stand-in for real segmentation. Single-character runs are
-    kept whole so one-hanzi aliases still match.
-    """
-    tokens = set(_ASCII_WORD.findall(text.lower()))
-    for run in _CJK_RUN.findall(text):
-        if len(run) == 1:
-            tokens.add(run)
-        tokens.update(run[i : i + 2] for i in range(len(run) - 1))
-    return tokens
 
 
 class YamlMetricStore:
@@ -90,14 +72,14 @@ class YamlMetricStore:
         overlap between the question and the metric's name/display_name/aliases.
         """
         question_lower = question.lower()
-        question_tokens = _tokens(question)
+        question_tokens = tokens(question)
         scored: list[tuple[float, Metric]] = []
         for metric in self._metrics.values():
             score = 0.0
             for phrase in (metric.display_name, *metric.aliases):
                 if phrase and phrase.lower() in question_lower:
                     score += _PHRASE_HIT_SCORE
-            metric_tokens = _tokens(" ".join((metric.name, metric.display_name, *metric.aliases)))
+            metric_tokens = tokens(" ".join((metric.name, metric.display_name, *metric.aliases)))
             score += len(question_tokens & metric_tokens)
             if score >= _MIN_SCORE:
                 scored.append((score, metric))

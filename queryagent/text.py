@@ -33,6 +33,9 @@ import unicodedata
 _INVISIBLE = re.compile(r"[​-‏  ﻿]")
 _WHITESPACE = re.compile(r"\s+")
 
+_CJK_RUN = re.compile(r"[\u4e00-\u9fff]+")
+_ASCII_WORD = re.compile(r"[a-z0-9_]+")
+
 # NFKC folds full-width ASCII (Ｇ→G, ７→7) but leaves CJK punctuation alone,
 # because 。 and . are genuinely different characters. For *matching* they
 # should not be: the model did not change the meaning by typing a period.
@@ -78,3 +81,23 @@ def _drop_spaces_between_cjk(text: str) -> str:
             continue
         out.append(char)
     return "".join(out)
+
+
+def tokens(text: str) -> set[str]:
+    """Tokenise as lowercase ASCII words plus CJK bigrams.
+
+    CJK text has no whitespace to split on; character bigrams are the
+    zero-dependency stand-in for real segmentation. Single-character runs are
+    kept whole so one-hanzi aliases still match.
+
+    Shared by metric matching and document retrieval. Both need the same
+    answer to "does this question mention this thing", and the thresholds in
+    ``YamlMetricStore`` were tuned against a real eval set — a second,
+    slightly different tokeniser would quietly invalidate that tuning.
+    """
+    found = set(_ASCII_WORD.findall(text.lower()))
+    for run in _CJK_RUN.findall(text):
+        if len(run) == 1:
+            found.add(run)
+        found.update(run[index : index + 2] for index in range(len(run) - 1))
+    return found

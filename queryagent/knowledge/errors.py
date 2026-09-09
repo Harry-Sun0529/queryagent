@@ -30,3 +30,12 @@ class UnsupportedFormat(KnowledgeError):
     Distinct from a parse error: nothing is broken, the format was simply
     never claimed. Scanned PDFs and OCR are explicitly not promised.
     """
+
+
+class EvidenceUnavailable(KnowledgeError):
+    """The citation cannot be read by this subject, right now.
+
+    One error for revoked, deleted and never-authorised on purpose, with one
+    message. A caller that can tell "you may not read this" from "this does
+    not exist" has learned that it exists.
+    """
