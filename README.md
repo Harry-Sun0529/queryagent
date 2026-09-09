@@ -72,7 +72,7 @@ definitions today, with zero new infrastructure*. Lightness is the feature.
 - **Event-stream architecture**: the agent yields `AgentEvent`s; the CLI,
   the eval runner, and any future UI are just different consumers. This is
   the load-bearing seam of the codebase.
-- **Reproducible evaluation built in**: `queryagent eval` runs a 20-case
+- **Reproducible evaluation built in**: `queryagent eval` runs a 36-case
   self-built suite (including should-ask / must-not-ask clarify controls)
   plus a fixed-seed public-benchmark subset (BIRD/Spider), comparing
   executed result sets — never SQL text. See [eval/README.md](eval/README.md).
@@ -191,7 +191,7 @@ Required fields (`name`, `definition`) are frozen; optional fields may grow
 ## Evaluation
 
 ```bash
-make eval                                     # self-built 20 cases, demo db
+make eval                                     # self-built 36 cases, demo db
 queryagent eval --model deepseek-v4-pro \
   --config examples/demo_ecommerce/config.sqlite.yaml    # strong-model run
 
@@ -201,15 +201,31 @@ queryagent eval --public eval/public/dev-subset.json \
 ```
 
 Methodology: executed row sets compared as order-insensitive multisets with
-float tolerance; five metrics including **clarify-behaviour accuracy**
+float tolerance; six metrics including **clarify-behaviour accuracy**
 (asked when it should, didn't when it shouldn't). A fixed-seed subset of a
 public benchmark serves as an external anchor, with a hard rule that prompts
 are never tuned against it ([eval/README.md](eval/README.md)).
 
-### Results (2026-08-20, `deepseek-v4-flash`, temperature 0)
+### Reliability repair measurements (2026-09-09, scoring v2)
+
+Four complete dev100 runs (serial/parallel/parallel/serial) measured SQL
+trajectory hits of 43/43/47/44 and completed SQL hits of 43/42/46/42.
+Concurrency 4 took about 9 minutes versus 24–26 minutes at concurrency 1
+(2.73× ratio of mean wall times). This supports optional `--concurrency 4`
+for this local offline eval; the default stays 1. Repeated runs changed
+individual outcomes, so this is not evidence of statistical equivalence or
+natural-language answer correctness. [Full measurements and limitations](eval/results/reliability-2026-09-09-rerun/README.md).
+
+### Historical results (through v0.5.0, `deepseek-v4-flash`, temperature 0)
+
+These published numbers use the **legacy scorer**: any executed SQL matching
+the reference counted as a pass, even if the run later failed or its final
+answer was wrong. They are retained as historical query-trajectory measurements,
+not final-answer accuracy. New reports use scoring v2 and are not directly
+comparable for first-execution rate. See [evaluation rules](eval/README.md).
 
 **Self-built suite** (36 cases, ranges over 3 runs — DeepSeek exposes no
-sampling seed, so single-run numbers are noise):
+sampling seed; one run does not establish a stable rate):
 
 | metric | `deepseek-v4-flash` |
 |---|---|
@@ -220,15 +236,14 @@ sampling seed, so single-run numbers are noise):
 
 Clarify accuracy counts both arms: the eight questions that *should* draw a
 question, and the eight that must **not** — a system that asks about
-everything would score zero here. The denominator was four until v0.5.0,
+everything can score 8/16 if it names the expected metrics on all should-ask cases. The denominator was four until v0.5.0,
 where "4/4" was a good-looking number with almost no evidence behind it;
 quadrupling it left the result standing.
 
-An earlier strong/weak comparison (`v4-flash` vs `v4-pro`, on the smaller
-case set) found the strong model wins at getting it right *first* while the
-self-repair loop converges the two, so the architecture buys a weak model
-the same final accuracy at about a third of the cost
-([dual-model-analysis.md](eval/results/dual-model-analysis.md)).
+An earlier strong/weak comparison used a smaller case set. It observed similar
+query-trajectory hit rates at different costs, but does not establish equal
+final-answer accuracy or isolate the causal contribution of the architecture
+([historical analysis](eval/results/dual-model-analysis.md)).
 
 **Public benchmark** (BIRD mini-dev, dev/test split — [ADR-004](docs/adr/004-public-subset-external-anchor.md)):
 
@@ -240,18 +255,14 @@ the same final accuracy at about a third of the cost
 
 Honest notes, in the order they matter:
 
-- **A previous claim of ours did not survive a bigger sample.** At 30 cases
-  per set we measured a dev gain of +14pp against a test gain of +6pp and
-  called the gap an overfitting measurement. At 100/200 cases the two sets
-  agree within **1pp** — the earlier gap is best explained as noise, which
-  is exactly what the power analysis predicted (±25pp for a difference at
-  n=30). The samples were expanded *because* of that analysis, and the
-  result corrected us.
-- **What the numbers can and cannot support.** A before/after comparison on
-  the same questions is paired and needs 57–114 cases to detect a real
-  effect — 200 covers it. A cross-sample comparison (dev gain vs test gain)
-  needs ~1089 per group for 6pp, which is out of reach here; such
-  comparisons are reported as directional only.
+- **Statistical limits.** The old dev +14pp / test +6pp gains were not a
+  controlled estimate of overfitting. Nor does the newer 49% / 48% final-score
+  comparison prove the earlier gap was noise: these are different quantities
+  on different samples. We withdraw both causal interpretations.
+- Paired comparisons depend on the target effect and discordant outcomes;
+  there is no universal “57–114 cases is enough” threshold. Power must be
+  planned for a specific experiment. Small or similar observed rates do not
+  establish equivalence.
 - **The sealed set stays sealed.** The governing rule is *never change the
   system in response to test results* — not "run it once". It ran once this
   release, on 200 questions freshly sampled from those never used before.
@@ -261,12 +272,10 @@ Honest notes, in the order they matter:
   fixed that class; a quarter are gold-SQL ambiguities that should not be
   fixed; a quarter are genuine capability gaps
   ([dev-failure-analysis.md](eval/results/dev-failure-analysis.md)).
-- **Version-over-version numbers are decomposed, not hand-waved.** v0.2.0
-  reported 83% first-execution and v0.3.0 reported 61–72%; a controlled
-  three-cell run showed the code was a +5pp *improvement* and the entire
-  drop came from enabling the model's thinking mode, which lowers
-  first-attempt accuracy without lowering final accuracy
-  ([version-decomposition.md](eval/results/version-decomposition.md)).
+- A [historical three-cell comparison](eval/results/version-decomposition.md)
+  observed changes associated with code and thinking mode on a small sample.
+  It does not establish that the entire historical difference was caused by
+  one variable, or reproduce an old provider model snapshot.
 - Costs are peak-rate upper bounds (off-peak is half). Raw reports:
   [eval/results/](eval/results/).
 
@@ -293,8 +302,8 @@ the log is the honest record of who decided what.
 ## Development
 
 ```bash
-make test        # ruff + mypy + pytest (153 tests; DB integration tests
-                 # auto-skip when demo containers aren't running)
+make test        # ruff + mypy + pytest; DB integration tests auto-skip
+                 # when demo containers are not running
 make demo-down   # tear down demo databases
 ```
 
@@ -322,10 +331,10 @@ QueryAgent 是给小数据团队和个人工程师的**零基建 Text-to-SQL Age
 
 ```bash
 pip install -e ".[dev]" && make demo-data
-export ANTHROPIC_API_KEY=...    # 或改配置用 DeepSeek 等 OpenAI 兼容端点
+export OPENAI_API_KEY=...      # 示例配置默认使用 DeepSeek
 queryagent chat --config examples/demo_ecommerce/config.sqlite.yaml
 ```
 
 安全模型：SQL 白名单（仅单条 SELECT，词法级校验）+ 连接层超时/行数上限 +
 只读数据库账号，三层互相独立。评估体系随库附带：`make eval` 一条命令复现
-20 条自建用例（含"该问的要问、不该问的不许问"的追问对照组）。
+36 条自建用例（含"该问的要问、不该问的不许问"的追问对照组）。

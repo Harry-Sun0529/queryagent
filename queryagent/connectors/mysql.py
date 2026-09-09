@@ -47,6 +47,7 @@ class MySQLConnector:
         database: str,
         pool_size: int = 2,
         connect_timeout_s: int = 10,
+        io_timeout_s: int = 30,
     ) -> None:
         self._params: dict[str, Any] = {
             "host": host,
@@ -55,11 +56,14 @@ class MySQLConnector:
             "password": password,
             "database": database,
             "connect_timeout": connect_timeout_s,
+            "read_timeout": io_timeout_s,
+            "write_timeout": io_timeout_s,
             "charset": "utf8mb4",
             "autocommit": True,
         }
-        self._pool: queue.LifoQueue[pymysql.connections.Connection] = queue.LifoQueue()
+        self._pool: queue.LifoQueue[pymysql.connections.Connection | None] = queue.LifoQueue()
         self._pool_size = pool_size
+        self._pool_wait_s = connect_timeout_s
         self._created = 0
         self._lock = threading.Lock()
 
@@ -96,11 +100,30 @@ class MySQLConnector:
         """Run one query; enforce timeout server-side and cap returned rows."""
         start = time.monotonic()
         try:
-            with self._connection() as conn, conn.cursor() as cursor:
-                _apply_timeout(cursor, timeout_s)
-                cursor.execute(sql)
-                raw_rows = cursor.fetchmany(max_rows + 1)
-                columns = tuple(str(desc[0]) for desc in cursor.description or ())
+            with self._connection() as conn:
+                cursor = conn.cursor(pymysql.cursors.SSCursor)
+                consumed = False
+                try:
+                    _apply_timeout(cursor, timeout_s)
+                    cursor.execute(sql)
+                    raw_rows = cursor.fetchmany(max_rows + 1)
+                    columns = tuple(str(desc[0]) for desc in cursor.description or ())
+                    consumed = len(raw_rows) <= max_rows
+                finally:
+                    if consumed:
+                        cursor.close()
+                    else:
+                        # SSCursor.close drains unread rows. Discard this socket
+                        # instead; suppress PyMySQL's destructor drain as well.
+                        if conn.open:
+                            conn.close()
+                        # Driver stubs omit these cleanup attributes. Keep the
+                        # version-specific access confined to this adapter.
+                        stream: Any = cursor
+                        if stream._result is not None:
+                            stream._result.unbuffered_active = False
+                            stream._result.connection = None
+                        stream.connection = None
         except pymysql.MySQLError as exc:
             raise QueryError(str(exc), dialect=self.dialect) from exc
         elapsed_ms = int((time.monotonic() - start) * 1000)
@@ -115,6 +138,8 @@ class MySQLConnector:
                 conn = self._pool.get_nowait()
             except queue.Empty:
                 break
+            if conn is None:
+                continue
             try:
                 conn.close()
             except Exception:  # noqa: BLE001 - best-effort teardown
@@ -126,7 +151,7 @@ class MySQLConnector:
 
         PyMySQL deprecated ping(reconnect=True), so liveness is checked with
         ping(False) and a failed connection is swapped for a fresh one (the
-        pool's created-count is unchanged: one out, one in).
+        failed replacement releases its pool slot for the next request).
         """
         conn = self._acquire()
         try:
@@ -136,31 +161,47 @@ class MySQLConnector:
                 conn.close()
             except Exception:  # noqa: BLE001 - already broken, best effort
                 pass
-            conn = pymysql.connect(**self._params)
+            with self._lock:
+                self._created -= 1
+                self._pool.put(None)  # wake a borrower to retry the freed slot
+            conn = self._acquire()
         try:
             yield conn
         finally:
-            self._pool.put(conn)
+            if conn.open:
+                self._pool.put(conn)
+            else:
+                with self._lock:
+                    self._created -= 1
+                    self._pool.put(None)
 
     def _acquire(self) -> pymysql.connections.Connection:
-        try:
-            return self._pool.get_nowait()
-        except queue.Empty:
-            pass
-        with self._lock:
-            if self._created < self._pool_size:
-                self._created += 1
-                try:
-                    return pymysql.connect(**self._params)
-                except BaseException:
-                    self._created -= 1
-                    raise
-        return self._pool.get()
+        deadline = time.monotonic() + self._pool_wait_s
+        while True:
+            try:
+                conn = self._pool.get_nowait()
+                if conn is not None:
+                    return conn
+            except queue.Empty:
+                pass
+            with self._lock:
+                if self._created < self._pool_size:
+                    self._created += 1
+                    try:
+                        return pymysql.connect(**self._params)
+                    except BaseException:
+                        self._created -= 1
+                        self._pool.put(None)
+                        raise
+            try:
+                conn = self._pool.get(timeout=max(0, deadline - time.monotonic()))
+            except queue.Empty as exc:
+                raise QueryError("connection pool wait timed out", dialect=self.dialect) from exc
+            if conn is not None:
+                return conn
+            # None signals released capacity, not an idle connection.
 
 
 def _apply_timeout(cursor: pymysql.cursors.Cursor, timeout_s: int) -> None:
-    """Best-effort server-side SELECT timeout (MySQL 5.7.8+)."""
-    try:
-        cursor.execute("SET SESSION MAX_EXECUTION_TIME = %s", (timeout_s * 1000,))
-    except pymysql.MySQLError:
-        pass  # older servers: connect/read timeouts remain the only guard
+    """Require server-side SELECT timeout support before executing SQL."""
+    cursor.execute("SET SESSION MAX_EXECUTION_TIME = %s", (timeout_s * 1000,))

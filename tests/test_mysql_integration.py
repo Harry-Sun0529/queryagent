@@ -91,3 +91,16 @@ def test_demo_question_has_nontrivial_answer(connector: MySQLConnector) -> None:
     )
     assert len(result.rows) >= 28
     assert all(count > 0 for _, count in result.rows)
+
+
+def test_server_timeout_then_next_query_recovers(connector: MySQLConnector) -> None:
+    # A bounded sleep exercises server cancellation without a load-generating join.
+    with pytest.raises(QueryError):
+        connector.execute('SELECT SUM(SLEEP(0.001)) FROM users', timeout_s=1, max_rows=1)
+    assert connector.execute('SELECT 1', timeout_s=1, max_rows=1).rows == ((1,),)
+
+
+def test_truncation_does_not_poison_next_query(connector: MySQLConnector) -> None:
+    result = connector.execute('SELECT id FROM users', timeout_s=1, max_rows=1)
+    assert result.truncated and len(result.rows) == 1
+    assert connector.execute('SELECT 42', timeout_s=1, max_rows=1).rows == ((42,),)

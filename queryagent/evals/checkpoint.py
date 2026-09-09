@@ -63,7 +63,7 @@ class ResultLog:
         previous = _read_signature(path)
         # An empty signature means the caller is inspecting the log, not
         # continuing a run; only a real run declares one and can conflict.
-        if signature and previous is not None and previous != signature:
+        if signature and previous != signature:
             raise ResumeMismatch(
                 f"{path} 来自不同的运行配置（之前：{previous}；现在：{signature}）"
             )
@@ -79,6 +79,14 @@ class ResultLog:
         if self._handle is None:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             fresh = not self.path.exists()
+            if not fresh:
+                # Isolate a partial tail without rewriting any completed records.
+                with self.path.open("rb+") as stream:
+                    stream.seek(0, 2)
+                    if stream.tell():
+                        stream.seek(-1, 2)
+                        if stream.read(1) != b"\n":
+                            stream.write(b"\n")
             self._handle = self.path.open("a", encoding="utf-8")
             if fresh:
                 json.dump(
@@ -98,12 +106,12 @@ class ResultLog:
 
 def _read_signature(path: Path) -> str | None:
     """The signature line written when the log was created, if present."""
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in path.read_bytes().splitlines():
         if not line.strip():
             continue
         try:
             payload = json.loads(line)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             return None
         if isinstance(payload, dict) and "_signature" in payload:
             return str(payload["_signature"])
@@ -112,7 +120,7 @@ def _read_signature(path: Path) -> str | None:
 
 
 def _read(path: Path) -> Iterator[CaseResult]:
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in path.read_bytes().splitlines():
         if not line.strip():
             continue
         try:

@@ -22,10 +22,14 @@ specs for in-flight work in `docs/specs/`.
   ADR-004).
 - **Unmeasured** — a case the provider could not be reached for. It is not a
   wrong answer: it leaves the pass-rate denominators, is never written to the
-  resume log, and five consecutive ones abort the run.
+  resume log, and five consecutive completions stop new submissions. Measured in-flight
+  results are saved before exit.
 - **Trace** — one run's event stream persisted as JSONL, replayable
   (ADR-005). **Checkpoint** — the eval's per-case result log, which
-  `--resume` reuses when the run signature matches.
+  `--resume` reuses when the effective input/data/code signature matches.
+- **SQL hit / completion** — a trajectory may contain a correct SQL query
+  without ending successfully. Scoring v2 reports them separately; neither
+  proves natural-language answer correctness.
 
 ## Seam map (where the interfaces are)
 

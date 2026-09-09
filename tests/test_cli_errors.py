@@ -833,3 +833,128 @@ def test_an_outage_still_tells_a_script_to_retry(
         lambda _config: RefusingBackend("LLM request failed with HTTP 503: down"),
     )
     assert main(selfbuilt_args(tmp_path, "out2.md")) == 75
+
+
+def test_resume_rejects_changed_case_contents(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                            capsys: pytest.CaptureFixture[str]) -> None:
+    import json
+    monkeypatch.setenv('OPENAI_API_KEY', 'x')
+    config = write_config(tmp_path, db=real_db(tmp_path))
+    subset = make_subset(tmp_path, ['a1'])
+    args = ['eval', '--config', str(config), '--public', str(subset),
+            '--db-dir', str(tmp_path / 'databases'), '--output', str(tmp_path / 'report.md')]
+    main(args)
+    cases = json.loads(subset.read_text())
+    cases[0]['question'] = 'changed meaning, same ID'
+    subset.write_text(json.dumps(cases))
+    assert main([*args, '--resume']) == 2
+    assert '无法续跑' in capsys.readouterr().err
+
+
+def test_parallel_finished_case_is_durable_while_first_waits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from threading import Event, Thread
+
+    from queryagent.evals.checkpoint import ResultLog
+    from queryagent.llm.base import ModelResponse
+
+    release = Event()
+    saved = Event()
+    original_append = ResultLog.append
+
+    def append(log, result):
+        original_append(log, result)
+        if result.case.id == 'c1':
+            saved.set()
+
+    class Backend(CountingBackend):
+        def complete(self, messages, tools=None, **kwargs):
+            if any(m.role == 'user' and m.content == 'q0' for m in messages):
+                assert release.wait(5), 'test failed to release first question'
+            return ModelResponse(text='42', stop_reason='stop')
+
+    monkeypatch.setattr(ResultLog, 'append', append)
+    monkeypatch.setattr('queryagent.cli.make_backend', lambda _: Backend())
+    args = [*selfbuilt_args(tmp_path, 'ordered.md'), '--concurrency', '2']
+    thread = Thread(target=main, args=(args,))
+    thread.start()
+    try:
+        assert saved.wait(2), 'later completed case was blocked behind the first'
+        assert 'c1' in ResultLog(tmp_path / 'ordered.partial.jsonl', resume=True).completed()
+    finally:
+        release.set()
+        thread.join(5)
+    assert not thread.is_alive()
+
+
+def test_parallel_outage_stops_submitting_and_keeps_inflight_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from threading import Event, Lock
+
+    from queryagent.evals.checkpoint import ResultLog
+    from queryagent.llm.base import ModelResponse
+
+    stopped = Event()
+    lock = Lock()
+    started = []
+    from queryagent.cli import _OutageGuard
+    record = _OutageGuard.record
+
+    def observe_stop(guard, result):
+        try:
+            record(guard, result)
+        except Exception:
+            stopped.set()
+            raise
+
+    class Backend(CountingBackend):
+        def complete(self, messages, tools=None, **kwargs):
+            question = next(m.content for m in messages if m.role == 'user')
+            with lock:
+                started.append(question)
+            if question == 'q0':
+                assert stopped.wait(5)
+                return ModelResponse(text='42', stop_reason='stop')
+            raise RuntimeError('LLM request failed with HTTP 503: unavailable')
+
+    monkeypatch.setattr(_OutageGuard, 'record', observe_stop)
+    monkeypatch.setattr('queryagent.cli.make_backend', lambda _: Backend())
+    code = main([*selfbuilt_args(tmp_path, 'stop.md'), '--concurrency', '2'])
+    assert code == 75
+    assert set(started) == {'q0', 'q1', 'q2', 'q3', 'q4', 'q5'}
+    assert set(ResultLog(tmp_path / 'stop.partial.jsonl', resume=True).completed()) == {'c0'}
+
+
+def test_interrupt_preserves_completed_parallel_cases(tmp_path: Path, monkeypatch) -> None:
+    from concurrent.futures import wait as real_wait
+
+    from queryagent.evals.checkpoint import ResultLog
+
+    interrupted = False
+    def interrupt_once(futures, **kwargs):
+        nonlocal interrupted
+        if not interrupted:
+            interrupted = True
+            real_wait(futures)
+            raise KeyboardInterrupt
+        return real_wait(futures, **kwargs)
+
+    monkeypatch.setattr('queryagent.cli.wait', interrupt_once)
+    monkeypatch.setattr('queryagent.cli.make_backend', lambda _: CountingBackend())
+    code = main([*selfbuilt_args(tmp_path, 'interrupt.md'), '--concurrency', '2'])
+    assert code == 130
+    recovered = ResultLog(tmp_path / 'interrupt.partial.jsonl', resume=True).completed()
+    assert set(recovered) == {'c0', 'c1'}
+
+
+def test_eval_network_outage_preserves_retryability(tmp_path: Path, monkeypatch) -> None:
+    import httpx
+
+    class NetworkFailure(CountingBackend):
+        def complete(self, messages, tools=None, **kwargs):
+            raise httpx.ConnectError('[Errno 61] Connection refused')
+
+    monkeypatch.setattr('queryagent.cli.make_backend', lambda _: NetworkFailure())
+    assert main(selfbuilt_args(tmp_path, 'network.md')) == 75

@@ -6,6 +6,37 @@ versioning: [SemVer](https://semver.org/). CLI arguments and config structure
 enter the semver contract at v0.2.0; `metrics.yaml` required fields are
 frozen from v0.1.1 (spec §四).
 
+## [0.5.1] — 2026-09-09
+
+### Fixed
+
+- Recover JSONL logs with partial UTF-8 tails; isolate unfinished records
+  before appending, and reject unsigned checkpoints for a real resumed run.
+- Resume identity now includes case contents, effective settings, metrics,
+  local data snapshots, date and implementation. Remote-data resume requires
+  an operator-supplied `--data-version`; credentials are never recorded.
+- Parallel eval persists completed cases immediately, bounds in-flight work,
+  stops submitting after an outage and saves measured in-flight results.
+- MySQL refuses SQL if setting its server timeout fails, bounds I/O and pool
+  waits, recovers pool capacity after failed reconnects, and streams capped
+  results without draining the remainder on truncation.
+
+- Preserve retryability before formatting provider exceptions: a network
+  connection failure during eval exits 75, not a misleading balance/key error.
+
+### Evaluation clarification
+
+- Scoring v2 separates query-trajectory hits from normal completion with a
+  SQL hit. Neither measures natural-language answer correctness. First-query
+  scoring is no longer invalidated by a later failed query; truncated row
+  sets cannot prove full equality. Old reports retain their original values.
+- The earlier 3m29s/22m speed claim compared unequal successful workloads
+  (64 requests in the fast run were refused) and is withdrawn as a benchmark.
+- The historical sample-size and causal claims below are not general
+  guarantees. Similar new sample scores do not prove old gains were noise;
+  small three-cell comparisons do not establish an entire causal effect.
+  Current README and evaluation rules state these limitations explicitly.
+
 ## [0.5.0] — 2026-08-22
 
 ### Added

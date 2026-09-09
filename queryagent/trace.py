@@ -116,7 +116,7 @@ def read_trace(path: str | Path) -> list[AgentEvent]:
     skipped.
     """
     events: list[AgentEvent] = []
-    for line in Path(path).read_text(encoding="utf-8").splitlines():
+    for line in Path(path).read_bytes().splitlines():
         if not line.strip():
             continue
         try:
@@ -128,9 +128,7 @@ def read_trace(path: str | Path) -> list[AgentEvent]:
 
 def count_trace_lines(path: str | Path) -> int:
     """Number of non-blank lines in a trace, readable or not."""
-    return sum(
-        1 for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip()
-    )
+    return sum(1 for line in Path(path).read_bytes().splitlines() if line.strip())
 
 
 def new_trace_path(directory: str | Path, question: str) -> Path:
