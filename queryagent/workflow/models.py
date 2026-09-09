@@ -40,6 +40,15 @@ class Rule:
     note: str = ""
 
     def __post_init__(self) -> None:
+        """Structural checks only.
+
+        This is a non-emptiness assertion, *not* a validity check: any string
+        satisfies it. Whether a citation resolves to a chunk the actor was
+        actually shown is established server-side by the evidence extraction
+        pipeline, and whether a caller may claim DOC provenance at all is
+        decided by ``QueryWorkflow.amend``. Do not read this constructor as
+        the type system having guaranteed provenance.
+        """
         if not self.key:
             raise ValueError("rule key must not be empty")
         if self.source is RuleSource.DOC and not self.evidence_ref:

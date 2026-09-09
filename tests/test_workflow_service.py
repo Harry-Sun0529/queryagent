@@ -345,3 +345,46 @@ def test_no_question_match_yields_no_draft_rather_than_a_guess(
     workflow, _ = parts
     with pytest.raises(MappingNotFound):
         workflow.prepare(ALICE, "机房温度多少？", request_id="r1")
+
+
+# ------------------------------------------------------------------ K14
+
+
+def test_amend_refuses_rules_that_claim_a_document_said_it(
+    parts: tuple[QueryWorkflow, CountingExecutor],
+) -> None:
+    """K14: a caller must not be able to forge 「文档依据」.
+
+    ``Rule.__post_init__`` only checks that a DOC rule's evidence_ref is
+    non-empty — any string passes. Today the CLI happens to hardcode USER,
+    but that is caller discipline, and ``amend`` is the API a Web or MCP
+    entry point will call. An amendment is by definition what the user
+    agreed this time, so the service, not its callers, decides that.
+    """
+    workflow, _ = parts
+    draft = workflow.prepare(ALICE, "上个月新增用户多少？", request_id="r1")
+    with pytest.raises(WorkflowStateError, match="本次约定"):
+        workflow.amend(
+            ALICE,
+            draft.draft_id,
+            expected_version=draft.version,
+            rules=(Rule("variant", "registered", RuleSource.DOC, evidence_ref="doc:fake#1"),),
+        )
+    unchanged = workflow.get_draft(ALICE, draft.draft_id)
+    assert unchanged.version == draft.version
+    assert unchanged.definition_hash == draft.definition_hash
+
+
+def test_amend_refuses_maintainer_sourced_rules_too(
+    parts: tuple[QueryWorkflow, CountingExecutor],
+) -> None:
+    """「系统映射」 comes from the maintainer's config, never from a request."""
+    workflow, _ = parts
+    draft = workflow.prepare(ALICE, "上个月新增用户多少？", request_id="r1")
+    with pytest.raises(WorkflowStateError):
+        workflow.amend(
+            ALICE,
+            draft.draft_id,
+            expected_version=draft.version,
+            rules=(Rule("variant", "registered", RuleSource.MAINTAINER),),
+        )
