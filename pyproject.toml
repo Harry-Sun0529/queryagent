@@ -30,6 +30,10 @@ queryagent = "queryagent.cli:main"
 
 [project.optional-dependencies]
 clickhouse = ["clickhouse-driver>=0.2,<1"]
+# Text-extractable PDFs for the knowledge layer. Markdown and DOCX need no
+# dependency (DOCX is a zip of XML, read with the standard library), so this
+# extra buys exactly one format rather than the document pipeline.
+docs = ["pypdf>=4.0,<7"]
 dev = [
     "pytest>=8",
     "mypy>=1.10",
@@ -62,7 +66,7 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
-module = ["sqlparse.*", "clickhouse_driver.*"]
+module = ["sqlparse.*", "clickhouse_driver.*", "pypdf.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
