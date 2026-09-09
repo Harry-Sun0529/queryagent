@@ -14,24 +14,42 @@ metrics:
     display_name: 新增用户
     aliases: [新用户, 新增, new users]
     definition: >
-      按 users.created_at 的日期计数（注册口径）；不含 channel='internal_test'
-      的测试账号。
+      统计新加入的用户数；不含 channel='internal_test' 的测试账号。按哪一列
+      归属日期，见下方 variants：两种取法数字差异很大，需选定后才能执行。
     caution: >
       运营口径按 users.first_order_at（首单口径）计数，两种口径数字差异很大；
       如问题未指明口径且涉及报表，需与用户确认采用哪种。
     tables: [users]
     sql_hint: "COUNT(*) FROM users WHERE date(created_at) = ... AND channel <> 'internal_test'"
+    # `variants` turns the `caution` prose above into a choice a user can make
+    # and a confirmation can be bound to (v0.6 workflow layer). Declaring them
+    # is a maintainer act: the agent picks from this list, it does not extend it.
+    variants:
+      - key: registered
+        label: 注册口径
+        definition: 按 users.created_at 归属日期计数
+      - key: first_order
+        label: 首单口径
+        definition: 按 users.first_order_at 归属日期计数，从未下单的用户不计入
 
   - name: gmv
     display_name: 成交额
     aliases: [GMV, 交易额, 成交金额]
     definition: >
-      status='paid' 订单的 amount 求和（支付口径），按 orders.created_at 归属日期。
+      订单成交金额合计，按 orders.created_at 归属日期。是否扣除退款，见下方
+      variants：财务与运营常用的取法不同，需选定后才能执行。
     caution: >
       财务口径需扣除 status='refunded' 的退款单；如问题涉及财务对账，
       需与用户确认用支付口径还是净额口径。
     tables: [orders]
     sql_hint: "SUM(amount) FROM orders WHERE status = 'paid'"
+    variants:
+      - key: paid
+        label: 支付口径
+        definition: 计入 status='paid' 的订单金额，不扣除退款
+      - key: net
+        label: 净额口径
+        definition: 支付金额扣除 status='refunded' 的退款金额
 
   - name: aov
     display_name: 客单价

@@ -21,3 +21,9 @@ safety:
   max_rows: 200
 
 metrics_path: examples/metrics.yaml
+
+# The confirmation-gated flow (`queryagent flow`). Without workflow.mappings_path
+# the flow can prepare and confirm a 口径 but has nothing it is permitted to run.
+workflow:
+  mappings_path: examples/query_mappings.yaml
+  state_path: .queryagent/workflow.db

@@ -6,6 +6,30 @@ versioning: [SemVer](https://semver.org/). CLI arguments and config structure
 enter the semver contract at v0.2.0; `metrics.yaml` required fields are
 frozen from v0.1.1 (spec §四).
 
+## [Unreleased]
+
+### Added
+
+- `queryagent flow`: a confirmation-gated query path. It prepares a
+  structured 口径 from the declared metrics, shows it with every rule marked
+  文档依据 / 系统映射 / 本次约定, and executes only after an explicit
+  confirmation stored server-side and bound to the draft's version and
+  content hash. Amending the 口径 invalidates the earlier confirmation;
+  repeating a request with the same idempotency key returns the first run
+  rather than querying again; a confirmed 口径 with no maintainer-declared
+  mapping is refused rather than guessed.
+- `metrics.yaml` gains an optional `variants:` list — the competing readings
+  a `caution` describes in prose, made selectable so a user can choose one
+  and a confirmation can bind to that choice. Required fields are unchanged.
+- `query_mappings.yaml` (`workflow.mappings_path`): the maintainer-declared
+  口径 → SQL table `flow` executes from. Nothing else is executable.
+
+Scope, stated plainly: this is the trust boundary, not the full product.
+Draft content comes from `metrics.yaml`, not from retrieved documents; there
+is no document ACL, no query budget, and workflow state is a local SQLite
+file for a single process. See
+`docs/specs/workflow-slice-1a-2026-09.md` for what is and is not claimed.
+
 ## [0.5.1] — 2026-09-09
 
 ### Fixed

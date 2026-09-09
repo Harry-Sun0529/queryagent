@@ -58,6 +58,14 @@ definitions today, with zero new infrastructure*. Lightness is the feature.
   question and injected into the prompt; answers cite the metric used.
   Metrics with a `caution` field trigger a **clarifying question** when the
   user's phrasing is ambiguous — and are forbidden from asking when it isn't.
+- **Confirmation-gated queries** (`queryagent flow`): the same question can
+  mean two different numbers, so the flow shows a structured 口径 —
+  each rule marked 文档依据 / 系统映射 / 本次约定 — and runs nothing until
+  the user confirms it. The confirmation is stored server-side and bound to
+  the draft's version *and* content hash: amend the 口径 and the old
+  confirmation stops matching. A confirmed 口径 with no maintainer-declared
+  mapping is refused rather than guessed. This path shares no execution
+  route with `ask`/`chat` — see [CONTEXT.md](CONTEXT.md).
 - **Three-layer SQL safety**: a token-level whitelist (single SELECT only,
   CTEs allowed — string literals can't fool it, comments can't smuggle past
   it), connector-enforced timeouts and row caps, and a documented read-only
@@ -119,6 +127,22 @@ llm:
 > production, and note that `llm.temperature` has no effect there: the
 > Messages API dropped the parameter, and the backend warns rather than
 > letting a run believe it was deterministic.
+
+### Confirmation-gated flow
+
+The same question, two 口径, two numbers — and nothing runs until you say so:
+
+```bash
+queryagent flow "上个月新增用户有多少？" --config examples/demo_ecommerce/config.sqlite.yaml
+```
+
+It prints the 口径 confirmation sheet, asks which reading you mean
+(`registered` = by signup date, `first_order` = by first-order date), asks
+you to confirm, and only then executes the maintainer-declared query for
+that reading. Answer nothing at either prompt and it exits 2 having queried
+nothing. `--variant` and `--yes` script the two answers; `--yes` automates
+the human, it does not bypass the gate — the confirmation record is still
+created and still bound to that exact draft version.
 
 ### MySQL / ClickHouse (Docker)
 
@@ -281,7 +305,17 @@ Honest notes, in the order they matter:
 
 ## Architecture
 
+Two entry paths, sharing the connector and safety layer and nothing else.
+
 ```
+queryagent flow ──▶ QueryWorkflow (workflow/) ──▶ draft ──▶ confirmation ──▶ run
+                        │                         (versioned, hashed, persisted)
+                        ├─ MetricDraftBuilder      口径 candidates + gaps
+                        ├─ TemplateCompiler        maintainer mapping only
+                        └─ SqliteWorkflowStore     local, single process
+                                    │
+                                    └──▶ safety.py ──▶ Connector
+
 question ──▶ ReAct loop (agent.py) ──▶ Iterator[AgentEvent] ──▶ consumers
                  │                                              (chat CLI,
                  ├─ LLMBackend        llm/          Anthropic | OpenAI-compat
@@ -310,6 +344,9 @@ make demo-down   # tear down demo databases
 ## Roadmap
 
 - PostgreSQL connector (validates the Connector seam further)
+- Document-evidence drafts: retrieval with citations and per-subject ACLs,
+  replacing the maintainer-metric draft builder
+- A real QueryPlan compiler, replacing the mapping table
 - Cross-session memory for confirmed metric choices
 - Embedding-based matching as an optional MetricStore implementation
 - Published eval numbers (strong + weak model, self-built + public subset)
