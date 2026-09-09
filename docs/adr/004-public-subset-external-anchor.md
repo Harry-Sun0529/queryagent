@@ -21,19 +21,11 @@ prompt after seeing a test score does, however few times it is run.
 
 ## Context
 
-Sizing follows from which comparison is being made, and the two are not the
-same test:
-
-| comparison | design | cases needed (80% power) |
-|---|---|---|
-| before/after on the same questions | paired (McNemar) | 57–114 |
-| gain on dev vs gain on test | independent samples | ~1089 per group for 6pp |
-
-At the previous size of 30, even the paired comparison was underpowered.
-200 comfortably covers release-over-release comparisons on the sealed set;
-the cross-sample question is out of reach at any size this project can
-afford (2178 questions would require mixing in Spider, whose gold-SQL
-conventions differ enough to introduce their own bias).
+The sample sizes are an engineering budget, not a universal power guarantee.
+Paired before/after comparisons depend on the target effect and the frequency
+of discordant outcomes. The earlier “57–114” and “1089 per group” claims lacked
+sufficient assumptions and are withdrawn as general guidance. Prespecify an
+experiment and its uncertainty analysis before interpreting a difference.
 
 The reserve exists because exhausting the pool is irreversible: if the test
 set is ever compromised, a clean replacement can only come from questions
@@ -45,7 +37,8 @@ the whole claim rests on results never having been examined case by case.
 
 ## Consequences
 
-- (+) Paired release-over-release comparisons are adequately powered.
+- (+) The larger sample supports more informative measurements; adequacy of
+  power still depends on a specified comparison.
 - (+) The rule now states its purpose, so it survives questions like "is a
   second configuration run cheating?" (it is not) without ad-hoc exceptions.
 - (+) Retired questions carry known failures into dev, where they are useful

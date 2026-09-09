@@ -423,3 +423,53 @@ def test_a_bad_key_mid_run_is_also_unmeasured() -> None:
         simple_case(), run_question=rejected, connector=FakeConnector({})
     )
     assert result.unmeasured, "a case the provider refused to serve was not scored"
+
+
+def test_first_query_hit_is_not_retracted_by_later_failure() -> None:
+    events = (sql_events('SELECT agent')
+              + sql_events('SELECT broken', error=True, call_id='c2')
+              + [AnswerEvent(text='42')])
+    result = run_case(simple_case(), run_question=lambda _: iter(events),
+                      connector=FakeConnector({'SELECT ref': ((42,),),
+                                               'SELECT agent': ((42,),)}))
+    assert result.first_attempt_passed
+
+
+def test_sql_hit_and_normal_completion_are_separate() -> None:
+    connector = FakeConnector({'SELECT ref': ((42,),), 'SELECT agent': ((42,),)})
+    events = sql_events('SELECT agent') + [ErrorEvent(error_type='MaxTurns', message='stopped')]
+    result = run_case(simple_case(), run_question=lambda _: iter(events), connector=connector)
+    assert result.passed  # retain the explicitly named trajectory-hit metric
+    assert result.completed is False
+    report = render_report([result], title='Probe', model_label='fake')
+    assert '| query-trajectory hit rate | 1/1 (100%) |' in report
+    assert '| completed with SQL hit | 0/1 (0%) |' in report
+    assert 'Natural-language answer correctness is not measured' in report
+    wrong_answer = run_case(simple_case(), connector=connector,
+                           run_question=lambda _: iter(sql_events('SELECT agent')
+                                                       + [AnswerEvent(text='99')]))
+    assert wrong_answer.completed is True  # completion is NOT semantic correctness
+    assert 'Natural-language answer correctness is not measured' in render_report(
+        [wrong_answer], title='Probe', model_label='fake')
+
+
+def test_truncated_results_are_not_evidence_of_full_equality() -> None:
+    class TruncatedConnector(FakeConnector):
+        def execute(self, sql, *, timeout_s, max_rows):
+            return QueryResult(columns=('c',), rows=((42,),), elapsed_ms=1,
+                               truncated=sql == 'SELECT agent')
+
+    result = run_case(simple_case(), connector=TruncatedConnector({}),
+                      run_question=lambda _: iter(sql_events('SELECT agent')
+                                                  + [AnswerEvent(text='42')]))
+    assert not result.passed
+    assert not result.first_attempt_passed
+
+
+def test_case_table_identifies_unfinished_sql_hit() -> None:
+    result = run_case(simple_case(),
+                      connector=FakeConnector({'SELECT ref': ((42,),), 'SELECT agent': ((42,),)}),
+                      run_question=lambda _: iter(sql_events('SELECT agent')))
+    report = render_report([result], title='Probe', model_label='fake')
+    assert '| completed |' in report
+    assert '| t1 | simple | ✅ | ❌ |' in report

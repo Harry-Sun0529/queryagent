@@ -1,5 +1,5 @@
 """QueryAgent CLI: ``chat`` (interactive, multi-turn), ``ask`` (one-shot),
-``eval`` (scored suites) — all pure consumers of the AgentEvent stream.
+``eval`` (scored suites) — all pure consumers of the AgentEvent stream
 
 ``--verbose`` renders the full THINK/ACT/OBSERVE trace; the default shows
 answers only. In chat, a ClarifyEvent renders the agent's question, folds
@@ -16,7 +16,7 @@ import sys
 import threading
 import traceback
 from collections.abc import Callable, Iterator, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Protocol
 
@@ -29,6 +29,7 @@ from queryagent.context import ContextBuilder
 from queryagent.errors import ConnectorError, QueryAgentError, is_transient
 from queryagent.evals.cases import EvalCase, load_cases
 from queryagent.evals.checkpoint import ResultLog, ResumeMismatch
+from queryagent.evals.identity import run_signature
 from queryagent.evals.public import load_subset
 from queryagent.evals.runner import (
     CaseResult,
@@ -83,14 +84,10 @@ class UpstreamOutage(Exception):
     is not, and telling a retry loop otherwise makes it spin forever.
     """
 
-    def __init__(self, message: str, *, reason: str = "") -> None:
+    def __init__(self, message: str, *, reason: str, retryable: bool) -> None:
         super().__init__(message)
         self.reason = reason
-
-    @property
-    def retryable(self) -> bool:
-        """Whether waiting could plausibly change the outcome."""
-        return is_transient(RuntimeError(self.reason))
+        self.retryable = retryable
 
 
 class _OutageGuard:
@@ -108,6 +105,7 @@ class _OutageGuard:
                 f"{self._streak} 个用例连续未能测量，已中止本次运行"
                 f"（最后一次：{result.failure_reason[:160]}）",
                 reason=result.failure_reason,
+                retryable=result.retryable,
             )
 
 
@@ -142,6 +140,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     evalp.add_argument("--model", help="override llm.model (dual-model reports, spec §三)")
     evalp.add_argument("--base-url", help="override llm.base_url")
     evalp.add_argument("--output", default="eval_report.md")
+    evalp.add_argument(
+        "--data-version", help="immutable server data snapshot ID; required to resume"
+    )
     evalp.add_argument(
         "--resume",
         action="store_true",
@@ -477,10 +478,23 @@ def _cmd_eval(args: argparse.Namespace) -> int:
                 base_url=args.base_url or config.llm.base_url,
             ),
         )
-    source = args.public or args.cases
-    signature = (
-        f"{config.llm.backend}/{config.llm.model}"
-        f" · {Path(source).name} · turns={args.max_turns}"
+    if args.public and not args.db_dir:
+        print("--public requires --db-dir", file=sys.stderr)
+        return 2
+    if (
+        args.resume
+        and not args.public
+        and config.database.type != "sqlite"
+        and not args.data_version
+    ):
+        print("--resume on a server database requires --data-version", file=sys.stderr)
+        return 2
+    signature = run_signature(
+        config,
+        Path(args.public or args.cases),
+        max_turns=args.max_turns,
+        db_dir=Path(args.db_dir) if args.public else None,
+        data_version=args.data_version,
     )
     try:
         log = ResultLog(
@@ -547,7 +561,7 @@ def _run_eval(args: argparse.Namespace, config: AppConfig, log: ResultLog) -> in
     output.write_text(report, encoding="utf-8")
     passed = sum(1 for r in results if r.passed)
     print(f"{passed}/{len(results)} cases passed; report -> {args.output}")
-    return 0 if passed == len(results) else 3
+    return 0 if all(r.passed and r.completed is True for r in results) else 3
 
 
 class _WorkerPool:
@@ -590,9 +604,9 @@ def _run_batch(
 ) -> None:
     """Score ``cases``, in order, optionally several at a time.
 
-    Results are consumed in submission order on the calling thread, so the
-    log stays a single writer and "consecutive outages" keeps meaning what
-    it means serially — concurrency changes the speed, never the numbers.
+    Completed cases are persisted by one writer immediately. The caller sorts
+    the report later. Outage streaks follow completion order; at most
+    ``concurrency`` cases are in flight, and these are drained on an outage.
     """
     pending = [case for case in cases if case.id not in done]
     for case in cases:
@@ -607,9 +621,53 @@ def _run_batch(
         for case in pending:
             _record(score(case), results, log, guard)
         return
+    remaining = iter(pending)
+    outage: UpstreamOutage | None = None
     with ThreadPoolExecutor(max_workers=concurrency) as executor:
-        for result in executor.map(score, pending):
-            _record(result, results, log, guard)
+        active = {
+            executor.submit(score, case)
+            for case in [next(remaining, None) for _ in range(concurrency)]
+            if case is not None
+        }
+        try:
+            while active:
+                finished, _ = wait(active, return_when=FIRST_COMPLETED)
+                for future in finished:
+                    result = future.result()
+                    if outage is not None:
+                        # Preserve paid-for in-flight results without restarting the run.
+                        results.append(result)
+                        if not result.unmeasured:
+                            log.append(result)
+                    else:
+                        try:
+                            _record(result, results, log, guard)
+                        except UpstreamOutage as exc:
+                            outage = exc
+                    active.remove(future)
+                if outage is None:
+                    for _ in range(concurrency - len(active)):
+                        next_case = next(remaining, None)
+                        if next_case is None:
+                            break
+                        active.add(executor.submit(score, next_case))
+        except KeyboardInterrupt:
+            # Stop admission, drain the bounded in-flight set, and preserve even
+            # results that completed just before Ctrl-C interrupted the writer.
+            log.close()
+            recovered = ResultLog(log.path, resume=True, signature=log.signature)
+            saved = recovered.completed()
+            try:
+                for future in active:
+                    result = future.result()
+                    if not result.unmeasured and result.case.id not in saved:
+                        recovered.append(result)
+            finally:
+                recovered.close()
+            raise
+
+    if outage is not None:
+        raise outage
 
 
 def _record(

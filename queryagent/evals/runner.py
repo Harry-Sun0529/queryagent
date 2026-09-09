@@ -16,7 +16,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 
 from queryagent.connectors.base import Connector
-from queryagent.errors import QueryError, blocks_measurement
+from queryagent.errors import QueryError, blocks_measurement, is_transient
 from queryagent.evals.cases import EvalCase
 from queryagent.evals.compare import rows_match
 from queryagent.evals.cost import TokenTotals, estimate_cost_usd
@@ -108,6 +108,8 @@ class CaseResult:
     model: str = ""
     agent_sql: str = ""  # the SQL that was scored — failure analysis needs it
     unmeasured: bool = False  # upstream was unreachable: never scored, not wrong
+    completed: bool | None = None  # None in legacy logs; not answer correctness
+    retryable: bool = False  # preserve exception classification before formatting it
 
 
 def unscoreable_case(case: EvalCase, reason: str) -> CaseResult:
@@ -141,7 +143,11 @@ def run_case(
             case,
             f"agent raised {type(exc).__name__}: {exc}",
             unmeasured=is_upstream_failure(exc),
+            retryable=is_transient(exc),
         )
+    completed = (
+        bool(summary.answer_text.strip()) and summary.error is None and summary.clarify is None
+    )
     retries = sum(1 for _, was_error in summary.executed_sql if was_error)
 
     if case.kind == "clarify":
@@ -152,6 +158,7 @@ def run_case(
         return CaseResult(
             case=case,
             passed=ok,
+            completed=summary.error is None,
             first_attempt_passed=ok,
             retries=retries,
             tool_calls=summary.tool_calls,
@@ -206,15 +213,19 @@ def run_case(
             actual = connector.execute(sql, timeout_s=timeout_s, max_rows=max_rows)
         except QueryError:
             continue
-        if rows_match(expected.rows, actual.rows):
+        if (
+            not expected.truncated
+            and not actual.truncated
+            and rows_match(expected.rows, actual.rows)
+        ):
             matched_sql = sql
             break
     passed = matched_sql is not None
 
     first_sql, first_was_error = summary.executed_sql[0]
     first_attempt_passed = (
-        retries == 0
-        and not first_was_error
+        not first_was_error
+        and not expected.truncated
         and (
             first_sql == matched_sql
             or _matches(
@@ -225,12 +236,15 @@ def run_case(
     return CaseResult(
         case=case,
         passed=passed,
+        completed=completed,
         first_attempt_passed=first_attempt_passed,
         retries=retries,
         tool_calls=summary.tool_calls,
         clarify_correct=clarify_correct,
         metrics_mentioned=metrics_mentioned,
-        failure_reason="" if passed else "result sets differ",
+        failure_reason=(
+            summary.error.message if summary.error else "" if passed else "result sets differ"
+        ),
         usage=summary.usage,
         model=summary.model,
         # the SQL that was scored, or the last one tried when none matched
@@ -250,7 +264,7 @@ def _matches(
         actual = connector.execute(sql, timeout_s=timeout_s, max_rows=max_rows)
     except QueryError:
         return False
-    return rows_match(expected_rows, actual.rows)
+    return not actual.truncated and rows_match(expected_rows, actual.rows)
 
 
 def is_upstream_failure(exc: BaseException) -> bool:
@@ -274,10 +288,12 @@ def _failed(
     usage: TokenTotals | None = None,
     model: str = "",
     unmeasured: bool = False,
+    retryable: bool = False,
 ) -> CaseResult:
     return CaseResult(
         case=case,
         passed=False,
+        completed=False,
         first_attempt_passed=False,
         retries=retries,
         tool_calls=tool_calls,
@@ -287,6 +303,7 @@ def _failed(
         usage=usage or TokenTotals(),
         model=model,
         unmeasured=unmeasured,
+        retryable=retryable,
     )
 
 
@@ -306,6 +323,8 @@ class EvalStats:
     unmeasured: int = 0  # cases the provider was unreachable for
     usage: TokenTotals = TokenTotals()
     model: str = ""
+    completion_cases: int = 0
+    completed_hits: int = 0
 
 
 def aggregate(results: Sequence[CaseResult]) -> EvalStats:
@@ -318,6 +337,8 @@ def aggregate(results: Sequence[CaseResult]) -> EvalStats:
     return EvalStats(
         total=total,
         result_cases=len(result_cases),
+        completion_cases=sum(r.completed is not None for r in result_cases),
+        completed_hits=sum(r.passed and r.completed is True for r in result_cases),
         first_pass=sum(1 for r in result_cases if r.first_attempt_passed),
         final_pass=sum(1 for r in result_cases if r.passed),
         metric_cases=len(metric_results),
@@ -344,13 +365,16 @@ def render_report(results: Sequence[CaseResult], *, title: str, model_label: str
         "",
         f"- model: `{model_label}`",
         f"- cases: {stats.total}",
+        "- scoring: v2 (query trajectory and completion reported separately)",
+        "- Natural-language answer correctness is not measured.",
         "",
         "## Summary",
         "",
         "| metric | value |",
         "|---|---|",
         f"| first-execution pass rate | {_rate(stats.first_pass, stats.result_cases)} |",
-        f"| pass rate after self-repair | {_rate(stats.final_pass, stats.result_cases)} |",
+        f"| query-trajectory hit rate | {_rate(stats.final_pass, stats.result_cases)} |",
+        f"| completed with SQL hit | {_rate(stats.completed_hits, stats.completion_cases)} |",
         f"| metric hit rate | {_rate(stats.metric_hits, stats.metric_cases)} |",
         f"| clarify-behaviour accuracy | {_rate(stats.clarify_correct, stats.clarify_cases)} |",
         f"| average tool calls | {stats.avg_tool_calls:.2f} |",
@@ -363,12 +387,13 @@ def render_report(results: Sequence[CaseResult], *, title: str, model_label: str
         "",
         "## Cases",
         "",
-        "| id | kind | passed | first try | retries | tool calls | note |",
-        "|---|---|---|---|---|---|---|",
+        "| id | kind | SQL hit | completed | first try | retries | tool calls | note |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for result in results:
         lines.append(
             f"| {result.case.id} | {result.case.kind} | {_mark(result.passed)} "
+            f"| {_mark(result.completed) if result.completed is not None else 'n/a'} "
             f"| {_mark(result.first_attempt_passed)} | {result.retries} "
             f"| {result.tool_calls} | {result.failure_reason} |"
         )

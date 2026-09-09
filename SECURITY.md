@@ -27,6 +27,20 @@ Layer 3 is the backstop: even if a parser bug lets a write statement through
 layers 1–2, the database refuses it. This is why the README insists on a
 read-only account rather than treating it as optional hardening.
 
+## Execution limits and their boundaries
+
+MySQL refuses to execute a query if setting its server execution timeout
+fails. Client read/write timeouts (30 seconds by default) and bounded pool
+waits cover stalled connections separately; a client timeout is not proof
+that the server query was cancelled. SELECT results stream at most the row
+cap plus one row to detect truncation. A truncated connection is discarded
+rather than draining its remaining rows into memory.
+
+A row cap is **not a scan, CPU or memory budget on the server**. Expensive
+joins and aggregations can still be costly before producing a row. This
+release does not provide the per-source total budgets, admission control or
+human confirmation required by the planned enterprise workflow.
+
 ## Prompt injection: honest boundary
 
 The whitelist cannot stop an injected prompt from making the agent run a
