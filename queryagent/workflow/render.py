@@ -13,12 +13,14 @@ be collapsed into an unattributed paragraph.
 from __future__ import annotations
 
 from queryagent.workflow.builder import VARIANT_RULE_KEY
+from queryagent.workflow.coverage import describe_coverage, describe_emptiness, latest_date
 from queryagent.workflow.models import (
     COMPILED_RULE_KEYS,
     PERIOD_RULE_KEY,
     BusinessDefinition,
     Candidate,
     DefinitionDraft,
+    QueryRun,
     Rule,
     RuleSource,
 )
@@ -169,6 +171,32 @@ def render_definition_summary(definition: BusinessDefinition) -> str:
         # default the reader should have to work out from the SQL.
         parts.append(f"{rule_label(PERIOD_RULE_KEY)}=未限定（全部数据）")
     return "；".join(parts)
+
+
+def _confirmed_period(definition: BusinessDefinition) -> Period | None:
+    rule = definition.rule(PERIOD_RULE_KEY)
+    if rule is None:
+        return None
+    try:
+        return Period.decode(rule.value)
+    except ValueError:
+        return None
+
+
+def render_coverage(definition: BusinessDefinition, run: QueryRun) -> str:
+    """How far the data behind this run reaches, against its period, or ''."""
+    return describe_coverage(
+        _confirmed_period(definition),
+        latest_date(run.data_through),
+        probed=bool(run.freshness_sql),
+    )
+
+
+def render_emptiness(definition: BusinessDefinition, run: QueryRun) -> str:
+    """Why this run has nothing to report, when it has nothing to report, or ''."""
+    return describe_emptiness(
+        run.rows, _confirmed_period(definition), latest_date(run.data_through)
+    )
 
 
 def render_unenforced(definition: BusinessDefinition) -> str:

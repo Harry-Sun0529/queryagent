@@ -74,6 +74,13 @@ PyMySQL and clickhouse-driver escape each value client-side and substitute
 it. That removes this project's own string building from the path; it is not
 a server-side prepared statement, and no stronger than the driver's escaper.
 
+Each confirmed run of a structured mapping executes a second statement,
+`SELECT MAX(time_column) FROM table`, generated from the same validated
+identifiers, through the same whitelist and executor, and only after the
+confirmation holds. It discloses one fact to whoever runs the query — the
+date of the newest record in that table — which a deployment granting the
+table should already consider readable.
+
 ## Indexed documents
 
 Document import is the only filesystem read path in this codebase, and it

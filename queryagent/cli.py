@@ -98,8 +98,10 @@ from queryagent.workflow.models import (
 )
 from queryagent.workflow.periods import PeriodError, find_period, parse_period
 from queryagent.workflow.render import (
+    render_coverage,
     render_definition_summary,
     render_draft,
+    render_emptiness,
     render_unenforced,
     rule_label,
 )
@@ -776,9 +778,12 @@ def _run_flow(
         print("  " + " | ".join("NULL" if v is None else str(v) for v in row))
     if run.truncated:
         print("  （结果已在行数上限处截断）")
-    emptiness = _emptiness(run.rows)
+    emptiness = render_emptiness(draft.definition, run)
     if emptiness:
         print(f"  （{emptiness}）")
+    coverage = render_coverage(draft.definition, run)
+    if coverage:
+        print(f"  （{coverage}）")
     unenforced = render_unenforced(draft.definition)
     if unenforced:
         print(f"  （{unenforced}）")
@@ -787,6 +792,8 @@ def _run_flow(
         # The values are bound, not part of the text above; show them apart
         # so the reader sees both what was sent and what filled it in.
         print(f"  参数（按 ? 的顺序绑定）：{', '.join(run.params)}")
+    if run.freshness_sql:
+        print(f"  数据新鲜度探测：{run.freshness_sql}")
     return 0
 
 
@@ -802,20 +809,6 @@ def _citations(
         return {}
     hits = provider.search(scope_of(actor), question, limit=8)
     return {f"{hit.ref.doc_id}#{hit.ref.chunk_id}": hit.chunk.citation() for hit in hits}
-
-
-def _emptiness(rows: tuple[tuple[object, ...], ...]) -> str:
-    """Say so when there is nothing to report (P10).
-
-    SUM over no rows is NULL. Printed bare it reads as an error; read as 0 it
-    is a claim that the business made nothing, when the query simply found no
-    records in that range. COUNT's 0 is a real answer and gets no note.
-    """
-    if not rows:
-        return "查询没有返回任何行"
-    if all(value is None for row in rows for value in row):
-        return "结果为空：该统计区间内没有匹配的记录。空不等于 0"
-    return ""
 
 
 def _today(config: AppConfig) -> date:

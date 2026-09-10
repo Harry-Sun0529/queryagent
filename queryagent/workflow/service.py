@@ -27,6 +27,7 @@ from queryagent.connectors.base import QueryResult
 from queryagent.knowledge.models import EvidenceRef, RefStatus
 from queryagent.knowledge.provider import RetrievalScope, scope_of
 from queryagent.workflow.compiler import CompiledQuery, TemplateCompiler
+from queryagent.workflow.coverage import latest_date
 from queryagent.workflow.errors import (
     ConfirmationRequired,
     NotFound,
@@ -320,6 +321,8 @@ class QueryWorkflow:
         # Compiling before claiming the key keeps an unmappable definition
         # from burning the caller's idempotency key on a run that never ran.
         query = self._compiler.compile(draft.definition)
+        probe = self._compiler.freshness_probe(draft.definition)
+        freshness_sql = probe.sql if probe else ""
 
         run = QueryRun(
             run_id=self._new_id(),
@@ -335,6 +338,7 @@ class QueryWorkflow:
         if existing is not None:
             return existing  # T13: the same request, not a second query
 
+        data_through = self._date_the_data(probe)
         try:
             result = self._execute_sql(query)
         except Exception as exc:
@@ -348,6 +352,8 @@ class QueryWorkflow:
                 sql=query.sql,
                 params=query.params,
                 error=f"{type(exc).__name__}: {exc}",
+                freshness_sql=freshness_sql,
+                data_through=data_through,
             )
             self._store.finish_run(failed)
             raise
@@ -363,6 +369,28 @@ class QueryWorkflow:
             columns=tuple(result.columns),
             rows=tuple(tuple(row) for row in result.rows),
             truncated=result.truncated,
+            freshness_sql=freshness_sql,
+            data_through=data_through,
         )
         self._store.finish_run(finished)
         return finished
+
+    def _date_the_data(self, probe: CompiledQuery | None) -> str:
+        """ISO date of the newest record behind this query, or '' if unknown.
+
+        Called only once the confirmation, the evidence and the idempotency
+        claim have all held — the same point the query itself runs — so the
+        rule that nothing touches the database before confirmation is kept
+        (F6). That is also why the sheet cannot warn about a partial month:
+        finding out takes a query. A probe that fails costs the note, never
+        the number the user confirmed.
+        """
+        if probe is None:
+            return ""
+        try:
+            result = self._execute_sql(probe)
+        except Exception:  # noqa: BLE001 - reported as "unknown" on the result
+            return ""
+        first = result.rows[0][0] if result.rows and result.rows[0] else None
+        latest = latest_date(first)
+        return latest.isoformat() if latest else ""

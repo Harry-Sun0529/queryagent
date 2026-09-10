@@ -177,3 +177,23 @@ def test_a_percent_sign_in_the_statement_survives_bound_values(
     )
     assert bound.rows == native.rows
     assert bound.rows[0][0] > 0
+
+
+def test_the_freshness_probe_reads_as_the_newest_records_date(connector: MySQLConnector) -> None:
+    """T37: MySQL returns a datetime; it must come out as the same day DATE() gives."""
+    from queryagent.workflow.compiler import TemplateCompiler
+    from queryagent.workflow.coverage import latest_date
+    from queryagent.workflow.mappings import QueryMapping
+    from queryagent.workflow.models import BusinessDefinition
+
+    compiler = TemplateCompiler(
+        {("gmv", ""): QueryMapping("orders", "SUM(amount)", "成交额", time_column="created_at")},
+        dialect="mysql",
+    )
+    probe = compiler.freshness_probe(BusinessDefinition(metric="gmv", display_name="成交额"))
+    assert probe is not None
+    probed = connector.execute(probe.sql, timeout_s=10, max_rows=1).rows[0][0]
+    native = connector.execute(
+        "SELECT DATE(MAX(created_at)) FROM orders", timeout_s=10, max_rows=1
+    ).rows[0][0]
+    assert latest_date(probed) == native
