@@ -683,7 +683,9 @@ def _cmd_flow(args: argparse.Namespace) -> int:
             builder=CompositeDraftBuilder(
                 MetricDraftBuilder(YamlMetricStore(config.metrics_path)), evidence
             ),
-            compiler=TemplateCompiler(load_mappings(config.workflow.mappings_path)),
+            compiler=TemplateCompiler(
+                load_mappings(config.workflow.mappings_path), dialect=connector.dialect
+            ),
             executor=make_connector_executor(
                 connector,
                 timeout_s=config.safety.timeout_s,
