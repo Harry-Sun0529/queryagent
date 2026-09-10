@@ -16,6 +16,7 @@ from collections.abc import Mapping
 
 from queryagent.workflow.builder import VARIANT_RULE_KEY
 from queryagent.workflow.coverage import describe_coverage, describe_emptiness, latest_date
+from queryagent.workflow.enforcement import CONFLICTS, ENFORCED, verdict
 from queryagent.workflow.grouping import (
     MONTH,
     TIME_GRAINS,
@@ -81,7 +82,11 @@ def rule_label(key: str) -> str:
     return _RULE_LABELS.get(key, key)
 
 
-def _candidate_lines(candidates: list[Candidate], citations: dict[str, str] | None) -> list[str]:
+def _candidate_lines(
+    candidates: list[Candidate],
+    citations: dict[str, str] | None,
+    definition: BusinessDefinition | None = None,
+) -> list[str]:
     lines = []
     for candidate in candidates:
         summary = f" — {candidate.summary}" if candidate.summary != candidate.label else ""
@@ -89,7 +94,43 @@ def _candidate_lines(candidates: list[Candidate], citations: dict[str, str] | No
         where = _location(citations, candidate.evidence_ref)
         if where:
             lines.append(f"      出处：{where}")
+        if definition is not None and candidate.implies:
+            names = _variant_names(definition, candidate.implies)
+            lines.append(f"      → 对应可执行口径：{names}")
     return lines
+
+
+def _chosen_variant(definition: BusinessDefinition) -> str:
+    rule = definition.rule(VARIANT_RULE_KEY)
+    return rule.value if rule else ""
+
+
+def _variant_names(definition: BusinessDefinition, keys: tuple[str, ...]) -> str:
+    names = []
+    for key in keys:
+        candidate = definition.candidate(key)
+        names.append(candidate.label if candidate else key)
+    return "、".join(names)
+
+
+def _correspondence(definition: BusinessDefinition, rule: Rule) -> str:
+    """One line tying a document rule to what runs, or '' (T39).
+
+    Only what the maintainer's declared words establish: the quote contains
+    wording this reading's SQL answers to. Whether the sentence *means* that
+    is on the sheet, beside its source, for the reader.
+    """
+    if not rule.implies or rule.key == VARIANT_RULE_KEY:
+        return ""
+    chosen = _chosen_variant(definition)
+    outcome = verdict(rule.implies, chosen)
+    if outcome == ENFORCED:
+        return f"→ 已由所选口径（{_variant_names(definition, (chosen,))}）执行"
+    names = _variant_names(definition, rule.implies)
+    if outcome == CONFLICTS:
+        running = _variant_names(definition, (chosen,))
+        return f"✗ 与所选口径不一致：这段原文对应「{names}」，执行的是「{running}」"
+    return f"→ 对应可执行口径：{names}"
 
 
 def _rule_text(
@@ -143,13 +184,23 @@ def render_draft(
         where = _location(citations, rule.evidence_ref)
         if where:
             lines.append(f"      出处：{where}")
+        correspondence = _correspondence(definition, rule)
+        if correspondence:
+            lines.append(f"      {correspondence}")
     variants = [c for c in definition.candidates if c.rule_key == VARIANT_RULE_KEY]
     disagreements: dict[str, list[Candidate]] = {}
     for candidate in definition.candidates:
         if candidate.rule_key != VARIANT_RULE_KEY:
             disagreements.setdefault(candidate.rule_key, []).append(candidate)
     if variants:
-        lines.extend(["", "可选口径（维护者定义的可执行取法，需要你选一个）："])
+        # Once a reading is chosen — by the user, or by documents agreeing
+        # (T39) — "you need to pick one" would ask for a choice already made.
+        header = (
+            "可选口径（维护者定义的可执行取法，需要你选一个）："
+            if VARIANT_RULE_KEY in definition.missing
+            else "可选口径（维护者定义的可执行取法；已选定的见上方「选定口径」）："
+        )
+        lines.extend(["", header])
         lines.extend(_candidate_lines(variants, citations))
     for rule_key, options in disagreements.items():
         # Once adopted, the choice is a 本次约定 rule above, with its source;
@@ -160,7 +211,7 @@ def render_draft(
             else "已采用其中一种，见上方「本次约定」"
         )
         lines.extend(["", f"文档之间的分歧 · {rule_label(rule_key)}（{state}）："])
-        lines.extend(_candidate_lines(options, citations))
+        lines.extend(_candidate_lines(options, citations, definition))
     if definition.missing:
         missing = "、".join(_RULE_LABELS.get(key, key) for key in definition.missing)
         lines.extend(["", f"尚未确定：{missing}（确定前不会执行任何查询）"])
@@ -186,6 +237,14 @@ def render_definition_summary(
         f"{rule_label(rule.key)}={_rule_text(definition, rule, labels)}"
         for rule in definition.rules
         if rule.key in COMPILED_RULE_KEYS
+    )
+    # Document rules the chosen reading's SQL applies, by the maintainer's own
+    # declaration (T39) — the one kind of explanatory rule the number honours.
+    chosen = _chosen_variant(definition)
+    parts.extend(
+        f"{rule_label(rule.key)}={rule.value.rstrip('。')}"
+        for rule in definition.rules
+        if rule.key not in COMPILED_RULE_KEYS and verdict(rule.implies, chosen) == ENFORCED
     )
     if definition.rule(PERIOD_RULE_KEY) is None:
         # Said out loud (P9): no window is a fact about this number, not a
@@ -271,16 +330,47 @@ def render_grouping_note(definition: BusinessDefinition) -> str:
     )
 
 
+def render_conflicts(definition: BusinessDefinition) -> str:
+    """Name the document rules the executed reading contradicts, or '' (F14).
+
+    Not a disclaimer: the system knows these disagree, by the maintainer's
+    declared wording, and says which way. The number is still the chosen
+    reading's — the user may have chosen against the handbook on purpose.
+    """
+    chosen = _chosen_variant(definition)
+    conflicting = [
+        rule
+        for rule in definition.rules
+        if rule.key not in COMPILED_RULE_KEYS and verdict(rule.implies, chosen) == CONFLICTS
+    ]
+    if not conflicting:
+        return ""
+    items = "；".join(
+        f"{rule_label(rule.key)}（原文对应「{_variant_names(definition, rule.implies)}」）"
+        for rule in conflicting
+    )
+    running = _variant_names(definition, (chosen,))
+    return (
+        f"与执行不一致：{items}，而执行的是「{running}」。"
+        "这个数字按所选口径计算，不符合这些文档规则。"
+    )
+
+
 def render_unenforced(definition: BusinessDefinition) -> str:
     """Name the confirmed rules the executed query did not itself apply, or ''.
 
     The system cannot tell whether a maintainer's SQL happens to implement a
     handbook sentence, so it says so rather than implying either way.
     """
+    chosen = _chosen_variant(definition)
     labels = [
         rule_label(rule.key)
         for rule in definition.rules
-        if rule.source is not RuleSource.MAINTAINER and rule.key not in COMPILED_RULE_KEYS
+        if rule.source is not RuleSource.MAINTAINER
+        and rule.key not in COMPILED_RULE_KEYS
+        # Checked ones are said elsewhere: in the result line when the SQL
+        # applies them, in render_conflicts when it applies something else.
+        and verdict(rule.implies, chosen) not in (ENFORCED, CONFLICTS)
     ]
     if not labels:
         return ""

@@ -17,6 +17,7 @@ from typing import Any
 import yaml
 
 from queryagent.workflow.grouping import Dimension
+from queryagent.workflow.models import ALLOWED_RULE_KEYS
 
 _TABLE =re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?")
 _COLUMN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -39,6 +40,10 @@ class QueryMapping:
     label: str
     time_column: str = ""
     where: tuple[str, ...] = ()
+    enforces: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    """Rule keys this statement applies, each with the words a document
+    describing that rule would use (T39). Compared against verified quotes,
+    never executed."""
 
 
 Mappings = dict[tuple[str, str], "str | QueryMapping"]
@@ -85,7 +90,7 @@ def _parse_entry(item: Any, where: str) -> tuple[tuple[str, str], str | QueryMap
     if not isinstance(variant, str):
         raise ValueError(f"{where}: 'variant' must be a string when present")
     key = (metric.strip(), variant.strip())
-    structured = {"from", "measure", "label", "time_column", "where"} & set(item)
+    structured = {"from", "measure", "label", "time_column", "where", "enforces"} & set(item)
     if "sql" in item:
         if structured:
             raise ValueError(
@@ -123,7 +128,35 @@ def _parse_structured(item: dict[str, Any], where: str) -> QueryMapping:
         label=fields["label"],
         time_column=time_column,
         where=tuple(" ".join(c.split()) for c in raw_where),
+        enforces=_parse_enforces(item.get("enforces"), where),
     )
+
+
+def _parse_enforces(raw: Any, where: str) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """``enforces: {rule_key: [words, ...]}`` — keys from the extractable set only.
+
+    A key outside it could never match a document rule, so it is a typo that
+    would silently check nothing; refused at load instead.
+    """
+    if raw is None:
+        return ()
+    if not isinstance(raw, dict):
+        raise ValueError(f"{where}: 'enforces' must map rule keys to lists of words")
+    parsed = []
+    for key, words in raw.items():
+        if key not in ALLOWED_RULE_KEYS:
+            raise ValueError(
+                f"{where}: 'enforces' key {key!r} is not a rule key; "
+                f"allowed: {', '.join(ALLOWED_RULE_KEYS)}"
+            )
+        if (
+            not isinstance(words, list)
+            or not words
+            or not all(isinstance(w, str) and w.strip() for w in words)
+        ):
+            raise ValueError(f"{where}: 'enforces.{key}' must be a non-empty list of words")
+        parsed.append((str(key), tuple(w.strip() for w in words)))
+    return tuple(parsed)
 
 
 def load_dimensions(path: str | Path) -> tuple[Dimension, ...]:

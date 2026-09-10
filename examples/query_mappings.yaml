@@ -17,6 +17,12 @@
 # Dimensions a result may be split by (v0.8), declared per table: which
 # column holds 渠道 in `users` is a maintainer's decision, like any SQL here.
 # A metric whose mapping reads a table not listed cannot be split by it.
+#
+# `enforces` (v0.8) on a mapping names the rules its SQL applies and the
+# words a handbook describing that rule would use. A verified document quote
+# containing those words is shown as applied by (or contradicting) the
+# reading that runs; words shared by several readings mean all of them apply
+# it. Documents never become SQL — this only matches them to SQL written here.
 dimensions:
   - key: channel
     label: 渠道
@@ -36,6 +42,9 @@ mappings:
     time_column: created_at
     where:
       - channel <> 'internal_test'
+    enforces:
+      counting_basis: [created_at, 注册日期]
+      filters: [internal_test]
 
   - metric: new_users
     variant: first_order
@@ -46,6 +55,9 @@ mappings:
     where:
       - first_order_at IS NOT NULL
       - channel <> 'internal_test'
+    enforces:
+      counting_basis: [first_order_at, 首单日期]
+      filters: [internal_test]
 
   - metric: gmv
     variant: paid
@@ -55,6 +67,9 @@ mappings:
     time_column: created_at
     where:
       - status = 'paid'
+    enforces:
+      counting_basis: [created_at]
+      amount_basis: [不扣除退款]
 
   - metric: gmv
     variant: net
@@ -66,3 +81,9 @@ mappings:
     time_column: created_at
     where:
       - status IN ('paid', 'refunded')
+    # Words must tell readings apart: 「扣除」 alone would also match 「不扣除退款」,
+    # and a quote matching both readings is treated as matching neither.
+    enforces:
+      counting_basis: [created_at]
+      amount_basis: [净额, refunded]
+      refund_handling: [冲减]

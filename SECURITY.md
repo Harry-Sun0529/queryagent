@@ -95,13 +95,22 @@ What the code guarantees, and what it does not:
   this subject was authorised for, and that verbatim contains the quoted
   text. The model selects by index into a menu the server built, so it
   cannot name a document it was not shown. Extraction is called with no
-  tools. Executable SQL still comes only from a maintainer mapping.
+  tools. Executable SQL still comes only from a maintainer mapping. A
+  document can *choose* which mapping runs — when its verified quote
+  contains the words a mapping declares under `enforces:`, and the documents
+  agree — but the choice is shown as 「文档依据」 with its citation and still
+  needs the user's confirmation, and the text itself never enters a query.
 - **Not guaranteed**: that the quoted text *supports* the rule stated. Whole
   entailment is a model judgement, not a boundary. Numbers in the rule must
   appear in the quote and unrelated citations are filtered by n-gram
   overlap, but neither detects a rule that quotes a qualifying clause and
   drops the sentence it qualified. The quote and its location are shown on
-  the confirmation sheet because the final judgement is the reader's.
+  the confirmation sheet because the final judgement is the reader's. The
+  same holds for correspondence: 「已由所选口径执行」 means the quote
+  contains words the maintainer declared for that reading, not that its
+  meaning was verified. A maintainer who declares broad words (「日期」)
+  makes unrelated sentences correspond; the words are reviewed with the
+  mapping file, and a quote containing two readings' words claims neither.
 
 Semantic retrieval, when enabled, sends document text to the configured
 embeddings endpoint. It is off unless configured.

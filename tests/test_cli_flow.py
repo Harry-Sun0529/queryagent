@@ -240,12 +240,15 @@ class _CitingLLM:
 
 
 def _with_disagreeing_handbooks(
-    config: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    config: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    names: tuple[str, ...] = tuple(HANDBOOKS),
 ) -> None:
     docs = tmp_path / "kb"
     docs.mkdir()
-    for name, text in HANDBOOKS.items():
-        (docs / name).write_text(text, encoding="utf-8")
+    for name in names:
+        (docs / name).write_text(HANDBOOKS[name], encoding="utf-8")
     config.write_text(
         config.read_text(encoding="utf-8")
         + f"knowledge:\n  root: {tmp_path}\n  index_path: {tmp_path / 'kb.db'}\n"
@@ -330,6 +333,109 @@ def test_the_result_line_claims_only_what_the_query_executed(
     assert "选定口径=注册口径" in recap
     assert "统计口径" not in recap
     assert "系统不核对两者是否一致" in out
+
+
+# ------------------------------------ T39: document rules meet execution
+
+ENFORCING_MAPPINGS = """\
+mappings:
+  - metric: new_users
+    variant: registered
+    from: users
+    measure: COUNT(*)
+    label: n
+    enforces: {counting_basis: [created_at, 注册日期]}
+  - metric: new_users
+    variant: first_order
+    from: users
+    measure: COUNT(*)
+    label: n
+    where: ["first_order_at IS NOT NULL"]
+    enforces: {counting_basis: [first_order_at, 首单日期]}
+"""
+
+
+def _no_prompt(prompt: str = "") -> str:
+    raise AssertionError(f"asked when it should not have been: {prompt}")
+
+
+def test_a_handbook_naming_one_reading_chooses_it_as_document_evidence(
+    config: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """F12: the handbook reaches the SQL by choosing a statement a maintainer wrote."""
+    (tmp_path / "mappings.yaml").write_text(ENFORCING_MAPPINGS, encoding="utf-8")
+    _with_disagreeing_handbooks(config, tmp_path, monkeypatch, ("运营手册.md",))
+    capsys.readouterr()
+    monkeypatch.setattr("builtins.input", _no_prompt)
+    assert _flow_ops(config, "--yes") == 0
+    out = capsys.readouterr().out
+    assert "选定口径：注册口径 — 按 created_at 归属日期计数    [文档依据]" in out
+    assert "→ 已由所选口径（注册口径）执行" in out
+    assert "需要你选一个" not in out  # the choice is made; the sheet must not ask for it
+    result = out.split("结果（")[1]
+    assert "统计口径=按注册日期计数" in result.splitlines()[0]  # F14: counted as applied
+    assert "系统不核对" not in out
+    assert "  3" in result
+
+
+def test_adopting_a_handbook_settles_which_reading_runs(
+    config: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """F13: adopting 增长周报's wording runs the first-order reading, unasked."""
+    (tmp_path / "mappings.yaml").write_text(ENFORCING_MAPPINGS, encoding="utf-8")
+    _with_disagreeing_handbooks(config, tmp_path, monkeypatch)
+    capsys.readouterr()
+    monkeypatch.setattr("builtins.input", _no_prompt)
+    assert _flow_ops(config, "--adopt", "counting_basis:1", "--yes") == 0
+    out = capsys.readouterr().out
+    first_sheet = out[: out.find("口径确认单", 1)]
+    assert "→ 对应可执行口径：注册口径" in first_sheet
+    assert "→ 对应可执行口径：首单口径" in first_sheet
+    final_sheet = out[out.rfind("口径确认单") : out.find("结果（")]
+    assert "选定口径：首单口径" in final_sheet
+    assert "  1" in out.split("结果（")[1]
+
+
+def test_adopting_one_reading_and_naming_the_other_is_refused_before_any_query(
+    config: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """F13: two contradictory answers in one command; running either is a guess."""
+    (tmp_path / "mappings.yaml").write_text(ENFORCING_MAPPINGS, encoding="utf-8")
+    _with_disagreeing_handbooks(config, tmp_path, monkeypatch)
+    capsys.readouterr()
+    code = _flow_ops(config, "--adopt", "counting_basis:0", "--variant", "first_order", "--yes")
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "两者矛盾" in captured.err
+    assert "结果（" not in captured.out
+
+
+def test_choosing_against_the_handbook_runs_the_choice_and_names_the_conflict(
+    config: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """E12/F14: the user may overrule the handbook, but not without being told."""
+    (tmp_path / "mappings.yaml").write_text(ENFORCING_MAPPINGS, encoding="utf-8")
+    _with_disagreeing_handbooks(config, tmp_path, monkeypatch, ("运营手册.md",))
+    capsys.readouterr()
+    assert _flow_ops(config, "--variant", "first_order", "--yes") == 0
+    out = capsys.readouterr().out
+    assert "✗ 与所选口径不一致：这段原文对应「注册口径」，执行的是「首单口径」" in out
+    result = out.split("结果（")[1]
+    assert "与执行不一致：统计口径（原文对应「注册口径」）" in result
+    assert "统计口径=" not in result.splitlines()[0]
+    assert "  1" in result
 
 
 def test_a_maintainer_only_result_carries_no_disclaimer(

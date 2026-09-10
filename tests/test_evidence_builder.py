@@ -385,6 +385,44 @@ def test_the_extraction_prompt_defines_every_rule_key() -> None:
     assert "NOT which date a record is attributed to" in system
 
 
+# ------------------------------------------------ T39: correspondence
+
+
+def test_each_verified_quote_carries_the_readings_it_corresponds_to() -> None:
+    """The quote is read back from the cited chunk, never taken from the model."""
+    seen: list[tuple[str, str]] = []
+
+    def correspond(key: str, quote: str) -> tuple[str, ...]:
+        seen.append((key, quote))
+        return ("registered",) if "created_at" in quote else ("first_order",)
+
+    payload = {
+        "rules": [
+            {
+                "key": "counting_basis",
+                "value": "按注册日期计数",
+                "citation": 0,
+                "quote": "新增用户按 users.created_at 的注册日期计数",
+            },
+            {
+                "key": "counting_basis",
+                "value": "按首单日期计数",
+                "citation": 1,
+                "quote": "新增用户按 users.first_order_at 的首单日期计数",
+            },
+        ]
+    }
+    builder = EvidenceDraftBuilder(
+        StubProvider(_hits(REGISTERED, FIRST_ORDER)), RecordingLLM(payload), required_keys=()
+    )
+    definition = builder.build(ALICE, "上个月新增用户有多少？", correspond=correspond)
+    assert {c.summary: c.implies for c in definition.candidates} == {
+        "按注册日期计数": ("registered",),
+        "按首单日期计数": ("first_order",),
+    }
+    assert ("counting_basis", "新增用户按 users.created_at 的注册日期计数") in seen
+
+
 # ------------------------------------------------------------ P4: period
 
 
