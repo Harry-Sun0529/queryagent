@@ -386,3 +386,113 @@ def test_a_rule_for_a_gap_that_does_not_exist_is_refused(
     _require_time_window(tmp_path)
     assert _flow(config, "--variant", "registered", "--rule", "refund_handling=x", "--yes") == 2
     assert "time_window" in capsys.readouterr().err
+
+
+
+# ------------------------------------------------------ P1/P2: 统计区间
+
+# The fixture table has only first_order_at, so both readings use it here.
+PERIOD_MAPPINGS = """\
+mappings:
+  - metric: new_users
+    variant: registered
+    from: users
+    measure: COUNT(*)
+    label: n
+    time_column: first_order_at
+  - metric: new_users
+    variant: first_order
+    from: users
+    measure: COUNT(*)
+    label: n
+    time_column: first_order_at
+    where: ["first_order_at IS NOT NULL"]
+"""
+
+
+def _require_period(tmp_path: Path) -> None:
+    (tmp_path / "metrics.yaml").write_text(
+        METRICS.replace(
+            "    tables: [users]\n", "    tables: [users]\n    required_rules: [period]\n", 1
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "mappings.yaml").write_text(PERIOD_MAPPINGS, encoding="utf-8")
+
+
+def test_a_stated_period_is_confirmed_applied_and_claimed(
+    config: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """P1 via --period, and P8: the result line names the period it ran."""
+    _require_period(tmp_path)
+    code = _flow(
+        config, "--variant", "registered", "--period", "2026-01-01..2026-01-31", "--yes"
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    final_sheet = out[out.rfind("口径确认单") : out.find("结果（")]
+    assert "统计区间：2026-01-01 至 2026-01-31（31 天）" in final_sheet
+    assert "first_order_at >= '2026-01-01'" in out
+    result = out.split("结果（")[1]
+    assert "统计区间=2026-01-01 至 2026-01-31" in result.splitlines()[0]
+    assert "  1" in result
+    assert "系统不核对" not in out
+
+
+def test_the_questions_own_period_names_the_words_it_came_from(
+    config: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _require_period(tmp_path)
+    code = main(
+        [
+            "flow", "2026年1月新增用户有多少？", "--config", str(config),
+            "--variant", "registered", "--yes",
+        ]
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "由问题中的「2026年1月」换算" in out
+    # The fixture's one January row is a bare date; it has to be counted.
+    assert "  1" in out.split("结果（")[1]
+
+
+def test_a_required_period_nobody_states_runs_nothing(
+    config: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _require_period(tmp_path)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "")
+    assert _flow(config, "--variant", "registered", "--yes") == 2
+    out = capsys.readouterr().out
+    assert "统计区间" in out.split("尚未确定：")[1]
+    assert "没有执行任何查询" in out
+
+
+def test_an_unreadable_period_is_refused_with_what_would_be_read(
+    config: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A period typed but not understood must not quietly become no period."""
+    _require_period(tmp_path)
+    assert _flow(config, "--variant", "registered", "--period", "随便哪段", "--yes") == 2
+    assert "上个月" in capsys.readouterr().err
+
+
+def test_two_periods_in_a_question_are_named_and_asked_about(
+    config: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """P2 at the CLI: the refusal says which words collided."""
+    _require_period(tmp_path)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "")
+    code = main(
+        [
+            "flow", "2026年1月和2026年2月新增用户", "--config", str(config),
+            "--variant", "registered", "--yes",
+        ]
+    )
+    assert code == 2
+    assert "多个不同的统计区间" in capsys.readouterr().err

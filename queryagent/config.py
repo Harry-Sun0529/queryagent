@@ -12,6 +12,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
@@ -76,6 +77,9 @@ class WorkflowConfig:
 
     mappings_path: str | None = None
     state_path: str = ".queryagent/workflow.db"
+    timezone: str = "Asia/Shanghai"
+    """Which day "今天" is when a question says 「上个月」. It does not convert
+    stored timestamps: data is compared in the time it was stored in."""
 
 
 @dataclass(frozen=True)
@@ -250,9 +254,15 @@ def _reject_credential_keys(section: Any, where: str) -> None:
 def _load_workflow(section: dict[str, Any]) -> WorkflowConfig:
     if not isinstance(section, dict):
         raise ValueError("workflow section must be a mapping")
+    timezone = _opt_str(section, "timezone") or "Asia/Shanghai"
+    try:
+        ZoneInfo(timezone)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise ValueError(f"workflow.timezone: unknown time zone {timezone!r}") from exc
     return WorkflowConfig(
         mappings_path=_opt_str(section, "mappings_path"),
         state_path=_opt_str(section, "state_path") or ".queryagent/workflow.db",
+        timezone=timezone,
     )
 
 

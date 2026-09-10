@@ -21,6 +21,7 @@ metrics:
       如问题未指明口径且涉及报表，需与用户确认采用哪种。
     tables: [users]
     sql_hint: "COUNT(*) FROM users WHERE date(created_at) = ... AND channel <> 'internal_test'"
+    required_rules: [period]
     # `variants` turns the `caution` prose above into a choice a user can make
     # and a confirmation can be bound to (v0.6 workflow layer). Declaring them
     # is a maintainer act: the agent picks from this list, it does not extend it.
@@ -43,9 +44,9 @@ metrics:
       需与用户确认用支付口径还是净额口径。
     tables: [orders]
     sql_hint: "SUM(amount) FROM orders WHERE status = 'paid'"
-    # 口径必须写明统计周期。文档写明了就引用文档；没写就列为缺失，由用户本次约定补上，
-    # 系统不替用户默认一个周期。
-    required_rules: [time_window]
+    # 口径必须限定统计区间：问题里有时间表述就换算成绝对日期，没有就列为缺失，
+    # 由用户写明（--period），系统不替用户默认"全部时间"。
+    required_rules: [period]
     variants:
       - key: paid
         label: 支付口径

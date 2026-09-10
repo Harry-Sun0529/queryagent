@@ -87,6 +87,10 @@ handbook sentence cannot change which dates a query covers.
 COMPILED_RULE_KEYS = (VARIANT_RULE_KEY, PERIOD_RULE_KEY)
 """Rules the compiler turns into SQL. Every other rule explains the 口径."""
 
+REQUIRABLE_RULE_KEYS = (*ALLOWED_RULE_KEYS, PERIOD_RULE_KEY)
+"""Keys a metric may list in ``required_rules``: every extractable key, plus
+the period, which only the user can fill."""
+
 CONFLICT_SEPARATOR = ":"
 
 

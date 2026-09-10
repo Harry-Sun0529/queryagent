@@ -10,34 +10,46 @@
 # such: a plausible-looking WHERE clause here is indistinguishable from a
 # correct one at the point where someone reads the answer.
 
+# Structured entries (v0.7): the compiler adds the confirmed 统计区间 as a
+# condition on `time_column`. A whole-statement `sql:` entry still works, but
+# refuses a period rather than silently running all-time.
+
 mappings:
   - metric: new_users
     variant: registered
-    sql: >
-      SELECT COUNT(*) AS 新增用户数
-      FROM users
-      WHERE channel <> 'internal_test'
+    from: users
+    measure: COUNT(*)
+    label: 新增用户数
+    time_column: created_at
+    where:
+      - channel <> 'internal_test'
 
   - metric: new_users
     variant: first_order
-    sql: >
-      SELECT COUNT(*) AS 新增用户数
-      FROM users
-      WHERE first_order_at IS NOT NULL AND channel <> 'internal_test'
+    from: users
+    measure: COUNT(*)
+    label: 新增用户数
+    time_column: first_order_at
+    where:
+      - first_order_at IS NOT NULL
+      - channel <> 'internal_test'
 
   - metric: gmv
     variant: paid
-    sql: >
-      SELECT ROUND(SUM(amount), 2) AS 成交额
-      FROM orders
-      WHERE status = 'paid'
+    from: orders
+    measure: ROUND(SUM(amount), 2)
+    label: 成交额
+    time_column: created_at
+    where:
+      - status = 'paid'
 
   - metric: gmv
     variant: net
-    sql: >
-      SELECT ROUND(
-               SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END)
-               - SUM(CASE WHEN status = 'refunded' THEN amount ELSE 0 END), 2
-             ) AS 成交额净额
-      FROM orders
-      WHERE status IN ('paid', 'refunded')
+    from: orders
+    measure: >-
+      ROUND(SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END)
+      - SUM(CASE WHEN status = 'refunded' THEN amount ELSE 0 END), 2)
+    label: 成交额净额
+    time_column: created_at
+    where:
+      - status IN ('paid', 'refunded')

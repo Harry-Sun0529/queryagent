@@ -14,12 +14,15 @@ from __future__ import annotations
 
 from queryagent.workflow.builder import VARIANT_RULE_KEY
 from queryagent.workflow.models import (
+    COMPILED_RULE_KEYS,
+    PERIOD_RULE_KEY,
     BusinessDefinition,
     Candidate,
     DefinitionDraft,
     Rule,
     RuleSource,
 )
+from queryagent.workflow.periods import Period
 
 _SOURCE_LABELS = {
     RuleSource.DOC: "文档依据",
@@ -32,6 +35,7 @@ _RULE_LABELS = {
     "definition": "指标说明",
     "tables": "涉及数据表",
     "variant": "选定口径",
+    "period": "统计区间",
     # Extracted rule keys. A confirmation sheet whose field names are English
     # identifiers is not something an operator can repeat to a colleague,
     # which is the whole acceptance test for this screen (D04).
@@ -81,6 +85,12 @@ def _rule_text(definition: BusinessDefinition, rule: Rule) -> str:
     meaningless to the operator who has to repeat this 口径 to a colleague.
     Show the maintainer's own wording instead (D04).
     """
+    if rule.key == PERIOD_RULE_KEY:
+        try:
+            text = Period.decode(rule.value).render()
+        except ValueError:
+            return rule.value
+        return f"{text}（{rule.note}）" if rule.note else text
     if rule.key == VARIANT_RULE_KEY:
         candidate = definition.candidate(rule.value)
         if candidate is not None:
@@ -140,7 +150,8 @@ def render_draft(
 def render_definition_summary(definition: BusinessDefinition) -> str:
     """One-line recap attached to a result: the reading the number came from.
 
-    Only what the executed query applied — the maintainer-declared variant.
+    Only what the executed query applied — the maintainer-declared variant
+    and the confirmed period.
     Document rules and 本次约定 explain the 口径, but the compiler does not
     consume them, so listing them here would claim the number honours a rule
     (a monthly window, say) that the SQL does not implement. It did claim
@@ -151,7 +162,7 @@ def render_definition_summary(definition: BusinessDefinition) -> str:
     parts.extend(
         f"{rule_label(rule.key)}={_rule_text(definition, rule)}"
         for rule in definition.rules
-        if rule.key == VARIANT_RULE_KEY
+        if rule.key in COMPILED_RULE_KEYS
     )
     return "；".join(parts)
 
@@ -165,7 +176,7 @@ def render_unenforced(definition: BusinessDefinition) -> str:
     labels = [
         rule_label(rule.key)
         for rule in definition.rules
-        if rule.source is not RuleSource.MAINTAINER and rule.key != VARIANT_RULE_KEY
+        if rule.source is not RuleSource.MAINTAINER and rule.key not in COMPILED_RULE_KEYS
     ]
     if not labels:
         return ""

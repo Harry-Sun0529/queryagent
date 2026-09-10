@@ -13,23 +13,37 @@ picked the first reading.
 
 from __future__ import annotations
 
+import dataclasses
+from collections.abc import Callable
+from datetime import date
+
 from queryagent.metrics.base import Metric, MetricStore
 from queryagent.workflow.errors import MappingNotFound
 from queryagent.workflow.models import (
-    ALLOWED_RULE_KEYS,
+    PERIOD_RULE_KEY,
+    REQUIRABLE_RULE_KEYS,
     VARIANT_RULE_KEY,
     BusinessDefinition,
     Candidate,
     Rule,
     RuleSource,
 )
+from queryagent.workflow.periods import PeriodError, find_period
 
 
 class MetricDraftBuilder:
     """Build a draft definition from the maintainer's declared metrics."""
 
-    def __init__(self, metrics: MetricStore) -> None:
+    def __init__(self, metrics: MetricStore, *, today: Callable[[], date] = date.today) -> None:
+        """
+        Args:
+            metrics: The maintainer's declared metrics.
+            today: Which day relative time words are resolved against. The CLI
+                passes the configured business time zone's date; tests pass a
+                fixed one.
+        """
         self._metrics = metrics
+        self._today = today
 
     def build(self, question: str) -> BusinessDefinition:
         """Return the definition to show the user.
@@ -43,7 +57,33 @@ class MetricDraftBuilder:
             raise MappingNotFound(
                 f"no declared business metric matches this question: {question!r}"
             )
-        return _definition_for(matches[0])
+        return _with_period(_definition_for(matches[0]), question, self._today())
+
+
+def _with_period(definition: BusinessDefinition, question: str, today: date) -> BusinessDefinition:
+    """Read the question's time words into a period rule, in absolute dates.
+
+    One recognisable period becomes a 本次约定 rule naming the words it came
+    from — the user asked for it, and they confirm the dates it resolves to.
+    Two different periods, or an impossible date, leave the period missing
+    whether or not the metric requires one: the question asked for a period,
+    so running without it would answer a different question.
+    """
+    try:
+        found = find_period(question, today)
+    except PeriodError:
+        if PERIOD_RULE_KEY in definition.missing:
+            return definition
+        return dataclasses.replace(definition, missing=(*definition.missing, PERIOD_RULE_KEY))
+    if found is None:
+        return definition
+    rule = Rule(
+        PERIOD_RULE_KEY,
+        found.period.encode(),
+        RuleSource.USER,
+        note=f"由问题中的「{found.phrase}」换算",
+    )
+    return definition.with_rules((rule,))
 
 
 def _definition_for(metric: Metric) -> BusinessDefinition:
@@ -64,11 +104,11 @@ def _definition_for(metric: Metric) -> BusinessDefinition:
     )
     # A declared disagreement is a hole in the definition until the user
     # closes it — not a default the system picks on their behalf (D05, D02).
-    unknown = [key for key in metric.required_rules if key not in ALLOWED_RULE_KEYS]
+    unknown = [key for key in metric.required_rules if key not in REQUIRABLE_RULE_KEYS]
     if unknown:
         raise ValueError(
             f"metrics.yaml: {metric.name}.required_rules has unknown keys {unknown}; "
-            f"allowed: {', '.join(ALLOWED_RULE_KEYS)}"
+            f"allowed: {', '.join(REQUIRABLE_RULE_KEYS)}"
         )
     # Required rules are gaps until something states them: a document, or the
     # user this time. Never a default the system fills in (§4.5.5, D07).

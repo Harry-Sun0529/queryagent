@@ -383,3 +383,30 @@ def test_the_extraction_prompt_defines_every_rule_key() -> None:
     for key in ALLOWED_RULE_KEYS:
         assert f"- {key}:" in system
     assert "NOT which date a record is attributed to" in system
+
+
+# ------------------------------------------------------------ P4: period
+
+
+def test_documents_cannot_set_the_period() -> None:
+    """P4: which dates a query covers is the user's to say, never a handbook's."""
+    payload = {
+        "rules": [
+            {
+                "key": "period",
+                "value": "2026-01-01..2026-12-31",
+                "citation": 0,
+                "quote": "新增用户按 users.created_at 的注册日期计数",
+            }
+        ]
+    }
+    _, _, definition = _build(_hits(REGISTERED), payload, required=())
+    assert definition.rule("period") is None
+
+
+def test_a_metric_may_require_the_period() -> None:
+    from queryagent.workflow.builder import MetricDraftBuilder
+
+    store = _metric_store(required_rules=("period",))
+    definition = MetricDraftBuilder(store).build("新增用户")  # type: ignore[arg-type]
+    assert definition.missing == ("period",)

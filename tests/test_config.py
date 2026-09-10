@@ -223,3 +223,13 @@ def test_an_embedding_floor_outside_the_unit_interval_is_refused(tmp_path: Path)
     )
     with pytest.raises(ValueError, match="min_similarity"):
         load_config(write(tmp_path, text))
+
+
+def test_the_workflow_time_zone_defaults_to_shanghai(tmp_path: Path) -> None:
+    assert load_config(write(tmp_path, VALID)).workflow.timezone == "Asia/Shanghai"
+
+
+def test_an_unknown_time_zone_is_refused(tmp_path: Path) -> None:
+    """A typo here would silently move 「上个月」 by a day at the month edge."""
+    with pytest.raises(ValueError, match="timezone"):
+        load_config(write(tmp_path, VALID + "workflow:\n  timezone: Mars/Olympus\n"))

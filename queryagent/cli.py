@@ -25,8 +25,10 @@ import traceback
 import uuid
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from datetime import date, datetime
 from pathlib import Path
 from typing import Protocol
+from zoneinfo import ZoneInfo
 
 from queryagent.agent import run_agent
 from queryagent.config import AppConfig, load_config
@@ -86,6 +88,7 @@ from queryagent.workflow.execution import make_connector_executor
 from queryagent.workflow.mappings import load_mappings
 from queryagent.workflow.models import (
     CONFLICT_SEPARATOR,
+    PERIOD_RULE_KEY,
     ActorContext,
     Candidate,
     DefinitionDraft,
@@ -93,6 +96,7 @@ from queryagent.workflow.models import (
     Rule,
     RuleSource,
 )
+from queryagent.workflow.periods import PeriodError, find_period, parse_period
 from queryagent.workflow.render import (
     render_definition_summary,
     render_draft,
@@ -193,6 +197,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         metavar="KEY=VALUE",
         help="state a rule the 口径 requires but nothing has stated yet "
         "(e.g. time_window=按自然月统计); recorded as 本次约定",
+    )
+    flow.add_argument(
+        "--period",
+        help="the statistical period, if the question does not state one or you "
+        "want a different one (e.g. 上个月, 2026-08-01..2026-08-31); recorded as 本次约定",
     )
     flow.add_argument(
         "--yes",
@@ -653,6 +662,7 @@ def _cmd_flow(args: argparse.Namespace) -> int:
             "file (see examples/query_mappings.yaml)"
         )
     actor = ActorContext(subject_id=args.subject, workspace_id=args.workspace)
+    today = _today(config)
 
     with contextlib.ExitStack() as stack:
         connector = make_connector(config.database)
@@ -681,7 +691,10 @@ def _cmd_flow(args: argparse.Namespace) -> int:
         workflow = QueryWorkflow(
             store=store,
             builder=CompositeDraftBuilder(
-                MetricDraftBuilder(YamlMetricStore(config.metrics_path)), evidence
+                MetricDraftBuilder(
+                    YamlMetricStore(config.metrics_path), today=lambda: today
+                ),
+                evidence,
             ),
             compiler=TemplateCompiler(
                 load_mappings(config.workflow.mappings_path), dialect=connector.dialect
@@ -703,7 +716,7 @@ def _cmd_flow(args: argparse.Namespace) -> int:
                 f"（已配置：{', '.join(sorted(known))}）；本次不会有文档依据。",
                 file=sys.stderr,
             )
-        return _run_flow(workflow, actor, args, provider)
+        return _run_flow(workflow, actor, args, provider, today)
 
 
 def _run_flow(
@@ -711,9 +724,21 @@ def _run_flow(
     actor: ActorContext,
     args: argparse.Namespace,
     provider: LocalKnowledgeProvider | None = None,
+    today: date | None = None,
 ) -> int:
     request_id = uuid.uuid4().hex
+    today = today or date.today()
     draft = workflow.prepare(actor, args.question, request_id=request_id)
+    if args.period:
+        # Stated on purpose, it replaces whatever the question's words gave.
+        draft = workflow.amend(
+            actor,
+            draft.draft_id,
+            expected_version=draft.version,
+            rules=(_stated_period(args.period, today),),
+        )
+    if PERIOD_RULE_KEY in draft.definition.missing:
+        _explain_missing_period(args.question, today)
     citations = _citations(provider, actor, args.question)
     cited = tuple(
         rule.evidence_ref for rule in draft.definition.rules if rule.evidence_ref
@@ -725,7 +750,7 @@ def _run_flow(
         print("\n（未检索到该身份可见的相关文档；以下口径仅来自系统映射）")
 
     if draft.status is DraftStatus.NEEDS_INPUT:
-        rules = _open_choices(draft, args, citations)
+        rules = _open_choices(draft, args, citations, today)
         if rules is None:
             print("\n[已取消] 未选择口径，没有执行任何查询。")
             return 2
@@ -772,8 +797,44 @@ def _citations(
     return {f"{hit.ref.doc_id}#{hit.ref.chunk_id}": hit.chunk.citation() for hit in hits}
 
 
+def _today(config: AppConfig) -> date:
+    """Today in the configured business time zone — what 「上个月」 is relative to."""
+    return datetime.now(ZoneInfo(config.workflow.timezone)).date()
+
+
+def _stated_period(text: str, today: date) -> Rule:
+    """A period the user stated on purpose, parsed exactly as a question's would be.
+
+    Raises PeriodError (a ValueError) when it cannot be read: a period that
+    was typed but not understood must not quietly become no period at all.
+    """
+    period = parse_period(text, today)
+    return Rule(PERIOD_RULE_KEY, period.encode(), RuleSource.USER, note=f"由「{text}」换算")
+
+
+def _explain_missing_period(question: str, today: date) -> None:
+    """Say why the question's own time words did not become a period."""
+    try:
+        find_period(question, today)
+    except PeriodError as exc:
+        print(f"[提示] {exc}", file=sys.stderr)
+
+
+def _prompt_period() -> str:
+    try:
+        return input(
+            "\n「统计区间」尚未确定。写下要统计的时间"
+            "（如 上个月、2026-08-01..2026-08-31；回车取消）： "
+        ).strip()
+    except EOFError:
+        return ""
+
+
 def _open_choices(
-    draft: DefinitionDraft, args: argparse.Namespace, citations: dict[str, str]
+    draft: DefinitionDraft,
+    args: argparse.Namespace,
+    citations: dict[str, str],
+    today: date,
 ) -> tuple[Rule, ...] | None:
     """The user's answer to every open choice, or None when they decline.
 
@@ -840,6 +901,12 @@ def _open_choices(
             )
         )
     for key in gaps:
+        if key == PERIOD_RULE_KEY:
+            text = args.period or supplied.get(key) or _prompt_period()
+            if not text:
+                return None
+            rules.append(_stated_period(text, today))
+            continue
         # Nothing states this rule and nothing may default it: the user writes
         # it down, and it is marked as theirs (D07).
         value = supplied.get(key) or _prompt_rule(rule_label(key))

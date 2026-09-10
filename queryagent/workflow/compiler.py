@@ -86,8 +86,13 @@ def _compose(entry: QueryMapping, period: Period | None, dialect: str, where: st
             raise MappingNotFound(
                 f"{where} 的映射没有声明 time_column，无法施加统计区间 {period.render()}"
             )
-        start = f"{period.start.isoformat()} 00:00:00"
-        end = f"{period.end_exclusive.isoformat()} 00:00:00"
+        # Bare dates, not 'YYYY-MM-DD 00:00:00'. A column storing dates as text
+        # ('2026-08-01') sorts *below* '2026-08-01 00:00:00' in SQLite, so a
+        # timestamp-shaped lower bound silently dropped the first day of every
+        # period. A bare date bounds date-only and timestamp text alike, and
+        # MySQL and ClickHouse both read it as midnight.
+        start = period.start.isoformat()
+        end = period.end_exclusive.isoformat()
         conditions += [f"{entry.time_column} >= '{start}'", f"{entry.time_column} < '{end}'"]
     clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
     return f"SELECT {entry.measure} AS {_quote(entry.label, dialect)} FROM {entry.source}{clause}"
