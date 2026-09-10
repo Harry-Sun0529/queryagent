@@ -426,8 +426,6 @@ make demo-down   # tear down demo databases
 - PostgreSQL connector (validates the Connector seam further)
 - Per-subject document ACLs (today's scoping is per business workspace)
 - Grouping by day and by maintainer-declared dimensions (「上个月每天的新增用户」)
-- Data freshness: say where a dataset's records end, before a partial month
-  reads as a whole one
 - Cross-session memory for confirmed metric choices
 - Embedding-based matching as an optional MetricStore implementation
 - Published eval numbers (strong + weak model, self-built + public subset)

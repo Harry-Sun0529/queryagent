@@ -80,6 +80,21 @@ class TemplateCompiler:
             return CompiledQuery(entry)
         return _compose(entry, period, self._dialect, where)
 
+    def freshness_probe(self, definition: BusinessDefinition) -> CompiledQuery | None:
+        """The statement that dates the data behind this definition, if one exists.
+
+        ``MAX(time_column)`` over the mapping's whole table, without its
+        ``where`` fragments: the question is how far the data reaches, not
+        how far this metric's filtered rows do — a paid-orders filter can end
+        early for business reasons that say nothing about loading. None when
+        there is no structured mapping with a time column to read.
+        """
+        rule = definition.rule(VARIANT_RULE_KEY)
+        entry = self._templates.get((definition.metric, rule.value if rule else ""))
+        if not isinstance(entry, QueryMapping) or not entry.time_column:
+            return None
+        return CompiledQuery(f"SELECT MAX({entry.time_column}) FROM {entry.source}")
+
 
 def _period_of(definition: BusinessDefinition) -> Period | None:
     rule = definition.rule(PERIOD_RULE_KEY)

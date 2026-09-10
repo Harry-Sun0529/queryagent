@@ -276,3 +276,7 @@ class QueryRun:
     rows: tuple[tuple[object, ...], ...] = ()
     truncated: bool = False
     error: str = ""
+    freshness_sql: str = ""
+    """The statement that dated the data; '' when the mapping had no time column."""
+    data_through: str = ""
+    """ISO date of the newest record it found; '' when unknown."""

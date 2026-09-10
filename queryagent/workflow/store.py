@@ -68,12 +68,18 @@ CREATE TABLE IF NOT EXISTS runs (
     columns TEXT NOT NULL DEFAULT '[]',
     rows TEXT NOT NULL DEFAULT '[]',
     truncated INTEGER NOT NULL DEFAULT 0,
-    error TEXT NOT NULL DEFAULT ''
+    error TEXT NOT NULL DEFAULT '',
+    freshness_sql TEXT NOT NULL DEFAULT '',
+    data_through TEXT NOT NULL DEFAULT ''
 );
 """
 
 # Columns added to ``runs`` after its first release, with their declarations.
-_LATER_RUN_COLUMNS = (("params", "TEXT NOT NULL DEFAULT '[]'"),)
+_LATER_RUN_COLUMNS = (
+    ("params", "TEXT NOT NULL DEFAULT '[]'"),
+    ("freshness_sql", "TEXT NOT NULL DEFAULT ''"),
+    ("data_through", "TEXT NOT NULL DEFAULT ''"),
+)
 
 
 class SqliteWorkflowStore:
@@ -258,8 +264,8 @@ class SqliteWorkflowStore:
 
     def finish_run(self, run: QueryRun) -> None:
         self._conn.execute(
-            "UPDATE runs SET status=?, sql=?, params=?, columns=?, rows=?, truncated=?, error=? "
-            "WHERE run_id=?",
+            "UPDATE runs SET status=?, sql=?, params=?, columns=?, rows=?, truncated=?, error=?, "
+            "freshness_sql=?, data_through=? WHERE run_id=?",
             (
                 run.status.value,
                 run.sql,
@@ -268,6 +274,8 @@ class SqliteWorkflowStore:
                 json.dumps([list(row) for row in run.rows], ensure_ascii=False, default=str),
                 int(run.truncated),
                 run.error,
+                run.freshness_sql,
+                run.data_through,
                 run.run_id,
             ),
         )
@@ -371,4 +379,6 @@ def _decode_run(row: sqlite3.Row) -> QueryRun:
         rows=tuple(tuple(r) for r in json.loads(row["rows"])),
         truncated=bool(row["truncated"]),
         error=row["error"],
+        freshness_sql=row["freshness_sql"],
+        data_through=row["data_through"],
     )

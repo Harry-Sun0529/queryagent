@@ -434,10 +434,33 @@ def test_a_stated_period_is_confirmed_applied_and_claimed(
     assert "统计区间：2026-01-01 至 2026-01-31（31 天）" in final_sheet
     assert "first_order_at >= ? AND first_order_at < ?" in out
     assert "参数（按 ? 的顺序绑定）：2026-01-01, 2026-02-01" in out
+    assert "数据新鲜度探测：SELECT MAX(first_order_at) FROM users" in out
     result = out.split("结果（")[1]
     assert "统计区间=2026-01-01 至 2026-01-31" in result.splitlines()[0]
     assert "  1" in result
     assert "系统不核对" not in out
+
+
+def test_the_result_says_which_days_of_the_period_have_no_data(
+    config: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """F4 as the user meets it: the newest record is 2026-01-01, the period a month."""
+    _require_period(tmp_path)
+    assert _flow(config, "--variant", "registered", "--period", "2026-01", "--yes") == 0
+    result = capsys.readouterr().out.split("结果（")[1]
+    assert "数据不完整" in result
+    assert "最后 30 天（2026-01-02 起）没有任何数据" in result
+
+
+def test_a_period_after_the_data_reads_as_no_data_not_as_zero(
+    config: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """F5: COUNT says 0; the note says why that 0 is not the business doing nothing."""
+    _require_period(tmp_path)
+    assert _flow(config, "--variant", "registered", "--period", "2026-03", "--yes") == 0
+    result = capsys.readouterr().out.split("结果（")[1]
+    assert "  0" in result
+    assert "早于统计区间的开始 2026-03-01" in result
 
 
 def test_the_questions_own_period_names_the_words_it_came_from(
@@ -525,14 +548,34 @@ def test_a_result_without_a_period_says_it_is_unbounded(
 def test_an_empty_aggregate_says_it_is_empty_not_zero(
     config: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """P10: SUM over no rows is NULL — bare it reads as a fault, as 0 it is a false claim."""
+    """P10: SUM over no rows is NULL — bare it reads as a fault, as 0 it is a false claim.
+
+    December 2025 lies inside the data (the newest record is 2026-01-01), so
+    this is the "no matching records" case, not the "no data yet" one.
+    """
+    _require_period(tmp_path)
+    (tmp_path / "mappings.yaml").write_text(EMPTY_SUM_MAPPINGS, encoding="utf-8")
+    code = _flow(
+        config, "--variant", "registered", "--period", "2025-12-01..2025-12-31", "--yes"
+    )
+    assert code == 0
+    assert "空不等于 0" in capsys.readouterr().out
+
+
+def test_an_empty_aggregate_after_the_data_ends_says_there_is_no_data_yet(
+    config: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """F5: 2030 is after the newest record, so there was nothing to match."""
     _require_period(tmp_path)
     (tmp_path / "mappings.yaml").write_text(EMPTY_SUM_MAPPINGS, encoding="utf-8")
     code = _flow(
         config, "--variant", "registered", "--period", "2030-01-01..2030-01-31", "--yes"
     )
+    result = capsys.readouterr().out.split("结果（")[1]
     assert code == 0
-    assert "空不等于 0" in capsys.readouterr().out
+    assert "结果为空：统计区间内还没有数据" in result
+    assert "没有匹配的记录" not in result
+    assert "不代表业务为 0" in result
 
 
 def test_a_zero_count_is_an_answer_and_gets_no_note(

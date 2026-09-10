@@ -25,7 +25,14 @@ from queryagent.workflow.builder import MetricDraftBuilder
 from queryagent.workflow.compiler import TemplateCompiler
 from queryagent.workflow.execution import make_connector_executor
 from queryagent.workflow.mappings import load_mappings
-from queryagent.workflow.models import PERIOD_RULE_KEY, ActorContext, DraftStatus, Rule, RuleSource
+from queryagent.workflow.models import (
+    PERIOD_RULE_KEY,
+    ActorContext,
+    DraftStatus,
+    QueryRun,
+    Rule,
+    RuleSource,
+)
 from queryagent.workflow.service import QueryWorkflow
 from queryagent.workflow.store import SqliteWorkflowStore
 
@@ -54,7 +61,7 @@ def workflow(tmp_path: Path) -> QueryWorkflow:
     )
 
 
-def _run(workflow: QueryWorkflow, variant: str, key: str) -> tuple[object, ...]:
+def _run(workflow: QueryWorkflow, variant: str, key: str) -> QueryRun:
     draft = workflow.prepare(ALICE, "上个月新增用户有多少？", request_id=f"req-{variant}")
     # The period came from the question; the reading still has to be chosen.
     assert draft.definition.rule(PERIOD_RULE_KEY).value == "2026-08-01..2026-08-31"  # type: ignore[union-attr]
@@ -72,7 +79,7 @@ def _run(workflow: QueryWorkflow, variant: str, key: str) -> tuple[object, ...]:
         version=amended.version,
         definition_hash=amended.definition_hash,
     )
-    return workflow.execute(ALICE, confirmation.confirmation_id, idempotency_key=key).rows[0]
+    return workflow.execute(ALICE, confirmation.confirmation_id, idempotency_key=key)
 
 
 def test_last_month_under_each_reading_is_last_months_real_number(
@@ -84,7 +91,16 @@ def test_last_month_under_each_reading_is_last_months_real_number(
     everyone = connection.execute("SELECT COUNT(*) FROM users").fetchone()[0]
     connection.close()
 
-    assert _run(workflow, "registered", "k-reg") == (expected["registered"],)
-    assert _run(workflow, "first_order", "k-fo") == (expected["first_order"],)
+    assert _run(workflow, "registered", "k-reg").rows[0] == (expected["registered"],)
+    assert _run(workflow, "first_order", "k-fo").rows[0] == (expected["first_order"],)
     assert expected["registered"] != expected["first_order"]  # otherwise nothing is shown
     assert 0 < expected["registered"] < everyone  # a window, not the all-time count
+
+
+def test_the_run_dates_the_data_it_counted(workflow: QueryWorkflow) -> None:
+    """F4 on the real data: the demo ends before August does, and the run knows where."""
+    connection = sqlite3.connect(DEMO_DB)
+    newest = connection.execute("SELECT date(MAX(created_at)) FROM users").fetchone()[0]
+    connection.close()
+    run = _run(workflow, "registered", "k-fresh")
+    assert run.data_through == newest

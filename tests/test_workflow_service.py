@@ -85,6 +85,10 @@ class CountingExecutor:
     def run(self, query: CompiledQuery) -> QueryResult:
         self.executed.append(query.sql)
         self.bound.append(query.params)
+        if query.sql.startswith("SELECT MAX("):  # the freshness probe (T37)
+            return QueryResult(
+                columns=("latest",), rows=(("2026-08-22 10:00:00",),), elapsed_ms=1, truncated=False
+            )
         return QueryResult(columns=("n",), rows=((42,),), elapsed_ms=1, truncated=False)
 
 
@@ -260,7 +264,8 @@ def test_a_repeated_request_returns_the_first_run_without_re_executing(
     first = workflow.execute(ALICE, confirmation.confirmation_id, idempotency_key="k1")
     second = workflow.execute(ALICE, confirmation.confirmation_id, idempotency_key="k1")
     assert first.run_id == second.run_id
-    assert len(executor.executed) == 1
+    # One run's statements — the freshness probe, then the query — and none for the replay.
+    assert executor.executed == ["SELECT MAX(created_at) FROM users", first.sql]
 
 
 def test_another_subject_cannot_use_someone_elses_confirmation(
@@ -349,7 +354,7 @@ def test_the_executed_sql_matches_the_confirmed_variant(
     )
     run = workflow.execute(ALICE, confirmation.confirmation_id, idempotency_key="k1")
     assert "first_order_at IS NOT NULL" in run.sql
-    assert executor.executed == [run.sql]
+    assert executor.executed == ["SELECT MAX(first_order_at) FROM users", run.sql]
 
 
 def test_no_question_match_yields_no_draft_rather_than_a_guess(
@@ -536,9 +541,9 @@ def test_a_draft_with_no_citations_never_calls_the_checker(tmp_path: Path) -> No
         version=amended.version,
         definition_hash=amended.definition_hash,
     )
-    workflow.execute(ALICE, confirmation.confirmation_id, idempotency_key="k1")
+    run = workflow.execute(ALICE, confirmation.confirmation_id, idempotency_key="k1")
     assert checker.calls == 0
-    assert len(executor.executed) == 1
+    assert executor.executed == [run.freshness_sql, run.sql]
 
 
 # --------------------------------------------------------- P1-P3: periods
@@ -605,7 +610,8 @@ def test_a_confirmation_made_today_runs_todays_dates_tomorrow(tmp_path: Path) ->
     )
     assert "created_at >= ? AND created_at < ?" in run.sql
     assert run.params == ("2026-08-01", "2026-09-01")
-    assert executor.bound == [run.params]  # what was sent is what was recorded
+    # The freshness probe binds nothing; the query binds exactly what was recorded.
+    assert executor.bound == [(), run.params]
     reread = _on(tmp_path, date(2026, 10, 2), CountingExecutor()).get_run(ALICE, run.run_id)
     assert reread.params == run.params
 
@@ -633,3 +639,64 @@ def test_changing_the_period_after_confirmation_invalidates_it(tmp_path: Path) -
     )
     with pytest.raises(ConfirmationRequired):
         workflow.execute(ALICE, confirmation.confirmation_id, idempotency_key="k1")
+
+
+# --------------------------------------------------------- T37: freshness
+
+
+def _execute_registered(workflow: QueryWorkflow, question: str = "上个月新增用户多少？"):  # type: ignore[no-untyped-def]
+    draft = workflow.prepare(ALICE, question, request_id="r1")
+    amended = _pick_registered(workflow, draft.draft_id)
+    confirmation = workflow.confirm(
+        ALICE,
+        draft.draft_id,
+        version=amended.version,  # type: ignore[union-attr]
+        definition_hash=amended.definition_hash,  # type: ignore[union-attr]
+    )
+    return workflow.execute(ALICE, confirmation.confirmation_id, idempotency_key="k1")
+
+
+def test_a_run_records_how_far_the_data_behind_it_reaches(
+    parts: tuple[QueryWorkflow, CountingExecutor],
+) -> None:
+    """F4: probed after the confirmation, before the query, and kept on the run."""
+    workflow, executor = parts
+    run = _execute_registered(workflow)
+    assert run.freshness_sql == "SELECT MAX(created_at) FROM users"
+    assert run.data_through == "2026-08-22"
+    assert executor.executed == [run.freshness_sql, run.sql]
+    assert workflow.get_run(ALICE, run.run_id).data_through == "2026-08-22"
+
+
+def test_a_failing_probe_costs_the_note_not_the_confirmed_number(tmp_path: Path) -> None:
+    class ProbeFails(CountingExecutor):
+        def run(self, query: CompiledQuery) -> QueryResult:
+            if query.sql.startswith("SELECT MAX("):
+                raise RuntimeError("probe timed out")
+            return super().run(query)
+
+    executor = ProbeFails()
+    workflow = QueryWorkflow(
+        store=SqliteWorkflowStore(tmp_path / "wf.db"),
+        builder=MetricDraftBuilder(StubMetricStore((NEW_USERS, GMV))),
+        compiler=TemplateCompiler(TEMPLATES),
+        executor=executor.run,
+    )
+    run = _execute_registered(workflow)
+    assert run.status is RunStatus.SUCCEEDED
+    assert run.rows == ((42,),)
+    assert run.freshness_sql and run.data_through == ""  # probed, and said to be unknown
+
+
+def test_a_whole_statement_mapping_is_not_probed(tmp_path: Path) -> None:
+    """Nothing to read a date from, so nothing runs and nothing is claimed."""
+    executor = CountingExecutor()
+    workflow = QueryWorkflow(
+        store=SqliteWorkflowStore(tmp_path / "wf.db"),
+        builder=MetricDraftBuilder(StubMetricStore((NEW_USERS, GMV))),
+        compiler=TemplateCompiler({("new_users", "registered"): "SELECT COUNT(*) AS n FROM users"}),
+        executor=executor.run,
+    )
+    run = _execute_registered(workflow, "新增用户多少？")
+    assert run.freshness_sql == ""
+    assert executor.executed == [run.sql]

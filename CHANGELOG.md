@@ -8,6 +8,16 @@ frozen from v0.1.1 (spec §四).
 
 ## [Unreleased]
 
+### Added
+
+- The result says how far the data reaches. After confirmation, each run
+  of a structured mapping also reads `MAX(time_column)` from its table and
+  records the newest record's date. When the period runs past it, the result
+  names the missing days and what the number actually covers; when the
+  whole period lies after it, an empty or zero result is explained as no
+  data yet rather than as the business doing nothing. A failed probe is
+  reported as unknown and never costs the result.
+
 ### Changed
 
 - The dates of a confirmed 统计区间 are bound as parameters instead of being

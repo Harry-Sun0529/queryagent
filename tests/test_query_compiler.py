@@ -186,6 +186,27 @@ def test_a_variant_value_is_a_lookup_key_never_interpolated() -> None:
         compiler.compile(_definition(variant="registered' OR '1'='1"))
 
 
+# ------------------------------------------------------ T37 freshness probe
+
+
+def test_the_freshness_probe_reads_the_newest_value_of_the_mappings_time_column() -> None:
+    """Over the whole table, not the mapping's filters: it dates the data, not the metric."""
+    probe = TemplateCompiler({("new_users", "registered"): REGISTERED}).freshness_probe(
+        _definition(_august())
+    )
+    assert probe == CompiledQuery("SELECT MAX(created_at) FROM users")
+
+
+def test_there_is_no_probe_where_there_is_no_time_column_to_read() -> None:
+    whole = TemplateCompiler({("new_users", "registered"): "SELECT COUNT(*) FROM users"})
+    untimed = TemplateCompiler(
+        {("new_users", "registered"): QueryMapping(source="users", measure="COUNT(*)", label="n")}
+    )
+    assert whole.freshness_probe(_definition()) is None
+    assert untimed.freshness_probe(_definition()) is None
+    assert TemplateCompiler({}).freshness_probe(_definition()) is None
+
+
 # ------------------------------------------------------------- dialects
 
 

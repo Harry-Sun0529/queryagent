@@ -78,7 +78,7 @@ specs for in-flight work in `docs/specs/`.
 | Tool dispatch | `ToolRegistry.validate_and_dispatch -> Observation` | get_schema, execute_sql, ask_clarification |
 | Draft building | `DraftBuilder.build(question, actor) -> BusinessDefinition` | maintainer metrics; maintainer + document evidence (`CompositeDraftBuilder`) |
 | Document evidence | `KnowledgeProvider.search/read/check_refs(scope, ...)` | local SQLite index, keyword or optional semantic |
-| Plan compiling | `TemplateCompiler.compile(definition) -> CompiledQuery(sql, params)` | structured maintainer mappings + bound period (ADR-009); whole-statement `sql:` kept, refuses a period |
+| Plan compiling | `TemplateCompiler.compile(definition) -> CompiledQuery(sql, params)`; `freshness_probe(definition)` | structured maintainer mappings + bound period (ADR-009); whole-statement `sql:` kept, refuses a period and is not probed |
 | Workflow state | `SqliteWorkflowStore` (drafts / confirmations / runs) | local SQLite file, single process |
 | Trusted identity | `ActorContext(subject_id, workspace_id, roles)` | CLI local user (Web session / MCP host reserved) |
 
