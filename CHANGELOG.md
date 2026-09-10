@@ -8,6 +8,8 @@ frozen from v0.1.1 (spec §四).
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-09-10
+
 ### Added
 
 - 统计区间: the time a question names — 「上个月」, 「本周」, 「最近7天」,
