@@ -8,6 +8,8 @@ frozen from v0.1.1 (spec §四).
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-09-10
+
 ### Added
 
 - Document evidence: `queryagent kb import` indexes Markdown and DOCX (PDF
@@ -54,7 +56,7 @@ frozen from v0.1.1 (spec §四).
 - `query_mappings.yaml` (`workflow.mappings_path`): the maintainer-declared
   口径 → SQL table `flow` executes from. Nothing else is executable.
 
-### Fixed (unreleased)
+### Fixed before release
 
 - `amend()` accepted rules claiming any provenance, so a caller could label
   its own convention 「文档依据」 with a citation pointing nowhere. Not
