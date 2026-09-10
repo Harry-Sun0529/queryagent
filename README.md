@@ -69,7 +69,10 @@ definitions today, with zero new infrastructure*. Lightness is the feature.
   the draft's version *and* content hash: amend the 口径 and the old
   confirmation stops matching. A confirmed 口径 with no maintainer-declared
   mapping is refused rather than guessed. This path shares no execution
-  route with `ask`/`chat` — see [CONTEXT.md](CONTEXT.md).
+  route with `ask`/`chat` — see [CONTEXT.md](CONTEXT.md). The period a
+  question names — 「上个月」, 「最近7天」, 「2026-08」 — is shown as absolute
+  dates, bound into the confirmation and compiled into the SQL; a period it
+  cannot resolve is asked about, not guessed.
 - **Three-layer SQL safety**: a token-level whitelist (single SELECT only,
   CTEs allowed — string literals can't fool it, comments can't smuggle past
   it), connector-enforced timeouts and row caps, and a documented read-only
@@ -148,6 +151,20 @@ nothing. `--variant` and `--yes` script the two answers; `--yes` automates
 the human, it does not bypass the gate — the confirmation record is still
 created and still bound to that exact draft version.
 
+The time in the question is part of the 口径. 「上个月」 appears on the sheet as
+「2026-08-01 至 2026-08-31（31 天）」, marked 本次约定 because you asked for it,
+and is bound into the confirmation — a draft confirmed on 10 September still
+runs August if it is executed in October — then compiled into the SQL as a
+condition on the mapping's `time_column`. Two different periods in one
+question, or one the parser does not recognise, are asked about rather than
+guessed; `--period` states or replaces one (`--period 2026-08-01..2026-08-31`).
+The result line names the period that ran, says 「未限定（全部数据）」 when
+there was none, and says a result is empty instead of printing a bare NULL.
+
+The demo data ends on 2026-08-22, so 「上个月」 asked in September covers a
+partial month and 「本月」 is empty. The system does not yet know where a
+dataset's records stop.
+
 ### Document evidence
 
 Point `flow` at your handbooks and the confirmation sheet starts citing them:
@@ -172,8 +189,8 @@ demo config puts a growth-team handbook in the same workspace as the ops one,
 so the disagreement shows up on the first run.
 
 Document rules explain a 口径; they do not change the query. What executes is
-the maintainer's mapping, and the result line names only that reading — the
-other rules are listed in a note saying the two are not cross-checked. Nor
+the maintainer's mapping, and the result line names only what ran — that
+reading and the confirmed 统计区间 — while the other rules are listed in a note saying the two are not cross-checked. Nor
 does the system check that the handbook wording you adopt matches the
 executable reading you pick; the whole sheet is shown again before you
 confirm.
@@ -408,7 +425,10 @@ make demo-down   # tear down demo databases
 
 - PostgreSQL connector (validates the Connector seam further)
 - Per-subject document ACLs (today's scoping is per business workspace)
-- A real QueryPlan compiler, replacing the mapping table
+- Grouping by day and by maintainer-declared dimensions (「上个月每天的新增用户」)
+- Parameter binding in the Connector protocol, superseding ADR-008
+- Data freshness: say where a dataset's records end, before a partial month
+  reads as a whole one
 - Cross-session memory for confirmed metric choices
 - Embedding-based matching as an optional MetricStore implementation
 - Published eval numbers (strong + weak model, self-built + public subset)

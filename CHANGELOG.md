@@ -8,6 +8,24 @@ frozen from v0.1.1 (spec §四).
 
 ## [Unreleased]
 
+### Added
+
+- 统计区间: the time a question names — 「上个月」, 「本周」, 「最近7天」,
+  「2026-08」, an explicit range — is resolved to absolute dates when the
+  draft is prepared, shown as 本次约定 with the words it came from, bound into
+  the content hash, and compiled into the SQL. Two different periods, or an
+  impossible date, are asked about rather than guessed. `--period` states or
+  replaces one; a metric can require one with `required_rules: [period]`;
+  `workflow.timezone` decides which day is today. Documents cannot set it.
+- Structured mappings (`from` / `measure` / `label` / `time_column` /
+  `where`) so a period can be applied. A whole-statement `sql:` mapping still
+  runs, but refuses a period instead of answering it with all-time data.
+  Values are typed, not bound (ADR-008): maintainer fragments and parsed
+  dates are the only things that reach the statement.
+- The result line names the period that ran, says 「未限定（全部数据）」 when
+  there was none, and says a result is empty rather than printing a bare
+  NULL or implying 0.
+
 ## [0.6.0] — 2026-09-10
 
 ### Added

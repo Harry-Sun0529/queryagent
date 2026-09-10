@@ -55,6 +55,10 @@ specs for in-flight work in `docs/specs/`.
   document. A metric's `required_rules` are gaps until a document states them
   or the user writes them down. Neither changes the SQL: documents explain,
   mappings execute.
+- **Period（统计区间）** — the absolute date range a draft is bounded to,
+  resolved from the question's time words (or stated with `--period`) when
+  the draft is prepared, and hashed with it. Only the user sets it; documents
+  cannot. With the variant, it is one of the two rules the compiler consumes.
 - **Trace** — one run's event stream persisted as JSONL, replayable
   (ADR-005). **Checkpoint** — the eval's per-case result log, which
   `--resume` reuses when the effective input/data/code signature matches.
@@ -74,7 +78,7 @@ specs for in-flight work in `docs/specs/`.
 | Tool dispatch | `ToolRegistry.validate_and_dispatch -> Observation` | get_schema, execute_sql, ask_clarification |
 | Draft building | `DraftBuilder.build(question, actor) -> BusinessDefinition` | maintainer metrics; maintainer + document evidence (`CompositeDraftBuilder`) |
 | Document evidence | `KnowledgeProvider.search/read/check_refs(scope, ...)` | local SQLite index, keyword or optional semantic |
-| Plan compiling | `TemplateCompiler.compile(definition) -> sql` | maintainer mapping table (QueryPlan compiler reserved) |
+| Plan compiling | `TemplateCompiler.compile(definition) -> sql` | structured maintainer mappings + typed period (ADR-008); whole-statement `sql:` kept, refuses a period |
 | Workflow state | `SqliteWorkflowStore` (drafts / confirmations / runs) | local SQLite file, single process |
 | Trusted identity | `ActorContext(subject_id, workspace_id, roles)` | CLI local user (Web session / MCP host reserved) |
 

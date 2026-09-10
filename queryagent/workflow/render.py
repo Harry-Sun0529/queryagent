@@ -164,6 +164,10 @@ def render_definition_summary(definition: BusinessDefinition) -> str:
         for rule in definition.rules
         if rule.key in COMPILED_RULE_KEYS
     )
+    if definition.rule(PERIOD_RULE_KEY) is None:
+        # Said out loud (P9): no window is a fact about this number, not a
+        # default the reader should have to work out from the SQL.
+        parts.append(f"{rule_label(PERIOD_RULE_KEY)}=未限定（全部数据）")
     return "；".join(parts)
 
 
