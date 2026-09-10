@@ -192,3 +192,34 @@ def test_credential_keys_are_refused_in_the_embedding_section(tmp_path: Path) ->
     text = VALID + "knowledge:\n  embedding:\n    api_key: sk-oops\n"
     with pytest.raises(ValueError, match="credential-like keys"):
         load_config(write(tmp_path, text))
+
+
+def test_the_embedding_section_is_off_when_absent(tmp_path: Path) -> None:
+    assert load_config(write(tmp_path, VALID)).knowledge.embedding is None
+
+
+def test_the_embedding_section_is_loaded(tmp_path: Path) -> None:
+    """Semantic retrieval was documented as configurable while nothing loaded it."""
+    text = VALID + (
+        "knowledge:\n  embedding:\n    base_url: https://api.siliconflow.cn/v1\n"
+        "    model: BAAI/bge-m3\n    min_similarity: 0.55\n"
+    )
+    embedding = load_config(write(tmp_path, text)).knowledge.embedding
+    assert embedding is not None
+    assert embedding.model == "BAAI/bge-m3"
+    assert embedding.min_similarity == 0.55
+
+
+def test_an_embedding_section_without_a_model_is_refused(tmp_path: Path) -> None:
+    text = VALID + "knowledge:\n  embedding:\n    base_url: https://x.invalid/v1\n"
+    with pytest.raises(ValueError, match="model"):
+        load_config(write(tmp_path, text))
+
+
+def test_an_embedding_floor_outside_the_unit_interval_is_refused(tmp_path: Path) -> None:
+    text = VALID + (
+        "knowledge:\n  embedding:\n    base_url: https://x.invalid/v1\n"
+        "    model: m\n    min_similarity: 1.2\n"
+    )
+    with pytest.raises(ValueError, match="min_similarity"):
+        load_config(write(tmp_path, text))

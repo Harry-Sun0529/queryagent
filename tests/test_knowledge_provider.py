@@ -242,3 +242,31 @@ def test_embedding_is_not_repaid_for_chunks_that_already_have_a_vector(
     first = provider.index.embed_missing("ops", embedder)  # type: ignore[arg-type]
     assert first > 0
     assert provider.index.embed_missing("ops", embedder) == 0  # type: ignore[arg-type]
+
+
+def test_the_similarity_floor_is_a_setting_not_a_constant(
+    provider: LocalKnowledgeProvider,
+) -> None:
+    """A floor is a property of the embedding model, not of this code.
+
+    Measured live, bge-m3 scores unrelated Chinese questions up to 0.55
+    against this corpus, so the 0.35 that passed every stub test left "no
+    evidence" unreachable for 6 of 8 unrelated questions. A value that must
+    change with the model has to be configurable.
+    """
+    embedder = StubEmbedder()
+    provider.index.embed_missing("ops", embedder)  # type: ignore[arg-type]
+    lenient = LocalKnowledgeProvider(provider.index, embedder, min_similarity=0.5)  # type: ignore[arg-type]
+    strict = LocalKnowledgeProvider(provider.index, embedder, min_similarity=0.8)  # type: ignore[arg-type]
+    # the ops chunk mentions 注册日期 and 测试账号: cosine to 注册日期 alone ≈ 0.707
+    assert lenient.search(scope_of(ALICE), "按注册日期怎么算", limit=5)
+    assert strict.search(scope_of(ALICE), "按注册日期怎么算", limit=5) == ()
+
+
+@pytest.mark.parametrize("floor", [0.0, -0.1, 1.0, 1.5])
+def test_a_floor_outside_the_open_unit_interval_is_refused(
+    provider: LocalKnowledgeProvider, floor: float
+) -> None:
+    """0 returns the top chunk for anything; 1 returns nothing ever."""
+    with pytest.raises(ValueError, match="min_similarity"):
+        LocalKnowledgeProvider(provider.index, StubEmbedder(), min_similarity=floor)  # type: ignore[arg-type]

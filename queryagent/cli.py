@@ -56,6 +56,7 @@ from queryagent.events import (
     ToolCallEvent,
     UsageEvent,
 )
+from queryagent.knowledge.embedding import EmbeddingClient
 from queryagent.knowledge.index import SqliteKnowledgeIndex
 from queryagent.knowledge.provider import LocalKnowledgeProvider, scope_of
 from queryagent.llm import make_backend
@@ -301,7 +302,7 @@ def _explain(exc: BaseException) -> tuple[str, str, int]:
             "检查 --config 路径；示例配置在 examples/demo_ecommerce/ 下。",
             EXIT_USER_ERROR,
         )
-    for env_var in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+    for env_var in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "QUERYAGENT_EMBEDDING_API_KEY"):
         if env_var in text and "not set" in text:
             return (f"{env_var} 未设置。", f"export {env_var}=<你的 key>", EXIT_USER_ERROR)
     if isinstance(exc, WorkflowError):
@@ -565,9 +566,20 @@ def _cmd_kb(args: argparse.Namespace) -> int:
         index = SqliteKnowledgeIndex(config.knowledge.index_path)
         stack.callback(index.close)
         if args.kb_action == "import":
+            # Built before importing anything, so a missing key fails before
+            # work is done rather than after half the sources are indexed.
+            embedder = _make_embedder(config)
             for source in config.knowledge.sources:
                 print(f"[{source.workspace}] {source.path}")
                 print(index.import_directory(source.path, workspace_id=source.workspace).render())
+                if embedder is not None and config.knowledge.embedding is not None:
+                    added = index.embed_missing(source.workspace, embedder)
+                    # Said out loud: this is the moment document text leaves
+                    # the machine.
+                    print(
+                        f"  语义向量：新增 {added} 个（正文已发送至 "
+                        f"{config.knowledge.embedding.base_url}；已有向量不重复发送）"
+                    )
             return 0
         workspaces = (
             [args.workspace]
@@ -581,6 +593,22 @@ def _cmd_kb(args: argparse.Namespace) -> int:
                 print(f"  · {chunk.citation()}")
                 print(f"      {chunk.text[:60]}")
         return 0
+
+
+def _make_embedder(config: AppConfig) -> EmbeddingClient | None:
+    embedding = config.knowledge.embedding
+    if embedding is None:
+        return None
+    return EmbeddingClient(model=embedding.model, base_url=embedding.base_url)
+
+
+def _knowledge_provider(index: SqliteKnowledgeIndex, config: AppConfig) -> LocalKnowledgeProvider:
+    """Keyword unless ``knowledge.embedding`` is configured."""
+    embedder = _make_embedder(config)
+    embedding = config.knowledge.embedding
+    if embedder is None or embedding is None or embedding.min_similarity is None:
+        return LocalKnowledgeProvider(index, embedder)
+    return LocalKnowledgeProvider(index, embedder, min_similarity=embedding.min_similarity)
 
 
 def _cmd_flow(args: argparse.Namespace) -> int:
@@ -613,7 +641,15 @@ def _cmd_flow(args: argparse.Namespace) -> int:
         if config.knowledge.enabled:
             index = SqliteKnowledgeIndex(config.knowledge.index_path)
             stack.callback(index.close)
-            provider = LocalKnowledgeProvider(index)
+            provider = _knowledge_provider(index, config)
+            if provider.is_semantic and not index.vectors_in(actor.workspace_id):
+                # K10: the provider falls back to keyword on an un-embedded
+                # corpus. Legitimate — but not silently.
+                print(
+                    "[提示] 已配置语义检索，但该业务空间尚无向量；本次按关键词检索。"
+                    "运行 queryagent kb import 生成向量。",
+                    file=sys.stderr,
+                )
             evidence = EvidenceDraftBuilder(
                 provider,
                 make_backend(config.llm),

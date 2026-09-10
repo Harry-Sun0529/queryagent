@@ -159,3 +159,32 @@ def test_the_confirmation_sheet_marks_where_each_rule_came_from(
     out = capsys.readouterr().out
     assert "[系统映射]" in out
     assert "[本次约定]" in out
+
+
+def test_kb_import_with_embedding_configured_names_the_missing_key_before_any_work(
+    config: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The embedding key is a second credential; missing it must be actionable.
+
+    And it must fail before indexing anything: half the sources imported with
+    vectors and half without is the state that makes semantic results quietly
+    depend on import order.
+    """
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "a.md").write_text("# 新增用户\n\n按注册日期计数。\n", encoding="utf-8")
+    config.write_text(
+        config.read_text(encoding="utf-8")
+        + f"knowledge:\n  root: {tmp_path}\n  index_path: {tmp_path / 'kb.db'}\n"
+        f"  sources:\n    - path: {docs}\n      workspace: ops\n"
+        "  embedding:\n    base_url: https://x.invalid/v1\n    model: m\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("QUERYAGENT_EMBEDDING_API_KEY", raising=False)
+    assert main(["kb", "import", "--config", str(config)]) == 2
+    out, err = capsys.readouterr()
+    assert "QUERYAGENT_EMBEDDING_API_KEY" in err
+    assert "已纳入" not in out

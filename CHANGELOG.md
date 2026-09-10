@@ -24,12 +24,14 @@ frozen from v0.1.1 (spec §四).
   in the rule present in the quote. What it cannot do is prove the quote
   *supports* the rule — that judgement stays with the reader, which is why
   the quote and its location are on the sheet.
-- Semantic retrieval as an option (`QUERYAGENT_EMBEDDING_API_KEY`, any
-  OpenAI-compatible `/v1/embeddings`): no vector database, no numpy, off
-  unless configured, and it says so when it degrades to keyword. Enabling it
-  sends document text to that endpoint. Keyword baseline measured at
-  Recall@3 = 9/13 on a fixed paraphrase set; the semantic half is not
-  measured.
+- Semantic retrieval as an option (`knowledge.embedding` plus
+  `QUERYAGENT_EMBEDDING_API_KEY`, any OpenAI-compatible `/v1/embeddings`): no
+  vector database, no numpy, off unless configured, and it says so when it
+  degrades to keyword. `kb import` embeds, and says where the text was sent.
+  On a fixed paraphrase set Recall@3 is 9/13 for keyword and 12/13 for
+  BAAI/bge-m3; on questions the corpus cannot answer, false evidence is 0/8
+  and 1/8. The similarity floor is configurable because it belongs to the
+  model; its 0.5 default was chosen on that same set, so 1/8 is in-sample.
 - `queryagent flow` (slice 1A): a confirmation-gated query path. It prepares a
   structured 口径 from the declared metrics, shows it with every rule marked
   文档依据 / 系统映射 / 本次约定, and executes only after an explicit

@@ -28,3 +28,6 @@ eval_report.md
 
 # Eval launcher process artifacts (the .md/.jsonl evidence IS committed)
 eval/results/*.pid
+# Retrieval eval rebuilds its index per run; the index holds corpus text and
+# vectors, and report.json + README.md are the evidence.
+eval/results/**/index.db
