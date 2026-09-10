@@ -104,3 +104,55 @@ def test_truncation_does_not_poison_next_query(connector: MySQLConnector) -> Non
     result = connector.execute('SELECT id FROM users', timeout_s=1, max_rows=1)
     assert result.truncated and len(result.rows) == 1
     assert connector.execute('SELECT 42', timeout_s=1, max_rows=1).rows == ((42,),)
+
+
+def test_a_compiled_period_agrees_with_mysqls_own_month_function(
+    connector: MySQLConnector,
+) -> None:
+    """P5 on MySQL: the typed compiler's window against DATE_FORMAT.
+
+    The month is taken from the data rather than hardcoded — demo dates are
+    generated relative to the day the container was built.
+    """
+    import calendar
+    from datetime import date
+
+    from queryagent.workflow.compiler import TemplateCompiler
+    from queryagent.workflow.mappings import QueryMapping
+    from queryagent.workflow.models import PERIOD_RULE_KEY, BusinessDefinition, Rule, RuleSource
+
+    month = connector.execute(
+        "SELECT DATE_FORMAT(MAX(created_at), '%Y-%m') FROM users", timeout_s=10, max_rows=1
+    ).rows[0][0]
+    year, number = (int(part) for part in month.split("-"))
+    last = calendar.monthrange(year, number)[1]
+    period = f"{date(year, number, 1)}..{date(year, number, last)}"
+    compiler = TemplateCompiler(
+        {
+            ("new_users", "registered"): QueryMapping(
+                source="users",
+                measure="COUNT(*)",
+                label="新增用户数",
+                time_column="created_at",
+                where=("channel <> 'internal_test'",),
+            )
+        },
+        dialect="mysql",
+    )
+    definition = BusinessDefinition(
+        metric="new_users",
+        display_name="新增用户",
+        rules=(
+            Rule("variant", "registered", RuleSource.USER),
+            Rule(PERIOD_RULE_KEY, period, RuleSource.USER),
+        ),
+    )
+    compiled = connector.execute(compiler.compile(definition), timeout_s=10, max_rows=1)
+    native = connector.execute(
+        "SELECT COUNT(*) FROM users WHERE channel <> 'internal_test' "
+        f"AND DATE_FORMAT(created_at, '%Y-%m') = '{month}'",
+        timeout_s=10,
+        max_rows=1,
+    )
+    assert compiled.rows == native.rows
+    assert compiled.rows[0][0] > 0

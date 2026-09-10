@@ -68,3 +68,51 @@ def test_error_wrapped_with_dialect(connector: ClickHouseConnector) -> None:
     with pytest.raises(QueryError) as exc_info:
         connector.execute("SELECT * FROM missing_table", timeout_s=10, max_rows=10)
     assert exc_info.value.dialect == "clickhouse"
+
+
+def test_a_compiled_period_agrees_with_clickhouses_own_month_function(
+    connector: ClickHouseConnector,
+) -> None:
+    """P5 on ClickHouse: string bounds against a DateTime column, versus toYYYYMM."""
+    import calendar
+    from datetime import date
+
+    from queryagent.workflow.compiler import TemplateCompiler
+    from queryagent.workflow.mappings import QueryMapping
+    from queryagent.workflow.models import PERIOD_RULE_KEY, BusinessDefinition, Rule, RuleSource
+
+    stamp = connector.execute(
+        "SELECT toYYYYMM(max(created_at)) FROM users", timeout_s=10, max_rows=1
+    ).rows[0][0]
+    year, number = divmod(int(stamp), 100)
+    last = calendar.monthrange(year, number)[1]
+    period = f"{date(year, number, 1)}..{date(year, number, last)}"
+    compiler = TemplateCompiler(
+        {
+            ("new_users", "registered"): QueryMapping(
+                source="users",
+                measure="count()",
+                label="新增用户数",
+                time_column="created_at",
+                where=("channel != 'internal_test'",),
+            )
+        },
+        dialect="clickhouse",
+    )
+    definition = BusinessDefinition(
+        metric="new_users",
+        display_name="新增用户",
+        rules=(
+            Rule("variant", "registered", RuleSource.USER),
+            Rule(PERIOD_RULE_KEY, period, RuleSource.USER),
+        ),
+    )
+    compiled = connector.execute(compiler.compile(definition), timeout_s=10, max_rows=1)
+    native = connector.execute(
+        "SELECT count() FROM users WHERE channel != 'internal_test' "
+        f"AND toYYYYMM(created_at) = {stamp}",
+        timeout_s=10,
+        max_rows=1,
+    )
+    assert compiled.rows == native.rows
+    assert compiled.rows[0][0] > 0

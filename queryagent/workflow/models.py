@@ -74,7 +74,18 @@ ALLOWED_RULE_KEYS = (
 )
 
 VARIANT_RULE_KEY = "variant"
-"""The one rule the compiler consumes: which maintainer-declared reading runs."""
+"""Which maintainer-declared reading runs."""
+
+PERIOD_RULE_KEY = "period"
+"""The statistical period: an absolute range the user confirmed (slice 1C).
+
+Only the user sets it — from the question's time words, or stated on
+purpose. Document extraction cannot: its allowed keys exclude it, so a
+handbook sentence cannot change which dates a query covers.
+"""
+
+COMPILED_RULE_KEYS = (VARIANT_RULE_KEY, PERIOD_RULE_KEY)
+"""Rules the compiler turns into SQL. Every other rule explains the 口径."""
 
 CONFLICT_SEPARATOR = ":"
 
