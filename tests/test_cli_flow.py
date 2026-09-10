@@ -496,3 +496,53 @@ def test_two_periods_in_a_question_are_named_and_asked_about(
     )
     assert code == 2
     assert "多个不同的统计区间" in capsys.readouterr().err
+
+
+
+# ------------------------------------------------------------ P9 / P10
+
+EMPTY_SUM_MAPPINGS = """\
+mappings:
+  - metric: new_users
+    variant: registered
+    from: users
+    measure: SUM(id)
+    label: s
+    time_column: first_order_at
+"""
+
+
+def test_a_result_without_a_period_says_it_is_unbounded(
+    config: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """P9: no window is a fact about this number, not something to read off the SQL."""
+    assert _flow(config, "--variant", "registered", "--yes") == 0
+    recap = capsys.readouterr().out.split("结果（")[1].splitlines()[0]
+    assert "统计区间=未限定（全部数据）" in recap
+
+
+def test_an_empty_aggregate_says_it_is_empty_not_zero(
+    config: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """P10: SUM over no rows is NULL — bare it reads as a fault, as 0 it is a false claim."""
+    _require_period(tmp_path)
+    (tmp_path / "mappings.yaml").write_text(EMPTY_SUM_MAPPINGS, encoding="utf-8")
+    code = _flow(
+        config, "--variant", "registered", "--period", "2030-01-01..2030-01-31", "--yes"
+    )
+    assert code == 0
+    assert "空不等于 0" in capsys.readouterr().out
+
+
+def test_a_zero_count_is_an_answer_and_gets_no_note(
+    config: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """COUNT's 0 means none were found — that is the answer, not an absence of one."""
+    _require_period(tmp_path)
+    code = _flow(
+        config, "--variant", "registered", "--period", "2030-01-01..2030-01-31", "--yes"
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "  0" in out.split("结果（")[1]
+    assert "空不等于" not in out

@@ -55,6 +55,18 @@ row caps bound volume, the event stream makes every executed SQL visible and
 auditable, and deployments should grant the read-only account access only to
 tables the agent legitimately needs.
 
+## Compiled queries (`queryagent flow`)
+
+A confirmed 统计区间 reaches SQL through a typed compiler
+([ADR-008](docs/adr/008-typed-compilation-before-parameter-binding.md)). The
+statement is assembled from maintainer fragments in `query_mappings.yaml` and
+from dates that exist only as `datetime.date` values decoded from a rule of
+the form `YYYY-MM-DD..YYYY-MM-DD`. The question's text, document rules and
+the user's own conventions are never interpolated. Mapping fragments are
+concatenated as written — the trust whole-statement mappings always had — so
+a mapping change is a code change and should be reviewed as one. The
+compiled statement still passes the layer-1 whitelist before it runs.
+
 ## Indexed documents
 
 Document import is the only filesystem read path in this codebase, and it
