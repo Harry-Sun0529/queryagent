@@ -30,6 +30,7 @@ from queryagent.llm.base import Message, ModelResponse
 from queryagent.tools import ToolSpec
 from queryagent.workflow.extraction import ALLOWED_RULE_KEYS, validate_extraction
 from queryagent.workflow.models import (
+    CONFLICT_SEPARATOR,
     ActorContext,
     BusinessDefinition,
     Candidate,
@@ -47,6 +48,23 @@ MAX_EVIDENCE = 8
 _OPEN = "<<<EVIDENCE {index}>>>"
 _CLOSE = "<<<END EVIDENCE {index}>>>"
 
+# What each key means, stated to the model. A key that is only named is a
+# key the model guesses at: live, it filed 「归属到 orders.created_at 的下单
+# 日期」 under time_window — an attribution date read as a reporting period —
+# and that filled a gap the maintainer required the user to state. This is a
+# prompt-level mitigation, not a guarantee (§4.5.3, L2).
+RULE_KEY_MEANINGS = {
+    "counting_basis": "what is counted and which date or column attributes it "
+    "(e.g. counted by registration date; attributed to the order date)",
+    "filters": "records excluded or included (e.g. test accounts excluded; paid orders only)",
+    "time_window": "the reporting period itself (e.g. natural month; last 30 days; month "
+    "ends inclusive) - NOT which date a record is attributed to, which is counting_basis",
+    "dedup": "whether and how duplicates collapse (e.g. one user counted once)",
+    "refund_handling": "how refunds are treated (e.g. deducted; reversed on the original date)",
+    "amount_basis": "which amount is summed (e.g. paid amount; net of refunds)",
+}
+_KEY_GUIDE = "\n".join(f"  - {key}: {RULE_KEY_MEANINGS[key]}" for key in ALLOWED_RULE_KEYS)
+
 _SYSTEM = f"""\
 You extract business metric definitions from company documents.
 
@@ -54,7 +72,9 @@ You are given numbered evidence excerpts. Reply with JSON only:
 
 {{"rules": [{{"key": ..., "value": ..., "citation": <int>, "quote": "..."}}]}}
 
-- `key` must be one of: {", ".join(ALLOWED_RULE_KEYS)}. Nothing else.
+- `key` must be one of the keys below, chosen by what the rule is about.
+  Nothing else.
+{_KEY_GUIDE}
 - `citation` is the number of the excerpt the rule comes from.
 - `quote` must be copied VERBATIM from that excerpt. Do not paraphrase it.
 - `value` states the rule in plain business language, in the user's language.
@@ -139,33 +159,35 @@ class EvidenceDraftBuilder:
         rules: list[Rule] = []
         candidates: list[Candidate] = []
         missing: list[str] = []
-        for key in self._required:
-            found = by_key.get(key, [])
-            distinct = {rule.value: rule for rule in found}
+        # Required keys first, in the maintainer's order; then any other key
+        # the documents grounded, in the order it was extracted.
+        keys = list(self._required) + [key for key in by_key if key not in self._required]
+        for key in keys:
+            distinct = {rule.value: rule for rule in by_key.get(key, [])}
             if len(distinct) == 1:
                 rules.append(next(iter(distinct.values())))
-                continue
-            if len(distinct) > 1:
-                # The documents disagree. Show both, decide neither.
+            elif len(distinct) > 1:
+                # The documents disagree: show both, decide neither — and block,
+                # whether or not the maintainer declared this key required
+                # (T03). §4.5.5 forbids extraction from *inventing* a gap, so
+                # one unsupported key cannot stall every draft. A disagreement
+                # is not that: it takes two rules that each survived verbatim
+                # quote validation against real text. Dropping it is the
+                # failure this product exists to prevent, and it did happen —
+                # a second team's handbook made the counting basis vanish from
+                # the sheet instead of showing up next to the first.
                 candidates.extend(
                     Candidate(
-                        key=f"{key}:{index}",
+                        key=f"{key}{CONFLICT_SEPARATOR}{index}",
                         label=rule.value,
                         summary=rule.value,
                         evidence_ref=rule.evidence_ref,
                     )
                     for index, rule in enumerate(distinct.values())
                 )
-            missing.append(key)
-
-        # Keys outside the maintainer's required set are kept when grounded,
-        # but never create a gap: a model inventing a key would otherwise
-        # block every draft (§4.5.5).
-        for key, found in by_key.items():
-            if key in self._required:
-                continue
-            if len({rule.value for rule in found}) == 1:
-                rules.append(found[0])
+                missing.append(key)
+            elif key in self._required:
+                missing.append(key)
 
         return BusinessDefinition(
             metric=self._metric,
@@ -207,10 +229,15 @@ class CompositeDraftBuilder:
         # documents contradict becomes a visible disagreement rather than a
         # silent overwrite.
         extra = tuple(rule for rule in found.rules if base.rule(rule.key) is None)
+        # A rule the maintainer requires is a gap until something states it,
+        # and one grounded document rule does. A disagreement does not: it
+        # arrives in found.missing and keeps the gap open, with both readings.
+        filled = {rule.key for rule in extra}
         return BusinessDefinition(
             metric=base.metric,
             display_name=base.display_name,
             rules=base.rules + extra,
-            missing=base.missing,
+            missing=tuple(key for key in base.missing if key not in filled)
+            + tuple(key for key in found.missing if key not in base.missing),
             candidates=base.candidates + found.candidates,
         )

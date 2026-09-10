@@ -85,13 +85,20 @@ from queryagent.workflow.evidence_builder import CompositeDraftBuilder, Evidence
 from queryagent.workflow.execution import make_connector_executor
 from queryagent.workflow.mappings import load_mappings
 from queryagent.workflow.models import (
+    CONFLICT_SEPARATOR,
     ActorContext,
+    Candidate,
     DefinitionDraft,
     DraftStatus,
     Rule,
     RuleSource,
 )
-from queryagent.workflow.render import render_definition_summary, render_draft
+from queryagent.workflow.render import (
+    render_definition_summary,
+    render_draft,
+    render_unenforced,
+    rule_label,
+)
 from queryagent.workflow.service import QueryWorkflow
 from queryagent.workflow.store import SqliteWorkflowStore
 
@@ -170,6 +177,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     flow.add_argument("--workspace", default="default", help="business workspace id")
     flow.add_argument(
         "--variant", help="pick a 口径 non-interactively (still requires --yes to execute)"
+    )
+    flow.add_argument(
+        "--adopt",
+        action="append",
+        default=[],
+        metavar="KEY:N",
+        help="where documents disagree, adopt one reading non-interactively "
+        "(e.g. counting_basis:0); recorded as 本次约定, citing that document",
+    )
+    flow.add_argument(
+        "--rule",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="state a rule the 口径 requires but nothing has stated yet "
+        "(e.g. time_window=按自然月统计); recorded as 本次约定",
     )
     flow.add_argument(
         "--yes",
@@ -700,21 +723,16 @@ def _run_flow(
         print("\n（未检索到该身份可见的相关文档；以下口径仅来自系统映射）")
 
     if draft.status is DraftStatus.NEEDS_INPUT:
-        choice = args.variant or _prompt_variant(draft)
-        if not choice:
+        rules = _open_choices(draft, args, citations)
+        if rules is None:
             print("\n[已取消] 未选择口径，没有执行任何查询。")
             return 2
-        valid = {c.key for c in draft.definition.candidates}
-        if choice not in valid:
-            raise ValueError(f"未知口径 '{choice}'；可选：{', '.join(sorted(valid))}")
-        draft = workflow.amend(
-            actor,
-            draft.draft_id,
-            expected_version=draft.version,
-            rules=(Rule(VARIANT_RULE_KEY, choice, RuleSource.USER),),
-        )
-        print()
-        print(render_draft(draft, citations))
+        if rules:
+            draft = workflow.amend(
+                actor, draft.draft_id, expected_version=draft.version, rules=rules
+            )
+            print()
+            print(render_draft(draft, citations))
 
     if not args.yes and not _prompt_confirm():
         print("\n[已取消] 未确认口径，没有执行任何查询。")
@@ -725,12 +743,15 @@ def _run_flow(
     )
     run = workflow.execute(actor, confirmation.confirmation_id, idempotency_key=request_id)
     print()
-    print(f"结果（按已确认口径：{render_definition_summary(draft.definition)}）")
+    print(f"结果（执行口径：{render_definition_summary(draft.definition)}）")
     print("  " + " | ".join(run.columns))
     for row in run.rows:
         print("  " + " | ".join("NULL" if v is None else str(v) for v in row))
     if run.truncated:
         print("  （结果已在行数上限处截断）")
+    unenforced = render_unenforced(draft.definition)
+    if unenforced:
+        print(f"  （{unenforced}）")
     print(f"\n执行的 SQL（维护者映射 {draft.definition.metric}）：\n  {run.sql}")
     return 0
 
@@ -749,8 +770,110 @@ def _citations(
     return {f"{hit.ref.doc_id}#{hit.ref.chunk_id}": hit.chunk.citation() for hit in hits}
 
 
+def _open_choices(
+    draft: DefinitionDraft, args: argparse.Namespace, citations: dict[str, str]
+) -> tuple[Rule, ...] | None:
+    """The user's answer to every open choice, or None when they decline.
+
+    Document disagreements are asked first, then rules nothing has stated,
+    then the executable variant: which handbook the user sides with, and what
+    they take the gaps to mean, is what they need before picking what runs.
+    The two answers are not checked against each other — the system cannot
+    tell what a handbook sentence means — which is why the whole sheet is
+    printed again before the final confirmation (D05).
+    """
+    definition = draft.definition
+    disagreements = {
+        key: [c for c in definition.candidates if c.rule_key == key]
+        for key in definition.missing
+        if key != VARIANT_RULE_KEY
+    }
+    disagreements = {key: options for key, options in disagreements.items() if options}
+    valid = {c.key for options in disagreements.values() for c in options}
+    unknown = [value for value in args.adopt if value not in valid]
+    if unknown:
+        raise ValueError(
+            f"未知的文档取法：{', '.join(unknown)}；当前可采用："
+            f"{', '.join(sorted(valid)) or '（没有文档分歧）'}"
+        )
+    gaps = [
+        key for key in definition.missing if key != VARIANT_RULE_KEY and key not in disagreements
+    ]
+    supplied: dict[str, str] = {}
+    for item in args.rule:
+        key, sep, value = item.partition("=")
+        if not sep or not value.strip():
+            raise ValueError(
+                f"--rule 需要写成 KEY=取值，例如 time_window=按自然月统计；收到：{item!r}"
+            )
+        supplied[key.strip()] = value.strip()
+    stray = sorted(set(supplied) - set(gaps))
+    if stray:
+        raise ValueError(
+            f"这些规则没有待补的缺口：{', '.join(stray)}；当前待补：{', '.join(gaps) or '（无）'}"
+        )
+    rules: list[Rule] = []
+    for rule_key, options in disagreements.items():
+        chosen_key = next(
+            (value for value in args.adopt if value.split(CONFLICT_SEPARATOR, 1)[0] == rule_key),
+            "",
+        ) or _prompt_adopt(rule_label(rule_key), options)
+        if not chosen_key:
+            return None
+        chosen = next((c for c in options if c.key == chosen_key), None)
+        if chosen is None:
+            raise ValueError(
+                f"「{rule_label(rule_key)}」没有取法 '{chosen_key}'；"
+                f"可选：{', '.join(c.key for c in options)}"
+            )
+        # The words are the handbook's, the decision is the user's (D07): a
+        # 本次约定 rule that keeps the adopted document's citation.
+        rules.append(
+            Rule(
+                rule_key,
+                chosen.summary,
+                RuleSource.USER,
+                evidence_ref=chosen.evidence_ref,
+                note="采用文档写法",
+            )
+        )
+    for key in gaps:
+        # Nothing states this rule and nothing may default it: the user writes
+        # it down, and it is marked as theirs (D07).
+        value = supplied.get(key) or _prompt_rule(rule_label(key))
+        if not value:
+            return None
+        rules.append(Rule(key, value, RuleSource.USER))
+    if VARIANT_RULE_KEY in definition.missing:
+        variants = {c.key for c in definition.candidates if c.rule_key == VARIANT_RULE_KEY}
+        choice = args.variant or _prompt_variant(draft)
+        if not choice:
+            return None
+        if choice not in variants:
+            raise ValueError(f"未知口径 '{choice}'；可选：{', '.join(sorted(variants))}")
+        rules.append(Rule(VARIANT_RULE_KEY, choice, RuleSource.USER))
+    return tuple(rules)
+
+
+def _prompt_rule(label: str) -> str:
+    try:
+        return input(f"\n「{label}」尚未写明，维护者要求写明。写下本次约定（回车取消）： ").strip()
+    except EOFError:
+        return ""
+
+
+def _prompt_adopt(label: str, options: list[Candidate]) -> str:
+    keys = ", ".join(c.key for c in options)
+    try:
+        return input(f"\n「{label}」文档之间有分歧，采用哪一种写法 [{keys}]（回车取消）： ").strip()
+    except EOFError:
+        return ""
+
+
 def _prompt_variant(draft: DefinitionDraft) -> str:
-    keys = ", ".join(c.key for c in draft.definition.candidates)
+    keys = ", ".join(
+        c.key for c in draft.definition.candidates if c.rule_key == VARIANT_RULE_KEY
+    )
     try:
         return input(f"\n选择口径 [{keys}]（回车取消）： ").strip()
     except EOFError:

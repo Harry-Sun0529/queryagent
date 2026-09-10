@@ -162,9 +162,21 @@ queryagent flow "上个月新增用户有多少？" --config examples/demo_ecomm
 
 Rules extracted from documents are marked 「文档依据」 and carry the file,
 section and line, so the reader can open the source and check. Where two
-documents disagree, both readings appear with their own citation and neither
-is chosen for you. Where the documents are silent, the rule is listed as
-missing rather than filled with a default.
+documents disagree, both readings appear under 「文档之间的分歧」 with their
+own citation, neither is chosen for you, and nothing runs until you adopt one
+(`--adopt counting_basis:0`); your choice is marked 本次约定 and keeps the
+citation. A rule a metric declares in `required_rules` that no document
+states is listed as missing, and you write it down
+(`--rule time_window=按自然月统计`) rather than the system defaulting it. The
+demo config puts a growth-team handbook in the same workspace as the ops one,
+so the disagreement shows up on the first run.
+
+Document rules explain a 口径; they do not change the query. What executes is
+the maintainer's mapping, and the result line names only that reading — the
+other rules are listed in a note saying the two are not cross-checked. Nor
+does the system check that the handbook wording you adopt matches the
+executable reading you pick; the whole sheet is shown again before you
+confirm.
 
 Documents are scoped to a business workspace: an identity in one workspace
 does not retrieve — not "does not display" — another's. Document text is

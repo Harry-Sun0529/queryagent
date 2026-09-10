@@ -24,6 +24,7 @@ YAML schema (required fields frozen at v0.1.1; optional fields may be added):
           - key: registered
             label: 注册口径
             definition: 按 users.created_at 归属日期
+        required_rules: [time_window]  # optional; rules the 口径 must state
 """
 
 from __future__ import annotations
@@ -106,6 +107,7 @@ def _parse_metric(item: Any, index: int) -> Metric:
         tables=_str_tuple(item, "tables", where),
         sql_hint=_opt_str(item, "sql_hint", where),
         variants=_variants(item, where),
+        required_rules=_str_tuple(item, "required_rules", where),
     )
 
 

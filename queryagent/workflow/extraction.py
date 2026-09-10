@@ -30,20 +30,7 @@ from typing import Any
 from queryagent.knowledge.models import EvidenceRef, IndexedChunk
 from queryagent.text import normalize
 from queryagent.workflow.errors import WorkflowError
-from queryagent.workflow.models import Rule, RuleSource
-
-# Maintainer-owned vocabulary. Extraction fills these holes; it never digs
-# new ones — a model inventing a rule key would otherwise create a blocking
-# `missing` entry out of nothing and no draft would ever be confirmable
-# (§4.5.5).
-ALLOWED_RULE_KEYS = (
-    "counting_basis",
-    "filters",
-    "time_window",
-    "dedup",
-    "refund_handling",
-    "amount_basis",
-)
+from queryagent.workflow.models import ALLOWED_RULE_KEYS, Rule, RuleSource
 
 MIN_QUOTE_CHARS = 8
 MAX_QUOTE_CHARS = 500

@@ -16,13 +16,13 @@ from __future__ import annotations
 from queryagent.metrics.base import Metric, MetricStore
 from queryagent.workflow.errors import MappingNotFound
 from queryagent.workflow.models import (
+    ALLOWED_RULE_KEYS,
+    VARIANT_RULE_KEY,
     BusinessDefinition,
     Candidate,
     Rule,
     RuleSource,
 )
-
-VARIANT_RULE_KEY = "variant"
 
 
 class MetricDraftBuilder:
@@ -64,7 +64,15 @@ def _definition_for(metric: Metric) -> BusinessDefinition:
     )
     # A declared disagreement is a hole in the definition until the user
     # closes it — not a default the system picks on their behalf (D05, D02).
-    missing = (VARIANT_RULE_KEY,) if candidates else ()
+    unknown = [key for key in metric.required_rules if key not in ALLOWED_RULE_KEYS]
+    if unknown:
+        raise ValueError(
+            f"metrics.yaml: {metric.name}.required_rules has unknown keys {unknown}; "
+            f"allowed: {', '.join(ALLOWED_RULE_KEYS)}"
+        )
+    # Required rules are gaps until something states them: a document, or the
+    # user this time. Never a default the system fills in (§4.5.5, D07).
+    missing = ((VARIANT_RULE_KEY,) if candidates else ()) + metric.required_rules
     return BusinessDefinition(
         metric=metric.name,
         display_name=metric.display_name or metric.name,
