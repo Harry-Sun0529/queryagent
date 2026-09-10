@@ -16,8 +16,10 @@ import pytest
 
 from queryagent.workflow.compiler import CompiledQuery, TemplateCompiler
 from queryagent.workflow.errors import MappingNotFound, WorkflowStateError
+from queryagent.workflow.grouping import Dimension
 from queryagent.workflow.mappings import QueryMapping, load_mappings
 from queryagent.workflow.models import (
+    GROUP_RULE_KEY,
     PERIOD_RULE_KEY,
     BusinessDefinition,
     Rule,
@@ -47,7 +49,7 @@ def _august() -> Rule:
     return Rule(PERIOD_RULE_KEY, AUGUST, RuleSource.USER)
 
 
-def _count(tmp_path: Path, query: CompiledQuery) -> int:
+def _rows(tmp_path: Path, query: CompiledQuery) -> list[tuple[object, ...]]:
     db = tmp_path / "shop.db"
     connection = sqlite3.connect(db)
     connection.execute("CREATE TABLE users (created_at TEXT, channel TEXT, status TEXT)")
@@ -63,9 +65,13 @@ def _count(tmp_path: Path, query: CompiledQuery) -> int:
     )
     connection.commit()
     try:
-        return int(connection.execute(query.sql, query.params).fetchone()[0])
+        return [tuple(row) for row in connection.execute(query.sql, query.params).fetchall()]
     finally:
         connection.close()
+
+
+def _count(tmp_path: Path, query: CompiledQuery) -> int:
+    return int(_rows(tmp_path, query)[0][0])  # type: ignore[call-overload]
 
 
 # ------------------------------------------------------------- P5 applied
@@ -184,6 +190,95 @@ def test_a_variant_value_is_a_lookup_key_never_interpolated() -> None:
     compiler = TemplateCompiler({("new_users", "registered"): REGISTERED})
     with pytest.raises(MappingNotFound):
         compiler.compile(_definition(variant="registered' OR '1'='1"))
+
+
+# ------------------------------------------------------------- T38 grouping
+
+CHANNEL = Dimension("channel", "渠道", (), (("users", "channel"),))
+
+
+def _grouped(
+    grouping: str, mapping: object = REGISTERED, *, dialect: str = "sqlite"
+) -> CompiledQuery:
+    compiler = TemplateCompiler(
+        {("new_users", "registered"): mapping},  # type: ignore[dict-item]
+        dialect=dialect,
+        dimensions=(CHANNEL,),
+    )
+    return compiler.compile(_definition(_august(), Rule(GROUP_RULE_KEY, grouping, RuleSource.USER)))
+
+
+@pytest.mark.parametrize(
+    ("grouping", "expected"),
+    [
+        ("day", [("2026-08-01", 1), ("2026-08-31", 1)]),
+        # 08-01 is a Saturday: its week starts on Monday 07-27; 08-31 is a Monday.
+        ("week", [("2026-07-27", 1), ("2026-08-31", 1)]),
+        ("month", [("2026-08-01", 2)]),
+        ("dim:channel", [("organic", 2)]),  # internal_test is still filtered out
+    ],
+)
+def test_each_grouping_splits_the_same_rows_the_period_counts(
+    tmp_path: Path, grouping: str, expected: list[tuple[object, ...]]
+) -> None:
+    """F8: groups are keyed by their first day and inside the period's bounds."""
+    assert _rows(tmp_path, _grouped(grouping)) == expected
+
+
+def test_a_grouped_statement_repeats_its_expression_for_strict_group_by() -> None:
+    query = _grouped("day")
+    assert query.sql.startswith('SELECT date(created_at) AS "日期", COUNT(*) AS "新增用户数"')
+    assert query.sql.endswith("GROUP BY date(created_at) ORDER BY date(created_at)")
+    assert query.params == ("2026-08-01", "2026-09-01")
+
+
+@pytest.mark.parametrize(
+    ("dialect", "fragment"),
+    [
+        ("mysql", "DATE(DATE_SUB(created_at, INTERVAL WEEKDAY(created_at) DAY))"),
+        ("clickhouse", "toMonday(created_at)"),
+    ],
+)
+def test_time_grains_use_each_dialects_own_expression(dialect: str, fragment: str) -> None:
+    assert f"GROUP BY {fragment}" in _grouped("week", dialect=dialect).sql
+
+
+def test_no_grouping_stated_explicitly_is_one_total(tmp_path: Path) -> None:
+    assert _count(tmp_path, _grouped("none")) == 2
+
+
+def test_a_whole_statement_mapping_refuses_a_grouping_instead_of_totalling() -> None:
+    """F9: a table was asked for; one number would answer a different question."""
+    compiler = TemplateCompiler({("new_users", "registered"): "SELECT COUNT(*) FROM users"})
+    grouped = _definition(Rule(GROUP_RULE_KEY, "day", RuleSource.USER))
+    with pytest.raises(MappingNotFound, match="分组"):
+        compiler.compile(grouped)
+    ungrouped = _definition(Rule(GROUP_RULE_KEY, "none", RuleSource.USER))
+    assert compiler.compile(ungrouped) == CompiledQuery("SELECT COUNT(*) FROM users")
+
+
+def test_a_dimension_not_declared_for_the_mappings_table_is_refused() -> None:
+    """F9: no join is invented to reach a column the maintainer did not map."""
+    region = Dimension("region", "地区", (), (("orders", "region"),))
+    compiler = TemplateCompiler({("new_users", "registered"): REGISTERED}, dimensions=(region,))
+    with pytest.raises(MappingNotFound, match="维度「地区」"):
+        compiler.compile(_definition(Rule(GROUP_RULE_KEY, "dim:region", RuleSource.USER)))
+    with pytest.raises(MappingNotFound, match="维度「nope」"):
+        compiler.compile(_definition(Rule(GROUP_RULE_KEY, "dim:nope", RuleSource.USER)))
+
+
+def test_a_time_grain_needs_a_time_column() -> None:
+    untimed = QueryMapping(source="users", measure="COUNT(*)", label="n")
+    with pytest.raises(MappingNotFound, match="time_column"):
+        TemplateCompiler({("new_users", "registered"): untimed}).compile(
+            _definition(Rule(GROUP_RULE_KEY, "day", RuleSource.USER))
+        )
+
+
+def test_a_grouping_that_is_not_canonical_is_refused_not_interpolated() -> None:
+    forged = Rule(GROUP_RULE_KEY, "dim:channel; DROP TABLE users", RuleSource.USER)
+    with pytest.raises(WorkflowStateError):
+        TemplateCompiler({("new_users", "registered"): REGISTERED}).compile(_definition(forged))
 
 
 # ------------------------------------------------------ T37 freshness probe

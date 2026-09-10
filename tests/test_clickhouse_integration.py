@@ -159,3 +159,62 @@ def test_the_freshness_probe_reads_as_the_newest_records_date(
         "SELECT toDate(max(created_at)) FROM orders", timeout_s=10, max_rows=1
     ).rows[0][0]
     assert latest_date(probed) == native
+
+
+@pytest.mark.parametrize(
+    ("grain", "native_key"),
+    [
+        ("day", "toYYYYMMDD(created_at)"),
+        ("week", "toYearWeek(created_at, 3)"),  # mode 3: weeks start on Monday
+        ("month", "toYYYYMM(created_at)"),
+    ],
+)
+def test_each_time_grain_agrees_with_clickhouses_own_functions(
+    connector: ClickHouseConnector, grain: str, native_key: str
+) -> None:
+    """F8 on ClickHouse: the compiled grain expressions against independent native ones."""
+    import calendar
+    from datetime import date
+
+    from queryagent.workflow.compiler import TemplateCompiler
+    from queryagent.workflow.mappings import QueryMapping
+    from queryagent.workflow.models import (
+        GROUP_RULE_KEY,
+        PERIOD_RULE_KEY,
+        BusinessDefinition,
+        Rule,
+        RuleSource,
+    )
+
+    stamp = connector.execute(
+        "SELECT toYYYYMM(max(created_at)) FROM users", timeout_s=10, max_rows=1
+    ).rows[0][0]
+    year, number = divmod(int(stamp), 100)
+    period = f"{date(year, number, 1)}..{date(year, number, calendar.monthrange(year, number)[1])}"
+    mapping = QueryMapping(
+        "users", "count()", "新增用户数", "created_at", ("channel != 'internal_test'",)
+    )
+    definition = BusinessDefinition(
+        metric="new_users",
+        display_name="新增用户",
+        rules=(
+            Rule("variant", "registered", RuleSource.USER),
+            Rule(PERIOD_RULE_KEY, period, RuleSource.USER),
+            Rule(GROUP_RULE_KEY, grain, RuleSource.USER),
+        ),
+    )
+    query = TemplateCompiler(
+        {("new_users", "registered"): mapping}, dialect="clickhouse"
+    ).compile(definition)
+    compiled = connector.execute(query.sql, timeout_s=10, max_rows=100, params=query.params)
+    native = connector.execute(
+        f"SELECT {native_key} AS k, count() FROM users WHERE channel != 'internal_test' "
+        f"AND toYYYYMM(created_at) = {stamp} GROUP BY k ORDER BY k",
+        timeout_s=10,
+        max_rows=100,
+    )
+    assert [row[1] for row in compiled.rows] == [row[1] for row in native.rows]
+    if grain == "day":
+        assert [int(row[0].strftime("%Y%m%d")) for row in compiled.rows] == [
+            row[0] for row in native.rows
+        ]

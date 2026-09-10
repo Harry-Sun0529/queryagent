@@ -404,6 +404,22 @@ def test_documents_cannot_set_the_period() -> None:
     assert definition.rule("period") is None
 
 
+def test_documents_cannot_set_the_grouping() -> None:
+    """F10: whether the answer is one number or a table is the user's to say."""
+    payload = {
+        "rules": [
+            {
+                "key": "group_by",
+                "value": "day",
+                "citation": 0,
+                "quote": "新增用户按 users.created_at 的注册日期计数",
+            }
+        ]
+    }
+    _, _, definition = _build(_hits(REGISTERED), payload, required=())
+    assert definition.rule("group_by") is None
+
+
 def test_a_metric_may_require_the_period() -> None:
     from queryagent.workflow.builder import MetricDraftBuilder
 

@@ -197,3 +197,60 @@ def test_the_freshness_probe_reads_as_the_newest_records_date(connector: MySQLCo
         "SELECT DATE(MAX(created_at)) FROM orders", timeout_s=10, max_rows=1
     ).rows[0][0]
     assert latest_date(probed) == native
+
+
+@pytest.mark.parametrize(
+    ("grain", "native_key"),
+    [
+        ("day", "DATE_FORMAT(created_at, '%Y-%m-%d')"),
+        ("week", "YEARWEEK(created_at, 3)"),  # mode 3: weeks start on Monday
+        ("month", "DATE_FORMAT(created_at, '%Y-%m')"),
+    ],
+)
+def test_each_time_grain_agrees_with_mysqls_own_functions(
+    connector: MySQLConnector, grain: str, native_key: str
+) -> None:
+    """F8 on MySQL: the compiled grain expressions against independent native ones."""
+    import calendar
+    from datetime import date
+
+    from queryagent.workflow.compiler import TemplateCompiler
+    from queryagent.workflow.mappings import QueryMapping
+    from queryagent.workflow.models import (
+        GROUP_RULE_KEY,
+        PERIOD_RULE_KEY,
+        BusinessDefinition,
+        Rule,
+        RuleSource,
+    )
+
+    month = connector.execute(
+        "SELECT DATE_FORMAT(MAX(created_at), '%Y-%m') FROM users", timeout_s=10, max_rows=1
+    ).rows[0][0]
+    year, number = (int(part) for part in month.split("-"))
+    period = f"{date(year, number, 1)}..{date(year, number, calendar.monthrange(year, number)[1])}"
+    mapping = QueryMapping(
+        "users", "COUNT(*)", "新增用户数", "created_at", ("channel <> 'internal_test'",)
+    )
+    definition = BusinessDefinition(
+        metric="new_users",
+        display_name="新增用户",
+        rules=(
+            Rule("variant", "registered", RuleSource.USER),
+            Rule(PERIOD_RULE_KEY, period, RuleSource.USER),
+            Rule(GROUP_RULE_KEY, grain, RuleSource.USER),
+        ),
+    )
+    query = TemplateCompiler({("new_users", "registered"): mapping}, dialect="mysql").compile(
+        definition
+    )
+    compiled = connector.execute(query.sql, timeout_s=10, max_rows=100, params=query.params)
+    native = connector.execute(
+        f"SELECT {native_key} AS k, COUNT(*) FROM users WHERE channel <> 'internal_test' "
+        f"AND DATE_FORMAT(created_at, '%Y-%m') = '{month}' GROUP BY k ORDER BY k",
+        timeout_s=10,
+        max_rows=100,
+    )
+    assert [row[1] for row in compiled.rows] == [row[1] for row in native.rows]
+    if grain == "day":
+        assert [str(row[0]) for row in compiled.rows] == [row[0] for row in native.rows]

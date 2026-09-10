@@ -12,10 +12,21 @@ be collapsed into an unattributed paragraph.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from queryagent.workflow.builder import VARIANT_RULE_KEY
 from queryagent.workflow.coverage import describe_coverage, describe_emptiness, latest_date
+from queryagent.workflow.grouping import (
+    MONTH,
+    TIME_GRAINS,
+    WEEK,
+    bucket_starts,
+    edges_are_partial,
+    grouping_text,
+)
 from queryagent.workflow.models import (
     COMPILED_RULE_KEYS,
+    GROUP_RULE_KEY,
     PERIOD_RULE_KEY,
     BusinessDefinition,
     Candidate,
@@ -38,6 +49,7 @@ _RULE_LABELS = {
     "tables": "涉及数据表",
     "variant": "选定口径",
     "period": "统计区间",
+    "group_by": "分组方式",
     # Extracted rule keys. A confirmation sheet whose field names are English
     # identifiers is not something an operator can repeat to a colleague,
     # which is the whole acceptance test for this screen (D04).
@@ -80,7 +92,9 @@ def _candidate_lines(candidates: list[Candidate], citations: dict[str, str] | No
     return lines
 
 
-def _rule_text(definition: BusinessDefinition, rule: Rule) -> str:
+def _rule_text(
+    definition: BusinessDefinition, rule: Rule, labels: Mapping[str, str] | None = None
+) -> str:
     """Render a rule's value for a human.
 
     A variant rule's value is a lookup key — meaningful to the compiler,
@@ -93,6 +107,9 @@ def _rule_text(definition: BusinessDefinition, rule: Rule) -> str:
         except ValueError:
             return rule.value
         return f"{text}（{rule.note}）" if rule.note else text
+    if rule.key == GROUP_RULE_KEY:
+        text = grouping_text(rule.value, labels)
+        return f"{text}（{rule.note}）" if rule.note else text
     if rule.key == VARIANT_RULE_KEY:
         candidate = definition.candidate(rule.value)
         if candidate is not None:
@@ -101,7 +118,9 @@ def _rule_text(definition: BusinessDefinition, rule: Rule) -> str:
 
 
 def render_draft(
-    draft: DefinitionDraft, citations: dict[str, str] | None = None
+    draft: DefinitionDraft,
+    citations: dict[str, str] | None = None,
+    labels: Mapping[str, str] | None = None,
 ) -> str:
     """Render the confirmation sheet shown before anything is executed.
 
@@ -120,7 +139,7 @@ def render_draft(
     for rule in definition.rules:
         label = _RULE_LABELS.get(rule.key, rule.key)
         mark = _SOURCE_LABELS[rule.source]
-        lines.append(f"  · {label}：{_rule_text(definition, rule)}    [{mark}]")
+        lines.append(f"  · {label}：{_rule_text(definition, rule, labels)}    [{mark}]")
         where = _location(citations, rule.evidence_ref)
         if where:
             lines.append(f"      出处：{where}")
@@ -149,7 +168,9 @@ def render_draft(
     return "\n".join(lines)
 
 
-def render_definition_summary(definition: BusinessDefinition) -> str:
+def render_definition_summary(
+    definition: BusinessDefinition, labels: Mapping[str, str] | None = None
+) -> str:
     """One-line recap attached to a result: the reading the number came from.
 
     Only what the executed query applied — the maintainer-declared variant
@@ -162,7 +183,7 @@ def render_definition_summary(definition: BusinessDefinition) -> str:
     """
     parts = [definition.display_name]
     parts.extend(
-        f"{rule_label(rule.key)}={_rule_text(definition, rule)}"
+        f"{rule_label(rule.key)}={_rule_text(definition, rule, labels)}"
         for rule in definition.rules
         if rule.key in COMPILED_RULE_KEYS
     )
@@ -196,6 +217,57 @@ def render_emptiness(definition: BusinessDefinition, run: QueryRun) -> str:
     """Why this run has nothing to report, when it has nothing to report, or ''."""
     return describe_emptiness(
         run.rows, _confirmed_period(definition), latest_date(run.data_through)
+    )
+
+
+def _cell(value: object) -> str:
+    return "NULL" if value is None else str(value)
+
+
+def render_rows(definition: BusinessDefinition, run: QueryRun) -> list[str]:
+    """The result table as lines, header first.
+
+    Split by time over a confirmed period, every group in the period gets a
+    line. Otherwise a day with no records is simply absent, and a reader
+    scanning 31 dates for the missing one is how 「23 日没有新增」 gets said
+    about a day that has no data at all. Absent groups read 「无记录」 inside
+    the data and 「无数据」 after its newest record. A truncated result is
+    shown as returned: filling it would label the cut-off tail as empty.
+    """
+    lines = ["  " + " | ".join(run.columns)]
+    rule = definition.rule(GROUP_RULE_KEY)
+    period = _confirmed_period(definition)
+    grain = rule.value if rule else ""
+    fillable = grain in TIME_GRAINS and period is not None and len(run.columns) == 2
+    if fillable and period is not None and not run.truncated:
+        starts = bucket_starts(period, grain)
+        values = {latest_date(row[0]): row[1] for row in run.rows}
+        if set(values) <= set(starts):
+            latest = latest_date(run.data_through)
+            for start in starts:
+                key = start.isoformat()[:7] if grain == MONTH else start.isoformat()
+                if start in values:
+                    cell = _cell(values[start])
+                elif latest is not None and start > latest:
+                    cell = "（无数据）"
+                else:
+                    cell = "（无记录）"
+                lines.append(f"  {key} | {cell}")
+            return lines
+    lines.extend("  " + " | ".join(_cell(value) for value in row) for row in run.rows)
+    return lines
+
+
+def render_grouping_note(definition: BusinessDefinition) -> str:
+    """Say so when the first or last week or month is only partly in the period."""
+    rule = definition.rule(GROUP_RULE_KEY)
+    period = _confirmed_period(definition)
+    if rule is None or period is None or not edges_are_partial(period, rule.value):
+        return ""
+    unit = "周" if rule.value == WEEK else "月"
+    return (
+        f"按{unit}分组时，首尾两组只统计区间 {period.start} 至 {period.end} 内的日期，"
+        f"不是完整的一{unit}。"
     )
 
 

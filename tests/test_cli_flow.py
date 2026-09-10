@@ -463,6 +463,61 @@ def test_a_period_after_the_data_reads_as_no_data_not_as_zero(
     assert "早于统计区间的开始 2026-03-01" in result
 
 
+def test_a_daily_split_lists_every_day_and_says_which_have_no_data(
+    config: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """F7/F8 as the user meets it: 「每天」 is confirmed, compiled, and filled in."""
+    _require_period(tmp_path)
+    code = main(
+        [
+            "flow",
+            "每天新增用户有多少？",
+            "--config",
+            str(config),
+            "--variant",
+            "registered",
+            "--period",
+            "2026-01-01..2026-01-03",
+            "--yes",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "分组方式：按天（每个日期一行）（由问题中的「每天」换算）" in out
+    result = out.split("结果（")[1]
+    assert "分组方式=按天" in result.splitlines()[0]
+    assert "  2026-01-01 | 1" in result
+    assert "  2026-01-02 | （无数据）" in result
+    assert "GROUP BY date(first_order_at)" in result
+
+
+def test_an_average_is_asked_about_and_can_be_answered_with_a_total(
+    config: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """F9: 「日均」 is not a split; the user says what they want, or nothing runs."""
+    _require_period(tmp_path)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "")
+    args = [
+        "flow",
+        "日均新增用户有多少？",
+        "--config",
+        str(config),
+        "--variant",
+        "registered",
+        "--period",
+        "2026-01",
+    ]
+    assert main([*args, "--yes"]) == 2
+    captured = capsys.readouterr()
+    assert "没有执行任何查询" in captured.out
+    assert "日均" in captured.err
+    assert main([*args, "--group-by", "none", "--yes"]) == 0
+    assert "分组方式=不分组" in capsys.readouterr().out
+
+
 def test_the_questions_own_period_names_the_words_it_came_from(
     config: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

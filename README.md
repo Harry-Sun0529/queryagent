@@ -158,12 +158,24 @@ runs August if it is executed in October — then compiled into the SQL as a
 condition on the mapping's `time_column`. Two different periods in one
 question, or one the parser does not recognise, are asked about rather than
 guessed; `--period` states or replaces one (`--period 2026-08-01..2026-08-31`).
-The result line names the period that ran, says 「未限定（全部数据）」 when
-there was none, and says a result is empty instead of printing a bare NULL.
+The dates are bound as parameters, not written into the SQL text
+([ADR-009](docs/adr/009-bound-parameters-for-workflow-values.md)). The result
+line names the period that ran, says 「未限定（全部数据）」 when there was
+none, and says a result is empty instead of printing a bare NULL.
 
-The demo data ends on 2026-08-22, so 「上个月」 asked in September covers a
-partial month and 「本月」 is empty. The system does not yet know where a
-dataset's records stop.
+How the answer is split is part of the 口径 too. 「上个月每天的新增用户」
+is confirmed as 「分组方式：按天」 and compiled into a `GROUP BY`; 「每周」
+and 「每月」 work the same way, and 「各渠道」 splits by any dimension a
+maintainer declares for the mapping's table (`dimensions:` in
+`examples/query_mappings.yaml`). Every day of the period gets a line, so a
+missing one cannot hide. 「日均」 is a different metric, not a split, and is
+asked about; `--group-by none` asks for one total.
+
+The result also says how far the data reaches. The demo data ends on
+2026-08-22, so 「上个月」 asked in September is reported as covering 1–22
+August with the last 9 days named as having no data, and 「本月」 as having
+no data yet rather than a total of 0. That check is a query, so it runs
+after you confirm, never before.
 
 ### Document evidence
 
@@ -425,7 +437,6 @@ make demo-down   # tear down demo databases
 
 - PostgreSQL connector (validates the Connector seam further)
 - Per-subject document ACLs (today's scoping is per business workspace)
-- Grouping by day and by maintainer-declared dimensions (「上个月每天的新增用户」)
 - Cross-session memory for confirmed metric choices
 - Embedding-based matching as an optional MetricStore implementation
 - Published eval numbers (strong + weak model, self-built + public subset)

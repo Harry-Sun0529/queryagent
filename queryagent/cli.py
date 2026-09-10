@@ -85,9 +85,11 @@ from queryagent.workflow.errors import (
 )
 from queryagent.workflow.evidence_builder import CompositeDraftBuilder, EvidenceDraftBuilder
 from queryagent.workflow.execution import make_connector_executor
-from queryagent.workflow.mappings import load_mappings
+from queryagent.workflow.grouping import Dimension, GroupingError, find_grouping, parse_grouping
+from queryagent.workflow.mappings import load_dimensions, load_mappings
 from queryagent.workflow.models import (
     CONFLICT_SEPARATOR,
+    GROUP_RULE_KEY,
     PERIOD_RULE_KEY,
     ActorContext,
     Candidate,
@@ -102,6 +104,8 @@ from queryagent.workflow.render import (
     render_definition_summary,
     render_draft,
     render_emptiness,
+    render_grouping_note,
+    render_rows,
     render_unenforced,
     rule_label,
 )
@@ -204,6 +208,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--period",
         help="the statistical period, if the question does not state one or you "
         "want a different one (e.g. 上个月, 2026-08-01..2026-08-31); recorded as 本次约定",
+    )
+    flow.add_argument(
+        "--group-by",
+        dest="group_by",
+        help="split the result: day, week, month, a declared dimension (e.g. channel), "
+        "or none for one total; recorded as 本次约定",
     )
     flow.add_argument(
         "--yes",
@@ -665,6 +675,7 @@ def _cmd_flow(args: argparse.Namespace) -> int:
         )
     actor = ActorContext(subject_id=args.subject, workspace_id=args.workspace)
     today = _today(config)
+    dimensions = load_dimensions(config.workflow.mappings_path)
 
     with contextlib.ExitStack() as stack:
         connector = make_connector(config.database)
@@ -694,12 +705,16 @@ def _cmd_flow(args: argparse.Namespace) -> int:
             store=store,
             builder=CompositeDraftBuilder(
                 MetricDraftBuilder(
-                    YamlMetricStore(config.metrics_path), today=lambda: today
+                    YamlMetricStore(config.metrics_path),
+                    today=lambda: today,
+                    dimensions=dimensions,
                 ),
                 evidence,
             ),
             compiler=TemplateCompiler(
-                load_mappings(config.workflow.mappings_path), dialect=connector.dialect
+                load_mappings(config.workflow.mappings_path),
+                dialect=connector.dialect,
+                dimensions=dimensions,
             ),
             executor=make_connector_executor(
                 connector,
@@ -718,7 +733,7 @@ def _cmd_flow(args: argparse.Namespace) -> int:
                 f"（已配置：{', '.join(sorted(known))}）；本次不会有文档依据。",
                 file=sys.stderr,
             )
-        return _run_flow(workflow, actor, args, provider, today)
+        return _run_flow(workflow, actor, args, provider, today, dimensions)
 
 
 def _run_flow(
@@ -727,9 +742,11 @@ def _run_flow(
     args: argparse.Namespace,
     provider: LocalKnowledgeProvider | None = None,
     today: date | None = None,
+    dimensions: tuple[Dimension, ...] = (),
 ) -> int:
     request_id = uuid.uuid4().hex
     today = today or date.today()
+    labels = {dimension.key: dimension.label for dimension in dimensions}
     draft = workflow.prepare(actor, args.question, request_id=request_id)
     if args.period:
         # Stated on purpose, it replaces whatever the question's words gave.
@@ -739,20 +756,30 @@ def _run_flow(
             expected_version=draft.version,
             rules=(_stated_period(args.period, today),),
         )
+    group_by = getattr(args, "group_by", None)
+    if group_by:
+        draft = workflow.amend(
+            actor,
+            draft.draft_id,
+            expected_version=draft.version,
+            rules=(_stated_grouping(group_by, dimensions),),
+        )
     if PERIOD_RULE_KEY in draft.definition.missing:
         _explain_missing_period(args.question, today)
+    if GROUP_RULE_KEY in draft.definition.missing:
+        _explain_missing_grouping(args.question, dimensions)
     citations = _citations(provider, actor, args.question)
     cited = tuple(
         rule.evidence_ref for rule in draft.definition.rules if rule.evidence_ref
     ) + tuple(c.evidence_ref for c in draft.definition.candidates if c.evidence_ref)
     if cited:
         workflow.attach_evidence(actor, draft.draft_id, cited)
-    print(render_draft(draft, citations))
+    print(render_draft(draft, citations, labels))
     if provider is not None and not citations:
         print("\n（未检索到该身份可见的相关文档；以下口径仅来自系统映射）")
 
     if draft.status is DraftStatus.NEEDS_INPUT:
-        rules = _open_choices(draft, args, citations, today)
+        rules = _open_choices(draft, args, citations, today, dimensions)
         if rules is None:
             print("\n[已取消] 未选择口径，没有执行任何查询。")
             return 2
@@ -761,7 +788,7 @@ def _run_flow(
                 actor, draft.draft_id, expected_version=draft.version, rules=rules
             )
             print()
-            print(render_draft(draft, citations))
+            print(render_draft(draft, citations, labels))
 
     if not args.yes and not _prompt_confirm():
         print("\n[已取消] 未确认口径，没有执行任何查询。")
@@ -772,10 +799,9 @@ def _run_flow(
     )
     run = workflow.execute(actor, confirmation.confirmation_id, idempotency_key=request_id)
     print()
-    print(f"结果（执行口径：{render_definition_summary(draft.definition)}）")
-    print("  " + " | ".join(run.columns))
-    for row in run.rows:
-        print("  " + " | ".join("NULL" if v is None else str(v) for v in row))
+    print(f"结果（执行口径：{render_definition_summary(draft.definition, labels)}）")
+    for line in render_rows(draft.definition, run):
+        print(line)
     if run.truncated:
         print("  （结果已在行数上限处截断）")
     emptiness = render_emptiness(draft.definition, run)
@@ -784,6 +810,9 @@ def _run_flow(
     coverage = render_coverage(draft.definition, run)
     if coverage:
         print(f"  （{coverage}）")
+    grouping_note = render_grouping_note(draft.definition)
+    if grouping_note:
+        print(f"  （{grouping_note}）")
     unenforced = render_unenforced(draft.definition)
     if unenforced:
         print(f"  （{unenforced}）")
@@ -844,11 +873,39 @@ def _prompt_period() -> str:
         return ""
 
 
+def _stated_grouping(text: str, dimensions: tuple[Dimension, ...]) -> Rule:
+    """A grouping the user stated on purpose, read exactly as a question's would be.
+
+    Raises GroupingError (a ValueError) when it cannot be read.
+    """
+    value = parse_grouping(text, dimensions)
+    return Rule(GROUP_RULE_KEY, value, RuleSource.USER, note=f"由「{text}」换算")
+
+
+def _explain_missing_grouping(question: str, dimensions: tuple[Dimension, ...]) -> None:
+    """Say why the question's own words did not become a grouping."""
+    try:
+        find_grouping(question, dimensions)
+    except GroupingError as exc:
+        print(f"[提示] {exc}", file=sys.stderr)
+
+
+def _prompt_grouping() -> str:
+    try:
+        return input(
+            "\n「分组方式」尚未确定。写下怎样分组（day / week / month / 维度名，"
+            "要一个总数写 none；回车取消）： "
+        ).strip()
+    except EOFError:
+        return ""
+
+
 def _open_choices(
     draft: DefinitionDraft,
     args: argparse.Namespace,
     citations: dict[str, str],
     today: date,
+    dimensions: tuple[Dimension, ...] = (),
 ) -> tuple[Rule, ...] | None:
     """The user's answer to every open choice, or None when they decline.
 
@@ -915,6 +972,12 @@ def _open_choices(
             )
         )
     for key in gaps:
+        if key == GROUP_RULE_KEY:
+            text = getattr(args, "group_by", None) or supplied.get(key) or _prompt_grouping()
+            if not text:
+                return None
+            rules.append(_stated_grouping(text, dimensions))
+            continue
         if key == PERIOD_RULE_KEY:
             text = args.period or supplied.get(key) or _prompt_period()
             if not text:

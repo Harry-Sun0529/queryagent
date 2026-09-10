@@ -19,7 +19,9 @@ from datetime import date
 
 from queryagent.metrics.base import Metric, MetricStore
 from queryagent.workflow.errors import MappingNotFound
+from queryagent.workflow.grouping import Dimension, GroupingError, find_grouping
 from queryagent.workflow.models import (
+    GROUP_RULE_KEY,
     PERIOD_RULE_KEY,
     REQUIRABLE_RULE_KEYS,
     VARIANT_RULE_KEY,
@@ -34,16 +36,25 @@ from queryagent.workflow.periods import PeriodError, find_period
 class MetricDraftBuilder:
     """Build a draft definition from the maintainer's declared metrics."""
 
-    def __init__(self, metrics: MetricStore, *, today: Callable[[], date] = date.today) -> None:
+    def __init__(
+        self,
+        metrics: MetricStore,
+        *,
+        today: Callable[[], date] = date.today,
+        dimensions: tuple[Dimension, ...] = (),
+    ) -> None:
         """
         Args:
             metrics: The maintainer's declared metrics.
             today: Which day relative time words are resolved against. The CLI
                 passes the configured business time zone's date; tests pass a
                 fixed one.
+            dimensions: The maintainer-declared dimensions a question may ask
+                to split by. Words for any other dimension are not recognised.
         """
         self._metrics = metrics
         self._today = today
+        self._dimensions = dimensions
 
     def build(self, question: str) -> BusinessDefinition:
         """Return the definition to show the user.
@@ -57,7 +68,30 @@ class MetricDraftBuilder:
             raise MappingNotFound(
                 f"no declared business metric matches this question: {question!r}"
             )
-        return _with_period(_definition_for(matches[0]), question, self._today())
+        definition = _with_period(_definition_for(matches[0]), question, self._today())
+        return _with_grouping(definition, question, self._dimensions)
+
+
+def _with_grouping(
+    definition: BusinessDefinition, question: str, dimensions: tuple[Dimension, ...]
+) -> BusinessDefinition:
+    """Read the question's 「每天」 / 「按渠道」 into a grouping rule.
+
+    One recognisable grouping becomes a 本次约定 rule naming its words. A
+    split this system does not make (「日均」, 「每小时」) or two different
+    ones leave the grouping missing: the question asked for something a
+    single total would not answer, so the user says what they want instead.
+    """
+    try:
+        found = find_grouping(question, dimensions)
+    except GroupingError:
+        return dataclasses.replace(definition, missing=(*definition.missing, GROUP_RULE_KEY))
+    if found is None:
+        return definition
+    rule = Rule(
+        GROUP_RULE_KEY, found.value, RuleSource.USER, note=f"由问题中的「{found.phrase}」换算"
+    )
+    return definition.with_rules((rule,))
 
 
 def _with_period(definition: BusinessDefinition, question: str, today: date) -> BusinessDefinition:
