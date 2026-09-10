@@ -20,9 +20,44 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from queryagent.workflow.errors import MappingNotFound, WorkflowStateError
+from queryagent.workflow.grouping import (
+    DAY,
+    DIMENSION_PREFIX,
+    MONTH,
+    NONE,
+    TIME_GRAINS,
+    WEEK,
+    Dimension,
+    is_grouping,
+)
 from queryagent.workflow.mappings import QueryMapping
-from queryagent.workflow.models import PERIOD_RULE_KEY, VARIANT_RULE_KEY, BusinessDefinition
+from queryagent.workflow.models import (
+    GROUP_RULE_KEY,
+    PERIOD_RULE_KEY,
+    VARIANT_RULE_KEY,
+    BusinessDefinition,
+)
 from queryagent.workflow.periods import Period
+
+# One expression per time grain per dialect, each returning the group's first
+# day as a date. Closed and code-reviewed: nothing here comes from a user or a
+# mapping file except the column name, which is validated as an identifier.
+# Weeks start on Monday. SQLite's 'weekday 1' moves *forward* to a Monday,
+# so it is applied after stepping back six days.
+_GRAIN_SQL = {
+    DAY: {"sqlite": "date({col})", "mysql": "DATE({col})", "clickhouse": "toDate({col})"},
+    WEEK: {
+        "sqlite": "date({col}, '-6 days', 'weekday 1')",
+        "mysql": "DATE(DATE_SUB({col}, INTERVAL WEEKDAY({col}) DAY))",
+        "clickhouse": "toMonday({col})",
+    },
+    MONTH: {
+        "sqlite": "date({col}, 'start of month')",
+        "mysql": "DATE(DATE_SUB({col}, INTERVAL DAYOFMONTH({col}) - 1 DAY))",
+        "clickhouse": "toStartOfMonth({col})",
+    },
+}
+_GRAIN_ALIASES = {DAY: "日期", WEEK: "周起始日", MONTH: "月份"}
 
 
 @dataclass(frozen=True)
@@ -46,9 +81,11 @@ class TemplateCompiler:
         templates: Mapping[tuple[str, str], str | QueryMapping],
         *,
         dialect: str = "sqlite",
+        dimensions: tuple[Dimension, ...] = (),
     ) -> None:
         self._templates = dict(templates)
         self._dialect = dialect
+        self._dimensions = dimensions
 
     def compile(self, definition: BusinessDefinition) -> CompiledQuery:
         """Return the statement and values for this confirmed definition.
@@ -70,6 +107,7 @@ class TemplateCompiler:
                 "a mapping must be declared before this 口径 can be executed"
             )
         period = _period_of(definition)
+        grouping = _grouping_of(definition)
         if isinstance(entry, str):
             if period is not None:
                 raise MappingNotFound(
@@ -77,8 +115,13 @@ class TemplateCompiler:
                     "请维护者改为结构化映射（from / measure / time_column）。"
                     "不会忽略区间去跑全量。"
                 )
+            if grouping not in ("", NONE):
+                raise MappingNotFound(
+                    f"{where} 的映射是整条 SQL，无法按已确认的方式分组；"
+                    "请维护者改为结构化映射。不会忽略分组去给一个总数。"
+                )
             return CompiledQuery(entry)
-        return _compose(entry, period, self._dialect, where)
+        return _compose(entry, period, self._dialect, where, grouping, self._dimensions)
 
     def freshness_probe(self, definition: BusinessDefinition) -> CompiledQuery | None:
         """The statement that dates the data behind this definition, if one exists.
@@ -106,8 +149,50 @@ def _period_of(definition: BusinessDefinition) -> Period | None:
         raise WorkflowStateError(f"统计区间不是规范格式：{rule.value!r}") from exc
 
 
+def _grouping_of(definition: BusinessDefinition) -> str:
+    rule = definition.rule(GROUP_RULE_KEY)
+    if rule is None:
+        return ""
+    if not is_grouping(rule.value):
+        raise WorkflowStateError(f"分组方式不是规范值：{rule.value!r}")
+    return rule.value
+
+
+def _group_key(
+    entry: QueryMapping,
+    grouping: str,
+    dialect: str,
+    where: str,
+    dimensions: tuple[Dimension, ...],
+) -> tuple[str, str] | None:
+    """The GROUP BY expression and its column alias, or None for one total."""
+    if grouping in ("", NONE):
+        return None
+    if grouping in TIME_GRAINS:
+        if not entry.time_column:
+            raise MappingNotFound(f"{where} 的映射没有声明 time_column，无法按时间分组")
+        template = _GRAIN_SQL[grouping].get(dialect)
+        if template is None:
+            raise MappingNotFound(f"方言 {dialect} 尚不支持按时间分组")
+        return template.format(col=entry.time_column), _GRAIN_ALIASES[grouping]
+    key = grouping[len(DIMENSION_PREFIX) :]
+    dimension = next((d for d in dimensions if d.key == key), None)
+    column = dimension.column_for(entry.source) if dimension else None
+    if dimension is None or column is None:
+        name = dimension.label if dimension else key
+        raise MappingNotFound(
+            f"{where} 取自表 {entry.source}，维护者没有为它声明维度「{name}」，无法按它分组"
+        )
+    return column, dimension.label
+
+
 def _compose(
-    entry: QueryMapping, period: Period | None, dialect: str, where: str
+    entry: QueryMapping,
+    period: Period | None,
+    dialect: str,
+    where: str,
+    grouping: str = "",
+    dimensions: tuple[Dimension, ...] = (),
 ) -> CompiledQuery:
     # Maintainer fragments are parenthesised so an OR inside one cannot
     # escape the period condition beside it.
@@ -128,7 +213,17 @@ def _compose(
         conditions += [f"{entry.time_column} >= ?", f"{entry.time_column} < ?"]
         params = (period.start.isoformat(), period.end_exclusive.isoformat())
     clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-    sql = f"SELECT {entry.measure} AS {_quote(entry.label, dialect)} FROM {entry.source}{clause}"
+    measure = f"{entry.measure} AS {_quote(entry.label, dialect)}"
+    key = _group_key(entry, grouping, dialect, where, dimensions)
+    if key is None:
+        return CompiledQuery(f"SELECT {measure} FROM {entry.source}{clause}", params)
+    expression, alias = key
+    # The expression is repeated rather than referenced by alias or position:
+    # that is the one form all three dialects accept under strict GROUP BY.
+    sql = (
+        f"SELECT {expression} AS {_quote(alias, dialect)}, {measure} FROM {entry.source}{clause}"
+        f" GROUP BY {expression} ORDER BY {expression}"
+    )
     return CompiledQuery(sql, params)
 
 

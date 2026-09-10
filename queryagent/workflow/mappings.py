@@ -16,7 +16,9 @@ from typing import Any
 
 import yaml
 
-_TABLE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?")
+from queryagent.workflow.grouping import Dimension
+
+_TABLE =re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?")
 _COLUMN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
@@ -121,4 +123,66 @@ def _parse_structured(item: dict[str, Any], where: str) -> QueryMapping:
         label=fields["label"],
         time_column=time_column,
         where=tuple(" ".join(c.split()) for c in raw_where),
+    )
+
+
+def load_dimensions(path: str | Path) -> tuple[Dimension, ...]:
+    """Parse the optional top-level ``dimensions`` list of a mappings file.
+
+    Schema::
+
+        dimensions:
+          - key: channel             # identifier; the rule stores dim:channel
+            label: 渠道              # shown to users, and the result column's alias
+            aliases: [来源渠道]      # other words a question may use
+            columns: {users: channel}  # table -> column holding it there
+
+    Declared beside the mappings because the column is SQL: which column
+    splits which table is a maintainer's decision, reviewed as a diff.
+
+    Raises:
+        ValueError: On any structural problem, naming the offending entry.
+    """
+    raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    items = raw.get("dimensions") if isinstance(raw, dict) else None
+    if items is None:
+        return ()
+    if not isinstance(items, list):
+        raise ValueError(f"{path}: 'dimensions' must be a list")
+    dimensions: list[Dimension] = []
+    for index, item in enumerate(items):
+        dimension = _parse_dimension(item, f"{path}: dimensions[{index}]")
+        if any(d.key == dimension.key for d in dimensions):
+            raise ValueError(f"{path}: duplicate dimension {dimension.key!r}")
+        dimensions.append(dimension)
+    return tuple(dimensions)
+
+
+def _parse_dimension(item: Any, where: str) -> Dimension:
+    if not isinstance(item, dict):
+        raise ValueError(f"{where}: each dimension must be a mapping")
+    key = item.get("key")
+    if not isinstance(key, str) or not _COLUMN.fullmatch(key):
+        raise ValueError(f"{where}: 'key' must be an identifier, got {key!r}")
+    label = item.get("label")
+    if not isinstance(label, str) or not label.strip():
+        raise ValueError(f"{where} ({key}): 'label' is required")
+    if any(mark in label for mark in ('"', "`", "'")):
+        raise ValueError(f"{where} ({key}): 'label' must not contain quote characters")
+    aliases = item.get("aliases") or []
+    if not isinstance(aliases, list) or not all(isinstance(a, str) and a.strip() for a in aliases):
+        raise ValueError(f"{where} ({key}): 'aliases' must be a list of non-empty strings")
+    columns = item.get("columns")
+    if not isinstance(columns, dict) or not columns:
+        raise ValueError(f"{where} ({key}): 'columns' must map at least one table to a column")
+    for table, column in columns.items():
+        if not isinstance(table, str) or not _TABLE.fullmatch(table):
+            raise ValueError(f"{where} ({key}): {table!r} is not a table name")
+        if not isinstance(column, str) or not _COLUMN.fullmatch(column):
+            raise ValueError(f"{where} ({key}): {column!r} is not a column name")
+    return Dimension(
+        key=key,
+        label=label.strip(),
+        aliases=tuple(a.strip() for a in aliases),
+        columns=tuple((str(t), str(c)) for t, c in columns.items()),
     )

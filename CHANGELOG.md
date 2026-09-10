@@ -17,6 +17,16 @@ frozen from v0.1.1 (spec §四).
   whole period lies after it, an empty or zero result is explained as no
   data yet rather than as the business doing nothing. A failed probe is
   reported as unknown and never costs the result.
+- 分组方式: 「每天」, 「每周」, 「每月」, or words for a dimension a
+  maintainer declares per table in the mappings file (`dimensions:`, e.g.
+  「各渠道」) split the result. Confirmed as 本次约定 like the period, bound
+  into the hash, and compiled into `GROUP BY` with one expression per
+  dialect. Over a confirmed period every day, week or month is listed —
+  「无记录」 inside the data, 「无数据」 after it — and partial first or last
+  weeks and months are said to be partial. 「日均」, 「每小时」 and two
+  different splits are asked about instead of approximated; `--group-by`
+  states or replaces one (`none` for one total). Documents cannot set it,
+  and a dimension not declared for a mapping's table is refused, not joined.
 
 ### Changed
 

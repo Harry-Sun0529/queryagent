@@ -58,7 +58,16 @@ specs for in-flight work in `docs/specs/`.
 - **Period（统计区间）** — the absolute date range a draft is bounded to,
   resolved from the question's time words (or stated with `--period`) when
   the draft is prepared, and hashed with it. Only the user sets it; documents
-  cannot. With the variant, it is one of the two rules the compiler consumes.
+  cannot. With the variant and the grouping, it is one of the three rules the
+  compiler consumes; its dates are bound as parameters (ADR-009).
+- **Grouping（分组方式）** — whether the answer is one number or a table, and
+  split how: by day, week (Monday-start) or month, or by a **Dimension** a
+  maintainer declares per table in the mappings file. Read from the
+  question's words or `--group-by`, hashed, user-only like the period.
+  「日均」 is not a grouping and is asked about.
+- **Data reach（数据新鲜度）** — the date of the newest record in a mapping's
+  table, probed after confirmation and recorded on the run. It is all the
+  system claims: not that the data is complete up to that day.
 - **Trace** — one run's event stream persisted as JSONL, replayable
   (ADR-005). **Checkpoint** — the eval's per-case result log, which
   `--resume` reuses when the effective input/data/code signature matches.
@@ -78,7 +87,7 @@ specs for in-flight work in `docs/specs/`.
 | Tool dispatch | `ToolRegistry.validate_and_dispatch -> Observation` | get_schema, execute_sql, ask_clarification |
 | Draft building | `DraftBuilder.build(question, actor) -> BusinessDefinition` | maintainer metrics; maintainer + document evidence (`CompositeDraftBuilder`) |
 | Document evidence | `KnowledgeProvider.search/read/check_refs(scope, ...)` | local SQLite index, keyword or optional semantic |
-| Plan compiling | `TemplateCompiler.compile(definition) -> CompiledQuery(sql, params)`; `freshness_probe(definition)` | structured maintainer mappings + bound period (ADR-009); whole-statement `sql:` kept, refuses a period and is not probed |
+| Plan compiling | `TemplateCompiler.compile(definition) -> CompiledQuery(sql, params)`; `freshness_probe(definition)` | structured maintainer mappings + bound period (ADR-009) + time or declared-dimension grouping; whole-statement `sql:` kept, refuses a period or a grouping and is not probed |
 | Workflow state | `SqliteWorkflowStore` (drafts / confirmations / runs) | local SQLite file, single process |
 | Trusted identity | `ActorContext(subject_id, workspace_id, roles)` | CLI local user (Web session / MCP host reserved) |
 

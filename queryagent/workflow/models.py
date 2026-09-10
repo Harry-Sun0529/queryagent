@@ -84,7 +84,13 @@ purpose. Document extraction cannot: its allowed keys exclude it, so a
 handbook sentence cannot change which dates a query covers.
 """
 
-COMPILED_RULE_KEYS = (VARIANT_RULE_KEY, PERIOD_RULE_KEY)
+GROUP_RULE_KEY = "group_by"
+"""How the result is split (T38): by day, week or month, by a dimension a
+maintainer declared, or explicitly not at all. Like the period, only the
+user sets it; documents cannot, so a handbook cannot turn a number into a
+table or a table into a number."""
+
+COMPILED_RULE_KEYS = (VARIANT_RULE_KEY, PERIOD_RULE_KEY, GROUP_RULE_KEY)
 """Rules the compiler turns into SQL. Every other rule explains the 口径."""
 
 REQUIRABLE_RULE_KEYS = (*ALLOWED_RULE_KEYS, PERIOD_RULE_KEY)
