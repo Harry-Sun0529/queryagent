@@ -1,13 +1,20 @@
-"""Slice 1A end-to-end: the confirmed 口径 is the number the user gets.
+"""End to end: the confirmed 口径, including its period, is the number the user gets.
 
-Runs against the real demo SQLite database through the real connector and
-safety layer — the doubles in test_workflow_service.py prove the gate, this
-proves the chain behind it is wired to an actual database.
+Runs against the real demo SQLite database, through the real connector and
+safety layer, using the shipped ``examples/metrics.yaml`` and
+``examples/query_mappings.yaml`` — the doubles in test_workflow_service.py
+prove the gate, this proves the chain behind it is wired to real data.
+
+"Today" is fixed at 2026-09-10 so 「上个月」 is August 2026 whatever day this
+runs. Reference numbers come from SQLite's own ``strftime`` rather than from
+the compiler's half-open bounds, so the test cannot pass by agreeing with
+itself.
 """
 
 from __future__ import annotations
 
 import sqlite3
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -17,18 +24,21 @@ from queryagent.metrics.yaml_store import YamlMetricStore
 from queryagent.workflow.builder import MetricDraftBuilder
 from queryagent.workflow.compiler import TemplateCompiler
 from queryagent.workflow.execution import make_connector_executor
-from queryagent.workflow.models import ActorContext, DraftStatus, Rule, RuleSource
+from queryagent.workflow.mappings import load_mappings
+from queryagent.workflow.models import PERIOD_RULE_KEY, ActorContext, DraftStatus, Rule, RuleSource
 from queryagent.workflow.service import QueryWorkflow
 from queryagent.workflow.store import SqliteWorkflowStore
 
 DEMO_DB = Path("examples/demo_ecommerce/demo_shop.db")
 ALICE = ActorContext(subject_id="alice", workspace_id="ops")
+TODAY = date(2026, 9, 10)
 
-REGISTERED_SQL = "SELECT COUNT(*) AS 新增用户 FROM users WHERE channel <> 'internal_test'"
-FIRST_ORDER_SQL = (
-    "SELECT COUNT(*) AS 新增用户 FROM users "
-    "WHERE first_order_at IS NOT NULL AND channel <> 'internal_test'"
-)
+REFERENCE = {
+    "registered": "SELECT COUNT(*) FROM users WHERE channel <> 'internal_test' "
+    "AND strftime('%Y-%m', created_at) = '2026-08'",
+    "first_order": "SELECT COUNT(*) FROM users WHERE first_order_at IS NOT NULL "
+    "AND channel <> 'internal_test' AND strftime('%Y-%m', first_order_at) = '2026-08'",
+}
 
 
 @pytest.fixture
@@ -38,21 +48,16 @@ def workflow(tmp_path: Path) -> QueryWorkflow:
     connector = SQLiteConnector(path=str(DEMO_DB))
     return QueryWorkflow(
         store=SqliteWorkflowStore(tmp_path / "wf.db"),
-        builder=MetricDraftBuilder(YamlMetricStore("examples/metrics.yaml")),
-        compiler=TemplateCompiler(
-            {
-                ("new_users", "registered"): REGISTERED_SQL,
-                ("new_users", "first_order"): FIRST_ORDER_SQL,
-            }
-        ),
+        builder=MetricDraftBuilder(YamlMetricStore("examples/metrics.yaml"), today=lambda: TODAY),
+        compiler=TemplateCompiler(load_mappings("examples/query_mappings.yaml")),
         executor=make_connector_executor(connector, timeout_s=10, max_rows=200),
     )
 
 
 def _run(workflow: QueryWorkflow, variant: str, key: str) -> tuple[object, ...]:
     draft = workflow.prepare(ALICE, "上个月新增用户有多少？", request_id=f"req-{variant}")
-    # The metric declares two readings, so the draft arrives incomplete and
-    # nothing can be confirmed until the user closes that gap.
+    # The period came from the question; the reading still has to be chosen.
+    assert draft.definition.rule(PERIOD_RULE_KEY).value == "2026-08-01..2026-08-31"  # type: ignore[union-attr]
     assert draft.status is DraftStatus.NEEDS_INPUT
     assert {c.label for c in draft.definition.candidates} == {"注册口径", "首单口径"}
     amended = workflow.amend(
@@ -70,17 +75,16 @@ def _run(workflow: QueryWorkflow, variant: str, key: str) -> tuple[object, ...]:
     return workflow.execute(ALICE, confirmation.confirmation_id, idempotency_key=key).rows[0]
 
 
-def test_the_two_confirmed_definitions_give_the_two_real_numbers(
+def test_last_month_under_each_reading_is_last_months_real_number(
     workflow: QueryWorkflow,
 ) -> None:
-    """The product's whole premise: same question, two 口径, two numbers."""
+    """Same question, two 口径, two numbers — both bounded to August."""
     connection = sqlite3.connect(DEMO_DB)
-    expected_registered = connection.execute(REGISTERED_SQL.replace("新增用户", "n")).fetchone()[0]
-    expected_first_order = connection.execute(FIRST_ORDER_SQL.replace("新增用户", "n")).fetchone()[
-        0
-    ]
+    expected = {name: connection.execute(sql).fetchone()[0] for name, sql in REFERENCE.items()}
+    everyone = connection.execute("SELECT COUNT(*) FROM users").fetchone()[0]
     connection.close()
 
-    assert _run(workflow, "registered", "k-reg") == (expected_registered,)
-    assert _run(workflow, "first_order", "k-fo") == (expected_first_order,)
-    assert expected_registered != expected_first_order  # otherwise the demo proves nothing
+    assert _run(workflow, "registered", "k-reg") == (expected["registered"],)
+    assert _run(workflow, "first_order", "k-fo") == (expected["first_order"],)
+    assert expected["registered"] != expected["first_order"]  # otherwise nothing is shown
+    assert 0 < expected["registered"] < everyone  # a window, not the all-time count

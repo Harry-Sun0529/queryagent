@@ -18,6 +18,7 @@ from queryagent.workflow.errors import (
     StaleVersion,
     WorkflowStateError,
 )
+from queryagent.workflow.mappings import QueryMapping
 from queryagent.workflow.models import ActorContext, DraftStatus, Rule, RuleSource, RunStatus
 from queryagent.workflow.service import QueryWorkflow
 from queryagent.workflow.store import SqliteWorkflowStore
@@ -46,9 +47,20 @@ GMV = Metric(
 )
 
 TEMPLATES = {
-    ("new_users", "registered"): "SELECT COUNT(*) AS n FROM users WHERE channel <> 'internal_test'",
-    ("new_users", "first_order"): "SELECT COUNT(*) AS n FROM users "
-    "WHERE first_order_at IS NOT NULL AND channel <> 'internal_test'",
+    ("new_users", "registered"): QueryMapping(
+        source="users",
+        measure="COUNT(*)",
+        label="n",
+        time_column="created_at",
+        where=("channel <> 'internal_test'",),
+    ),
+    ("new_users", "first_order"): QueryMapping(
+        source="users",
+        measure="COUNT(*)",
+        label="n",
+        time_column="first_order_at",
+        where=("first_order_at IS NOT NULL", "channel <> 'internal_test'"),
+    ),
 }
 
 
@@ -525,3 +537,94 @@ def test_a_draft_with_no_citations_never_calls_the_checker(tmp_path: Path) -> No
     workflow.execute(ALICE, confirmation.confirmation_id, idempotency_key="k1")
     assert checker.calls == 0
     assert len(executor.executed) == 1
+
+
+# --------------------------------------------------------- P1-P3: periods
+
+
+def _on(tmp_path: Path, today: object, executor: CountingExecutor) -> QueryWorkflow:
+    return QueryWorkflow(
+        store=SqliteWorkflowStore(tmp_path / "wf.db"),
+        builder=MetricDraftBuilder(StubMetricStore((NEW_USERS, GMV)), today=lambda: today),  # type: ignore[arg-type,return-value]
+        compiler=TemplateCompiler(TEMPLATES),
+        executor=executor.run,
+        clock=lambda: datetime(2026, 9, 10, tzinfo=timezone.utc),
+    )
+
+
+def test_the_questions_time_words_become_an_absolute_period_marked_as_the_users(
+    tmp_path: Path,
+) -> None:
+    """P1: the user asked for it; they confirm the dates it resolves to."""
+    from datetime import date
+
+    from queryagent.workflow.models import PERIOD_RULE_KEY
+
+    draft = _on(tmp_path, date(2026, 9, 10), CountingExecutor()).prepare(
+        ALICE, "上个月新增用户多少？", request_id="r1"
+    )
+    rule = draft.definition.rule(PERIOD_RULE_KEY)
+    assert rule is not None
+    assert rule.value == "2026-08-01..2026-08-31"
+    assert rule.source is RuleSource.USER
+    assert "上个月" in rule.note
+
+
+def test_two_periods_in_one_question_leave_the_period_missing(tmp_path: Path) -> None:
+    """P2: even though this metric does not require one — running without it
+    would answer a different question."""
+    from datetime import date
+
+    from queryagent.workflow.models import PERIOD_RULE_KEY
+
+    draft = _on(tmp_path, date(2026, 9, 10), CountingExecutor()).prepare(
+        ALICE, "上个月和本月新增用户多少？", request_id="r1"
+    )
+    assert draft.definition.rule(PERIOD_RULE_KEY) is None
+    assert PERIOD_RULE_KEY in draft.definition.missing
+
+
+def test_a_confirmation_made_today_runs_todays_dates_tomorrow(tmp_path: Path) -> None:
+    """P3: 「上个月」 confirmed on 9-10 is August, still August when run on 10-02."""
+    from datetime import date
+
+    first = _on(tmp_path, date(2026, 9, 10), CountingExecutor())
+    draft = first.prepare(ALICE, "上个月新增用户多少？", request_id="r1")
+    amended = _pick_registered(first, draft.draft_id)
+    confirmation = first.confirm(
+        ALICE,
+        draft.draft_id,
+        version=amended.version,  # type: ignore[union-attr]
+        definition_hash=amended.definition_hash,  # type: ignore[union-attr]
+    )
+    executor = CountingExecutor()
+    run = _on(tmp_path, date(2026, 10, 2), executor).execute(
+        ALICE, confirmation.confirmation_id, idempotency_key="k1"
+    )
+    assert "created_at >= '2026-08-01'" in run.sql
+    assert "created_at < '2026-09-01'" in run.sql
+
+
+def test_changing_the_period_after_confirmation_invalidates_it(tmp_path: Path) -> None:
+    """P3: the period is in the hash like every other semantic rule."""
+    from datetime import date
+
+    from queryagent.workflow.models import PERIOD_RULE_KEY
+
+    workflow = _on(tmp_path, date(2026, 9, 10), CountingExecutor())
+    draft = workflow.prepare(ALICE, "上个月新增用户多少？", request_id="r1")
+    amended = _pick_registered(workflow, draft.draft_id)
+    confirmation = workflow.confirm(
+        ALICE,
+        draft.draft_id,
+        version=amended.version,  # type: ignore[union-attr]
+        definition_hash=amended.definition_hash,  # type: ignore[union-attr]
+    )
+    workflow.amend(
+        ALICE,
+        draft.draft_id,
+        expected_version=amended.version,  # type: ignore[union-attr]
+        rules=(Rule(PERIOD_RULE_KEY, "2026-07-01..2026-07-31", RuleSource.USER),),
+    )
+    with pytest.raises(ConfirmationRequired):
+        workflow.execute(ALICE, confirmation.confirmation_id, idempotency_key="k1")

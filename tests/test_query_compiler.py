@@ -79,6 +79,29 @@ def test_a_confirmed_period_includes_both_whole_end_days(tmp_path: Path) -> None
     assert _count(tmp_path, sql) == 2
 
 
+def test_a_date_only_text_column_keeps_its_first_and_last_day(tmp_path: Path) -> None:
+    """P5 for columns that store dates as text: '2026-08-01' must be counted.
+
+    '2026-08-01' sorts below '2026-08-01 00:00:00' in SQLite, so a
+    timestamp-shaped lower bound dropped the first day of every period. The
+    CLI fixture caught it, not this file — every row above has a time.
+    """
+    connection = sqlite3.connect(tmp_path / "dates.db")
+    connection.execute("CREATE TABLE users (created_at TEXT, channel TEXT)")
+    connection.executemany(
+        "INSERT INTO users VALUES (?, 'organic')",
+        [("2026-07-31",), ("2026-08-01",), ("2026-08-31",), ("2026-09-01",)],
+    )
+    connection.commit()
+    sql = TemplateCompiler({("new_users", "registered"): REGISTERED}).compile(
+        _definition(_august())
+    )
+    try:
+        assert connection.execute(sql).fetchone()[0] == 2
+    finally:
+        connection.close()
+
+
 def test_an_or_in_a_maintainer_fragment_cannot_escape_the_period(tmp_path: Path) -> None:
     """Unparenthesised, `a OR b AND period` would count every paid row ever."""
     mapping = QueryMapping(
