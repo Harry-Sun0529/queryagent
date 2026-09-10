@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from collections.abc import Sequence
 from pathlib import Path
 
 from queryagent.connectors.base import QueryResult
@@ -66,8 +67,10 @@ class SQLiteConnector:
             raise QueryError(str(exc), dialect=self.dialect) from exc
         return tables
 
-    def execute(self, sql: str, *, timeout_s: int, max_rows: int) -> QueryResult:
-        """Run one query with a deadline guard and a row cap."""
+    def execute(
+        self, sql: str, *, timeout_s: int, max_rows: int, params: Sequence[object] = ()
+    ) -> QueryResult:
+        """Run one query with a deadline guard and a row cap; ``?`` binds natively."""
         start = time.monotonic()
         deadline = start + timeout_s
 
@@ -76,7 +79,7 @@ class SQLiteConnector:
 
         self._conn.set_progress_handler(guard, _PROGRESS_INTERVAL)
         try:
-            cursor = self._conn.execute(sql)
+            cursor = self._conn.execute(sql, tuple(params))
             raw_rows = cursor.fetchmany(max_rows + 1)
             columns = tuple(str(desc[0]) for desc in cursor.description or ())
         except sqlite3.Error as exc:

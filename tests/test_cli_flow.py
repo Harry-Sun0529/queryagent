@@ -432,7 +432,8 @@ def test_a_stated_period_is_confirmed_applied_and_claimed(
     assert code == 0
     final_sheet = out[out.rfind("口径确认单") : out.find("结果（")]
     assert "统计区间：2026-01-01 至 2026-01-31（31 天）" in final_sheet
-    assert "first_order_at >= '2026-01-01'" in out
+    assert "first_order_at >= ? AND first_order_at < ?" in out
+    assert "参数（按 ? 的顺序绑定）：2026-01-01, 2026-02-01" in out
     result = out.split("结果（")[1]
     assert "统计区间=2026-01-01 至 2026-01-31" in result.splitlines()[0]
     assert "  1" in result

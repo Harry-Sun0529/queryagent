@@ -71,14 +71,14 @@ specs for in-flight work in `docs/specs/`.
 | Seam | Interface | Adapters today |
 |---|---|---|
 | LLM | `LLMBackend.complete(messages, tools) -> ModelResponse` | OpenAI-compatible (DeepSeek — the verified path), Anthropic (contract-tested only, never called live), test fake |
-| Data source | `Connector.get_schema/execute/close` (+ `dialect`) | MySQL, SQLite, ClickHouse |
+| Data source | `Connector.get_schema/execute/close` (+ `dialect`); `execute(..., params=())` binds `?` placeholders | MySQL, SQLite, ClickHouse |
 | Metrics | `MetricStore.match/get` | YAML store (embedding impl reserved) |
 | Agent output | `Iterator[AgentEvent]` from `run_agent` | chat CLI, ask CLI, eval runner, trace writer |
 | Persisted records | `serde.rebuild_dataclass` | trace events, eval checkpoints |
 | Tool dispatch | `ToolRegistry.validate_and_dispatch -> Observation` | get_schema, execute_sql, ask_clarification |
 | Draft building | `DraftBuilder.build(question, actor) -> BusinessDefinition` | maintainer metrics; maintainer + document evidence (`CompositeDraftBuilder`) |
 | Document evidence | `KnowledgeProvider.search/read/check_refs(scope, ...)` | local SQLite index, keyword or optional semantic |
-| Plan compiling | `TemplateCompiler.compile(definition) -> sql` | structured maintainer mappings + typed period (ADR-008); whole-statement `sql:` kept, refuses a period |
+| Plan compiling | `TemplateCompiler.compile(definition) -> CompiledQuery(sql, params)` | structured maintainer mappings + bound period (ADR-009); whole-statement `sql:` kept, refuses a period |
 | Workflow state | `SqliteWorkflowStore` (drafts / confirmations / runs) | local SQLite file, single process |
 | Trusted identity | `ActorContext(subject_id, workspace_id, roles)` | CLI local user (Web session / MCP host reserved) |
 

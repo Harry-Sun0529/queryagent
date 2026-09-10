@@ -15,15 +15,22 @@ from collections.abc import Callable
 
 from queryagent import safety
 from queryagent.connectors.base import Connector, QueryResult
+from queryagent.workflow.compiler import CompiledQuery
 
 
 def make_connector_executor(
     connector: Connector, *, timeout_s: int, max_rows: int
-) -> Callable[[str], QueryResult]:
-    """Return the executor the workflow calls once a run is authorised."""
+) -> Callable[[CompiledQuery], QueryResult]:
+    """Return the executor the workflow calls once a run is authorised.
 
-    def execute(sql: str) -> QueryResult:
-        safety.ensure_safe_select(sql)
-        return connector.execute(sql, timeout_s=timeout_s, max_rows=max_rows)
+    The safety check reads the statement with its placeholders — the text
+    that is sent — and the values go to the driver, not into the text.
+    """
+
+    def execute(query: CompiledQuery) -> QueryResult:
+        safety.ensure_safe_select(query.sql)
+        return connector.execute(
+            query.sql, timeout_s=timeout_s, max_rows=max_rows, params=query.params
+        )
 
     return execute

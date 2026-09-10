@@ -8,6 +8,16 @@ frozen from v0.1.1 (spec §四).
 
 ## [Unreleased]
 
+### Changed
+
+- The dates of a confirmed 统计区间 are bound as parameters instead of being
+  written into the SQL text (ADR-009, superseding ADR-008).
+  `Connector.execute` takes `params=()` with `?` placeholders; MySQL and
+  ClickHouse connectors translate them for their drivers and double the
+  statement's other `%` signs. Calls without params are unchanged. Runs
+  record the values beside the statement, and `flow` prints both. State
+  files from v0.7 are upgraded in place.
+
 ## [0.7.0] — 2026-09-10
 
 ### Added

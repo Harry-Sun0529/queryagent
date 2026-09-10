@@ -6,22 +6,36 @@ applied or refused — never dropped: a whole-statement ``sql:`` mapping cannot
 take a date condition without the compiler parsing SQL, so it refuses a
 period instead of running an all-time query under a monthly 口径 (§11.2).
 
-Typed, not parameterised (slice 1C, C01). Exactly two kinds of value reach
-the statement: maintainer SQL fragments, which carry the same trust as the
-whole statements they replace, and dates that exist only as ``datetime.date``
-objects decoded from a strictly-shaped rule. Nothing the user typed and
-nothing a document said is ever interpolated. Parameter binding would need a
-Connector protocol change across three dialects and is a later step.
+Values are bound, not interpolated (ADR-009, superseding ADR-008's typed
+compilation). The statement text holds only maintainer SQL fragments, which
+carry the same trust as the whole statements they replace, and ``?``
+placeholders; the dates of a confirmed period travel beside it as
+parameters, each decoded from a strictly-shaped rule first. Nothing the user
+typed and nothing a document said is ever part of the text.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 from queryagent.workflow.errors import MappingNotFound, WorkflowStateError
 from queryagent.workflow.mappings import QueryMapping
 from queryagent.workflow.models import PERIOD_RULE_KEY, VARIANT_RULE_KEY, BusinessDefinition
 from queryagent.workflow.periods import Period
+
+
+@dataclass(frozen=True)
+class CompiledQuery:
+    """A statement and the values bound into it.
+
+    ``sql`` uses ``?`` placeholders, filled in order from ``params`` by the
+    connector's driver. The pair is what a run records, so the audit trail
+    shows the statement exactly as it was sent and the values separately.
+    """
+
+    sql: str
+    params: tuple[str, ...] = ()
 
 
 class TemplateCompiler:
@@ -36,8 +50,8 @@ class TemplateCompiler:
         self._templates = dict(templates)
         self._dialect = dialect
 
-    def compile(self, definition: BusinessDefinition) -> str:
-        """Return the SQL for this confirmed definition.
+    def compile(self, definition: BusinessDefinition) -> CompiledQuery:
+        """Return the statement and values for this confirmed definition.
 
         Raises:
             MappingNotFound: No mapping covers it, or the mapping cannot apply
@@ -63,7 +77,7 @@ class TemplateCompiler:
                     "请维护者改为结构化映射（from / measure / time_column）。"
                     "不会忽略区间去跑全量。"
                 )
-            return entry
+            return CompiledQuery(entry)
         return _compose(entry, period, self._dialect, where)
 
 
@@ -77,25 +91,30 @@ def _period_of(definition: BusinessDefinition) -> Period | None:
         raise WorkflowStateError(f"统计区间不是规范格式：{rule.value!r}") from exc
 
 
-def _compose(entry: QueryMapping, period: Period | None, dialect: str, where: str) -> str:
+def _compose(
+    entry: QueryMapping, period: Period | None, dialect: str, where: str
+) -> CompiledQuery:
     # Maintainer fragments are parenthesised so an OR inside one cannot
     # escape the period condition beside it.
     conditions = [f"({fragment})" for fragment in entry.where]
+    params: tuple[str, ...] = ()
     if period is not None:
         if not entry.time_column:
             raise MappingNotFound(
                 f"{where} 的映射没有声明 time_column，无法施加统计区间 {period.render()}"
             )
-        # Bare dates, not 'YYYY-MM-DD 00:00:00'. A column storing dates as text
-        # ('2026-08-01') sorts *below* '2026-08-01 00:00:00' in SQLite, so a
-        # timestamp-shaped lower bound silently dropped the first day of every
-        # period. A bare date bounds date-only and timestamp text alike, and
-        # MySQL and ClickHouse both read it as midnight.
-        start = period.start.isoformat()
-        end = period.end_exclusive.isoformat()
-        conditions += [f"{entry.time_column} >= '{start}'", f"{entry.time_column} < '{end}'"]
+        # Bound as bare ISO dates, not 'YYYY-MM-DD 00:00:00'. A column storing
+        # dates as text ('2026-08-01') sorts *below* '2026-08-01 00:00:00' in
+        # SQLite, so a timestamp-shaped lower bound silently dropped the first
+        # day of every period. A bare date bounds date-only and timestamp text
+        # alike, and MySQL and ClickHouse both read it as midnight. Strings
+        # rather than date objects: sqlite3's default date adapter is
+        # deprecated, and the drivers would render the same text anyway.
+        conditions += [f"{entry.time_column} >= ?", f"{entry.time_column} < ?"]
+        params = (period.start.isoformat(), period.end_exclusive.isoformat())
     clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-    return f"SELECT {entry.measure} AS {_quote(entry.label, dialect)} FROM {entry.source}{clause}"
+    sql = f"SELECT {entry.measure} AS {_quote(entry.label, dialect)} FROM {entry.source}{clause}"
+    return CompiledQuery(sql, params)
 
 
 def _quote(label: str, dialect: str) -> str:

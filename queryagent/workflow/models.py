@@ -271,6 +271,7 @@ class QueryRun:
     idempotency_key: str
     status: RunStatus
     sql: str = ""
+    params: tuple[str, ...] = ()
     columns: tuple[str, ...] = ()
     rows: tuple[tuple[object, ...], ...] = ()
     truncated: bool = False

@@ -10,7 +10,7 @@ from __future__ import annotations
 import queue
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from typing import Any
 
@@ -18,6 +18,7 @@ import pymysql
 import pymysql.cursors
 
 from queryagent.connectors.base import QueryResult
+from queryagent.connectors.params import to_pyformat
 from queryagent.errors import QueryError
 from queryagent.schema import ColumnSchema, TableSchema
 
@@ -96,8 +97,15 @@ class MySQLConnector:
             for table_name, table_comment in table_rows
         ]
 
-    def execute(self, sql: str, *, timeout_s: int, max_rows: int) -> QueryResult:
-        """Run one query; enforce timeout server-side and cap returned rows."""
+    def execute(
+        self, sql: str, *, timeout_s: int, max_rows: int, params: Sequence[object] = ()
+    ) -> QueryResult:
+        """Run one query; enforce timeout server-side and cap returned rows.
+
+        PyMySQL escapes values client-side and substitutes them with ``%``,
+        so a statement with values is rewritten to ``%s`` placeholders with
+        its other ``%`` signs doubled. Without values it is sent untouched.
+        """
         start = time.monotonic()
         try:
             with self._connection() as conn:
@@ -105,7 +113,10 @@ class MySQLConnector:
                 consumed = False
                 try:
                     _apply_timeout(cursor, timeout_s)
-                    cursor.execute(sql)
+                    if params:
+                        cursor.execute(to_pyformat(sql, len(params), named=False), tuple(params))
+                    else:
+                        cursor.execute(sql)
                     raw_rows = cursor.fetchmany(max_rows + 1)
                     columns = tuple(str(desc[0]) for desc in cursor.description or ())
                     consumed = len(raw_rows) <= max_rows

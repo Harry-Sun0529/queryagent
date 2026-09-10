@@ -64,12 +64,16 @@ CREATE TABLE IF NOT EXISTS runs (
     idempotency_key TEXT NOT NULL UNIQUE,
     status TEXT NOT NULL,
     sql TEXT NOT NULL DEFAULT '',
+    params TEXT NOT NULL DEFAULT '[]',
     columns TEXT NOT NULL DEFAULT '[]',
     rows TEXT NOT NULL DEFAULT '[]',
     truncated INTEGER NOT NULL DEFAULT 0,
     error TEXT NOT NULL DEFAULT ''
 );
 """
+
+# Columns added to ``runs`` after its first release, with their declarations.
+_LATER_RUN_COLUMNS = (("params", "TEXT NOT NULL DEFAULT '[]'"),)
 
 
 class SqliteWorkflowStore:
@@ -82,6 +86,19 @@ class SqliteWorkflowStore:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
+        self._add_missing_columns()
+
+    def _add_missing_columns(self) -> None:
+        """Bring a state file written by an earlier version up to this schema.
+
+        ``CREATE TABLE IF NOT EXISTS`` leaves an existing table alone, so a
+        column added later has to be added here — or the first run recorded
+        after an upgrade fails on a state file that was working yesterday.
+        """
+        present = {row["name"] for row in self._conn.execute("PRAGMA table_info(runs)")}
+        for column, declaration in _LATER_RUN_COLUMNS:
+            if column not in present:
+                self._conn.execute(f"ALTER TABLE runs ADD COLUMN {column} {declaration}")
 
     def close(self) -> None:
         self._conn.close()
@@ -241,11 +258,12 @@ class SqliteWorkflowStore:
 
     def finish_run(self, run: QueryRun) -> None:
         self._conn.execute(
-            "UPDATE runs SET status=?, sql=?, columns=?, rows=?, truncated=?, error=? "
+            "UPDATE runs SET status=?, sql=?, params=?, columns=?, rows=?, truncated=?, error=? "
             "WHERE run_id=?",
             (
                 run.status.value,
                 run.sql,
+                json.dumps(list(run.params), ensure_ascii=False),
                 json.dumps(list(run.columns), ensure_ascii=False),
                 json.dumps([list(row) for row in run.rows], ensure_ascii=False, default=str),
                 int(run.truncated),
@@ -348,6 +366,7 @@ def _decode_run(row: sqlite3.Row) -> QueryRun:
         idempotency_key=row["idempotency_key"],
         status=RunStatus(row["status"]),
         sql=row["sql"],
+        params=tuple(json.loads(row["params"])),
         columns=tuple(json.loads(row["columns"])),
         rows=tuple(tuple(r) for r in json.loads(row["rows"])),
         truncated=bool(row["truncated"]),

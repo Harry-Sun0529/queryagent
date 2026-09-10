@@ -10,7 +10,7 @@ import pytest
 from queryagent.connectors.base import QueryResult
 from queryagent.metrics.base import Metric, MetricVariant
 from queryagent.workflow.builder import MetricDraftBuilder
-from queryagent.workflow.compiler import TemplateCompiler
+from queryagent.workflow.compiler import CompiledQuery, TemplateCompiler
 from queryagent.workflow.errors import (
     ConfirmationRequired,
     MappingNotFound,
@@ -80,9 +80,11 @@ class CountingExecutor:
 
     def __init__(self) -> None:
         self.executed: list[str] = []
+        self.bound: list[tuple[str, ...]] = []
 
-    def run(self, sql: str) -> QueryResult:
-        self.executed.append(sql)
+    def run(self, query: CompiledQuery) -> QueryResult:
+        self.executed.append(query.sql)
+        self.bound.append(query.params)
         return QueryResult(columns=("n",), rows=((42,),), elapsed_ms=1, truncated=False)
 
 
@@ -601,8 +603,11 @@ def test_a_confirmation_made_today_runs_todays_dates_tomorrow(tmp_path: Path) ->
     run = _on(tmp_path, date(2026, 10, 2), executor).execute(
         ALICE, confirmation.confirmation_id, idempotency_key="k1"
     )
-    assert "created_at >= '2026-08-01'" in run.sql
-    assert "created_at < '2026-09-01'" in run.sql
+    assert "created_at >= ? AND created_at < ?" in run.sql
+    assert run.params == ("2026-08-01", "2026-09-01")
+    assert executor.bound == [run.params]  # what was sent is what was recorded
+    reread = _on(tmp_path, date(2026, 10, 2), CountingExecutor()).get_run(ALICE, run.run_id)
+    assert reread.params == run.params
 
 
 def test_changing_the_period_after_confirmation_invalidates_it(tmp_path: Path) -> None:
