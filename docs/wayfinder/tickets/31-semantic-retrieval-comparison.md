@@ -64,3 +64,33 @@ provider 的语义排序、固定同义问句集、`eval/run_retrieval_check.py`
 后续要补的一步：拿到 embedding key 后跑
 `python eval/run_retrieval_check.py --output eval/results/retrieval-<日期>`，
 补齐对照行。
+
+## 补记（2026-09-10）：对照补齐，并推翻了上面一条设计结论
+
+拿到硅基流动的 key 后补跑，证据在
+`eval/results/retrieval-2026-09-10-floor-0.50/`：
+
+| 方案 | Recall@3 | 不相关问题误检 |
+|---|---:|---:|
+| 关键词 | 9/13 | 0/8 |
+| 语义（bge-m3，下限 0.5） | 12/13 | 1/8 |
+
+同义问句集在测量前已冻结（9 月 9 日随 `5ee4784` 入库，其间未改）。
+
+**上文"余弦下限 0.35，这条有测试钉着"是错的。** 测试钉住的是假向量上的行为；
+真模型上 0.35 让 8 条不相关问题中的 6 条拿回"证据"。正确证据最低 0.535、不相关
+最高 0.549，两个分布重叠，不存在能分干净的单一阈值。处理：
+
+- 下限改为 `LocalKnowledgeProvider(min_similarity=...)` 与配置项
+  `knowledge.embedding.min_similarity`，默认 0.5；拒绝 `(0, 1)` 以外的值。
+- 默认值是看过不相关问题集的分数后选的，**误检 1/8 是样本内数字**，报告与 README
+  都这么写。
+- 评测补上此前 Done-when 写了、脚本却漏掉的"无证据时的行为"——另起
+  `eval/knowledge/unrelated.yaml`，不动已冻结的同义问句集。
+
+**另一处文档与实现不符**：README/CHANGELOG 说语义检索"配置即可开启"，但配置加载器
+从未读取 `embedding` 段、`flow` 永远构造不带 embedder 的 provider——语义检索只在
+评测脚本里可达。现已接上：`kb import` 生成向量并说明正文发往了哪个端点；`flow` 在
+语义已配置但该业务空间尚无向量时，明说本次按关键词检索（K10）。
+
+教训：**阈值类参数只在假数据上测过，等于没测。**

@@ -87,6 +87,23 @@ class KnowledgeSource:
 
 
 @dataclass(frozen=True)
+class EmbeddingConfig:
+    """Optional semantic retrieval over an OpenAI-compatible embeddings endpoint.
+
+    The key is never here; it comes from ``QUERYAGENT_EMBEDDING_API_KEY``.
+    Enabling this sends document text to ``base_url`` — a data-boundary
+    decision for whoever deploys it, which is why it is off unless present.
+
+    ``min_similarity`` is None to take the provider's default, which is
+    calibrated for one model; set it when changing model.
+    """
+
+    base_url: str
+    model: str
+    min_similarity: float | None = None
+
+
+@dataclass(frozen=True)
 class KnowledgeConfig:
     """Document evidence (v0.6, slice 1B).
 
@@ -103,6 +120,7 @@ class KnowledgeConfig:
     root: str = ""
     index_path: str = ".queryagent/knowledge.db"
     sources: tuple[KnowledgeSource, ...] = ()
+    embedding: EmbeddingConfig | None = None
 
     @property
     def enabled(self) -> bool:
@@ -178,6 +196,25 @@ def _load_knowledge(section: dict[str, Any]) -> KnowledgeConfig:
         root=root,
         index_path=_opt_str(section, "index_path") or ".queryagent/knowledge.db",
         sources=tuple(sources),
+        embedding=_load_embedding(section.get("embedding")),
+    )
+
+
+def _load_embedding(section: Any) -> EmbeddingConfig | None:
+    if not section:
+        return None
+    where = "knowledge.embedding"
+    if not isinstance(section, dict):
+        raise ValueError(f"{where} must be a mapping")
+    floor = _opt_number(section, "min_similarity")
+    if floor is not None and not 0.0 < floor < 1.0:
+        raise ValueError(
+            f"{where}.min_similarity must be strictly between 0 and 1, got {floor}"
+        )
+    return EmbeddingConfig(
+        base_url=_req_str(section, "base_url", where),
+        model=_req_str(section, "model", where),
+        min_similarity=floor,
     )
 
 

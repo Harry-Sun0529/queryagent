@@ -1,0 +1,57 @@
+{
+  "k": 3,
+  "cases": 13,
+  "workspace": "ops",
+  "keyword": {
+    "recall_at_k": 0.6923076923076923,
+    "hits": 9,
+    "total": 13,
+    "misses": [
+      {
+        "question": "内部测试的号算不算进去",
+        "intent": "test_account_filter"
+      },
+      {
+        "question": "同一个人买两次算几个人",
+        "intent": "active_buyers"
+      },
+      {
+        "question": "GMV 按什么状态统计",
+        "intent": "gmv_basis"
+      },
+      {
+        "question": "交易额归到哪一天",
+        "intent": "gmv_basis"
+      }
+    ],
+    "false_evidence": {
+      "count": 0,
+      "total": 8,
+      "questions": []
+    }
+  },
+  "semantic": {
+    "recall_at_k": 0.9230769230769231,
+    "hits": 12,
+    "total": 13,
+    "misses": [
+      {
+        "question": "GMV 按什么状态统计",
+        "intent": "gmv_basis"
+      }
+    ],
+    "model": "BAAI/bge-m3",
+    "min_similarity": 0.5,
+    "false_evidence": {
+      "count": 1,
+      "total": 8,
+      "questions": [
+        {
+          "question": "客服响应时长怎么算",
+          "top": "运营数据手册 › 成交额",
+          "score": 0.55
+        }
+      ]
+    }
+  }
+}

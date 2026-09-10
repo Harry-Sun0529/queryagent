@@ -1,0 +1,82 @@
+{
+  "k": 3,
+  "cases": 13,
+  "workspace": "ops",
+  "keyword": {
+    "recall_at_k": 0.6923076923076923,
+    "hits": 9,
+    "total": 13,
+    "misses": [
+      {
+        "question": "内部测试的号算不算进去",
+        "intent": "test_account_filter"
+      },
+      {
+        "question": "同一个人买两次算几个人",
+        "intent": "active_buyers"
+      },
+      {
+        "question": "GMV 按什么状态统计",
+        "intent": "gmv_basis"
+      },
+      {
+        "question": "交易额归到哪一天",
+        "intent": "gmv_basis"
+      }
+    ],
+    "false_evidence": {
+      "count": 0,
+      "total": 8,
+      "questions": []
+    }
+  },
+  "semantic": {
+    "recall_at_k": 0.9230769230769231,
+    "hits": 12,
+    "total": 13,
+    "misses": [
+      {
+        "question": "GMV 按什么状态统计",
+        "intent": "gmv_basis"
+      }
+    ],
+    "model": "BAAI/bge-m3",
+    "min_similarity": 0.35,
+    "false_evidence": {
+      "count": 6,
+      "total": 8,
+      "questions": [
+        {
+          "question": "机房温度多少",
+          "top": "运营数据手册",
+          "score": 0.38
+        },
+        {
+          "question": "今天天气怎么样",
+          "top": "运营数据手册",
+          "score": 0.43
+        },
+        {
+          "question": "服务器 CPU 使用率是多少",
+          "top": "运营数据手册 › 新增用户",
+          "score": 0.412
+        },
+        {
+          "question": "退货运费谁承担",
+          "top": "运营数据手册 › 成交额",
+          "score": 0.438
+        },
+        {
+          "question": "优惠券怎么核销",
+          "top": "运营数据手册 › 活跃购买用户",
+          "score": 0.476
+        },
+        {
+          "question": "客服响应时长怎么算",
+          "top": "运营数据手册 › 成交额",
+          "score": 0.55
+        }
+      ]
+    }
+  }
+}

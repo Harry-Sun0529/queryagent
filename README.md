@@ -179,12 +179,21 @@ rather than embedding a vector database. **Enabling it sends document text
 to that endpoint** — a data-boundary decision for whoever deploys it. See
 [ADR-007](docs/adr/007-document-evidence-retrieval.md).
 
-Measured so far: keyword Recall@3 = 9/13 on a fixed paraphrase set
-([evidence](eval/results/retrieval-2026-09-09-keyword-baseline/README.md)).
-The semantic half is **not measured** — it needs an embeddings key this
-project does not have. The four misses are all zero-literal-overlap
-synonyms, which is an argument for semantic retrieval, not evidence that it
-works.
+Measured on a fixed paraphrase set (13 questions) and on questions the
+corpus cannot answer (8), k=3
+([evidence](eval/results/retrieval-2026-09-10-floor-0.50/README.md)):
+
+| mode | Recall@3 | false evidence on unrelated questions |
+|---|---:|---:|
+| keyword | 9/13 | 0/8 |
+| semantic (BAAI/bge-m3, floor 0.5) | 12/13 | 1/8 |
+
+Semantic retrieval recovers three of the four zero-literal-overlap synonyms
+keyword misses, and pays for it in false evidence. The similarity floor is a
+property of the embedding model and is configurable; the 0.5 default was
+chosen after seeing the unrelated-set scores, so the 1/8 is in-sample. At
+the 0.35 that passed every stub test, 6 of 8 unrelated questions retrieved
+"evidence". Twenty-one questions and one run support no statistical claim.
 
 ### MySQL / ClickHouse (Docker)
 

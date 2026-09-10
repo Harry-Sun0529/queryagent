@@ -32,7 +32,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from queryagent.knowledge.embedding import ENV_KEY, EmbeddingClient  # noqa: E402
 from queryagent.knowledge.index import SqliteKnowledgeIndex  # noqa: E402
-from queryagent.knowledge.provider import LocalKnowledgeProvider, scope_of  # noqa: E402
+from queryagent.knowledge.provider import (  # noqa: E402
+    DEFAULT_MIN_SIMILARITY,
+    LocalKnowledgeProvider,
+    scope_of,
+)
 from queryagent.workflow.models import ActorContext  # noqa: E402
 
 
@@ -66,10 +70,37 @@ def recall_at_k(provider: LocalKnowledgeProvider, actor: ActorContext, cases, k:
     return hits, len(cases), misses
 
 
+def false_evidence(provider: LocalKnowledgeProvider, actor: ActorContext, questions, k: int):
+    """Questions that retrieved *something* although the corpus has nothing.
+
+    The other half of retrieval quality: a mode that always returns its top
+    chunk scores perfectly on recall and makes "no evidence" unreachable.
+    """
+    flagged = []
+    for question in questions:
+        found = provider.search(scope_of(actor), question, limit=k)
+        if found:
+            flagged.append(
+                {
+                    "question": question,
+                    "top": " › ".join(found[0].chunk.section_path),
+                    "score": round(found[0].score, 3),
+                }
+            )
+    return len(flagged), len(questions), flagged
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True, help="report directory (must not exist)")
     parser.add_argument("--cases", default="eval/knowledge/paraphrases.yaml")
+    parser.add_argument("--unrelated", default="eval/knowledge/unrelated.yaml")
+    parser.add_argument(
+        "--min-similarity",
+        type=float,
+        default=DEFAULT_MIN_SIMILARITY,
+        help="semantic cosine floor (model-specific)",
+    )
     parser.add_argument("--corpus", default="examples/knowledge/ops")
     parser.add_argument("--k", type=int, default=3)
     parser.add_argument("--embedding-model", default="BAAI/bge-m3")
@@ -89,18 +120,29 @@ def main(argv: list[str] | None = None) -> int:
 
     report: dict[str, object] = {"k": args.k, "cases": len(cases), "workspace": workspace}
 
+    unrelated = tuple(
+        yaml.safe_load(Path(args.unrelated).read_text(encoding="utf-8"))["questions"]
+    )
+
     keyword = LocalKnowledgeProvider(index)
     hits, total, misses = recall_at_k(keyword, actor, cases, args.k)
+    wrong, asked, flagged = false_evidence(keyword, actor, unrelated, args.k)
     report["keyword"] = {"recall_at_k": hits / total, "hits": hits, "total": total,
-                         "misses": misses}
+                         "misses": misses,
+                         "false_evidence": {"count": wrong, "total": asked,
+                                            "questions": flagged}}
 
     if os.environ.get(ENV_KEY):
         client = EmbeddingClient(model=args.embedding_model, base_url=args.embedding_base_url)
         index.embed_missing(workspace, client)
-        semantic = LocalKnowledgeProvider(index, client)
+        semantic = LocalKnowledgeProvider(index, client, min_similarity=args.min_similarity)
         hits, total, misses = recall_at_k(semantic, actor, cases, args.k)
+        wrong, asked, flagged = false_evidence(semantic, actor, unrelated, args.k)
         report["semantic"] = {"recall_at_k": hits / total, "hits": hits, "total": total,
-                              "misses": misses, "model": args.embedding_model}
+                              "misses": misses, "model": args.embedding_model,
+                              "min_similarity": args.min_similarity,
+                              "false_evidence": {"count": wrong, "total": asked,
+                                                 "questions": flagged}}
     else:
         report["semantic"] = {
             "measured": False,

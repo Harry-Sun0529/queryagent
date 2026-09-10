@@ -33,7 +33,24 @@ MIN_SCORE = 2.0  # one shared bigram is noise, not a match (same as metric match
 # Cosine floor. Embeddings give every pair of texts *some* similarity, so
 # without a floor an unrelated question always retrieves the top chunk and
 # "no relevant evidence" becomes unreachable.
-MIN_SIMILARITY = 0.35
+DEFAULT_MIN_SIMILARITY = 0.5
+"""Cosine floor below which a semantic hit is not evidence.
+
+Without a floor, embeddings score *any* two texts above zero, so "no
+relevant evidence" becomes unreachable and an unrelated question always
+gets the top chunk. The floor is a property of the embedding model, not of
+this code, which is why providers take it as a setting.
+
+This default is calibrated for BAAI/bge-m3 on the demo corpus, and was
+measured live rather than on stub vectors — the 0.35 that passed every stub
+test let 6 of 8 unrelated questions through ("今天天气怎么样" scored 0.429
+against the ops handbook). At 0.5, every correct hit in the paraphrase set
+survives (lowest 0.535) and 7 of 8 unrelated questions are refused. The two
+distributions overlap — one unrelated question scores 0.549 — so no single
+threshold separates them, and because 0.5 was chosen after seeing those
+scores, its false-evidence rate on that set is an in-sample number.
+Recalibrate when changing model.
+"""
 
 
 @dataclass(frozen=True)
@@ -80,10 +97,20 @@ class LocalKnowledgeProvider:
     """Keyword retrieval over a local :class:`SqliteKnowledgeIndex`."""
 
     def __init__(
-        self, index: SqliteKnowledgeIndex, embedder: EmbeddingClient | None = None
+        self,
+        index: SqliteKnowledgeIndex,
+        embedder: EmbeddingClient | None = None,
+        *,
+        min_similarity: float = DEFAULT_MIN_SIMILARITY,
     ) -> None:
+        if not 0.0 < min_similarity < 1.0:
+            raise ValueError(
+                f"min_similarity must be strictly between 0 and 1, got {min_similarity}: "
+                "0 returns the top chunk for any question, 1 returns nothing ever"
+            )
         self.index = index
         self._embedder = embedder
+        self._min_similarity = min_similarity
 
     @property
     def is_semantic(self) -> bool:
@@ -141,7 +168,7 @@ class LocalKnowledgeProvider:
             if vector is None:
                 continue
             score = cosine(query_vector, vector)
-            if score < MIN_SIMILARITY:
+            if score < self._min_similarity:
                 continue
             ref = EvidenceRef(
                 doc_id=chunk.doc_id, chunk_id=chunk.chunk_id, content_hash=chunk.content_hash
