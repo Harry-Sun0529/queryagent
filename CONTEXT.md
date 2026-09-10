@@ -49,6 +49,12 @@ specs for in-flight work in `docs/specs/`.
 - **Mapping（映射）** — the maintainer-declared 口径 → SQL table
   (`query_mappings.yaml`). A confirmed 口径 with no mapping is refused, not
   guessed.
+- **Disagreement（文档之间的分歧）／Required rule（必需规则）** — two
+  documents stating a rule differently become two cited readings; nothing
+  runs until the user adopts one, and the adoption is 本次约定 citing that
+  document. A metric's `required_rules` are gaps until a document states them
+  or the user writes them down. Neither changes the SQL: documents explain,
+  mappings execute.
 - **Trace** — one run's event stream persisted as JSONL, replayable
   (ADR-005). **Checkpoint** — the eval's per-case result log, which
   `--resume` reuses when the effective input/data/code signature matches.

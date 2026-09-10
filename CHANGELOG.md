@@ -14,8 +14,12 @@ frozen from v0.1.1 (spec §四).
   via `pip install -e ".[docs]"`), and `flow` drafts 口径 from what the
   asking identity is allowed to read. Rules drawn from documents are marked
   「文档依据」 and carry file, section and line. Two documents disagreeing
-  become two cited candidates and neither is chosen; a rule the documents do
-  not state is listed as missing rather than defaulted. Evidence is
+  appear side by side under 「文档之间的分歧」, each with its citation, and
+  nothing runs until the user adopts one (`--adopt counting_basis:0`) —
+  recorded as 本次约定, keeping that document's citation. A rule a metric
+  declares in `required_rules` that no document states is listed as missing
+  and has to be written down by the user (`--rule time_window=按自然月统计`);
+  nothing defaults it. Evidence is
   re-checked before confirming and before executing, and a withdrawn or
   edited source expires the draft without changing its version or hash.
 - The model cannot fabricate a citation: it selects an index into a menu the
@@ -24,6 +28,10 @@ frozen from v0.1.1 (spec §四).
   in the rule present in the quote. What it cannot do is prove the quote
   *supports* the rule — that judgement stays with the reader, which is why
   the quote and its location are on the sheet.
+- The result line names only the reading the query executed. Document rules
+  and 本次约定 explain the 口径 but are not compiled into SQL — the maintainer
+  mapping is what runs — so they are listed in a note saying the two are not
+  cross-checked, rather than presented as the number's definition.
 - Semantic retrieval as an option (`knowledge.embedding` plus
   `QUERYAGENT_EMBEDDING_API_KEY`, any OpenAI-compatible `/v1/embeddings`): no
   vector database, no numpy, off unless configured, and it says so when it
@@ -54,6 +62,18 @@ frozen from v0.1.1 (spec §四).
   Web or MCP entry point calls.
 - The credential-key rejection lived inside the LLM config loader, so every
   new config section silently opted out of it.
+- Two documents disagreeing on a rule the maintainer had not declared
+  required were silently dropped in `flow`: adding a second team's handbook
+  made the cited counting basis disappear from the sheet. The one test of
+  this behaviour passed a required key; `flow` passes none.
+- The line under a result listed document rules the executed SQL did not
+  apply — 「统计周期=按自然月」 above an all-time COUNT.
+- `required_rules` had been specified but never implemented, so "a rule the
+  documents do not state is listed as missing" could not happen in `flow`.
+- The extraction prompt named rule keys without defining them, and the model
+  filed an attribution date under time_window, filling a gap the user should
+  have been asked about. Keys are now defined in the prompt — a mitigation,
+  not a guarantee.
 
 Scope, stated plainly. Document ACLs are per business workspace, not per
 subject. There is no query budget. Workflow and index state are local SQLite

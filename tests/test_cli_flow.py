@@ -188,3 +188,201 @@ def test_kb_import_with_embedding_configured_names_the_missing_key_before_any_wo
     out, err = capsys.readouterr()
     assert "QUERYAGENT_EMBEDDING_API_KEY" in err
     assert "已纳入" not in out
+
+
+# ------------------------------------------- T03: handbooks that disagree
+
+HANDBOOKS = {
+    "运营手册.md": "# 运营手册\n\n## 新增用户\n\n新增用户按 users.created_at 的注册日期计数。\n",
+    "增长周报.md": (
+        "# 增长周报\n\n## 新增用户\n\n"
+        "新增用户按 users.first_order_at 的首单日期计数。\n"
+    ),
+}
+
+
+class _CitingLLM:
+    """Emits one rule per excerpt, citing each by the number the prompt gave it.
+
+    Registered-date rules are emitted first so candidate numbering is stable
+    regardless of retrieval order: counting_basis:0 is always 按注册日期计数.
+    """
+
+    def complete(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        import json
+        import re
+
+        from queryagent.llm.base import ModelResponse
+
+        blocks = re.findall(
+            r"<<<EVIDENCE (\d+)>>>\n(.*?)<<<END EVIDENCE", messages[-1].content, re.S
+        )
+        rules = []
+        readings = (("created_at", "按注册日期计数"), ("first_order_at", "按首单日期计数"))
+        for column, value in readings:
+            for index, body in blocks:
+                found = re.search(rf"新增用户按 users\.{column} 的\S+?计数", body)
+                if found:
+                    rules.append(
+                        {
+                            "key": "counting_basis",
+                            "value": value,
+                            "citation": int(index),
+                            "quote": found.group(0),
+                        }
+                    )
+        return ModelResponse(
+            text=json.dumps({"rules": rules}, ensure_ascii=False),
+            tool_calls=(),
+            stop_reason="end_turn",
+            usage=None,
+        )
+
+
+def _with_disagreeing_handbooks(
+    config: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    docs = tmp_path / "kb"
+    docs.mkdir()
+    for name, text in HANDBOOKS.items():
+        (docs / name).write_text(text, encoding="utf-8")
+    config.write_text(
+        config.read_text(encoding="utf-8")
+        + f"knowledge:\n  root: {tmp_path}\n  index_path: {tmp_path / 'kb.db'}\n"
+        f"  sources:\n    - path: {docs}\n      workspace: ops\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("queryagent.cli.make_backend", lambda _llm: _CitingLLM())
+    assert main(["kb", "import", "--config", str(config)]) == 0
+
+
+def _flow_ops(config: Path, *extra: str) -> int:
+    return main(
+        ["flow", "新增用户有多少？", "--config", str(config), "--workspace", "ops", *extra]
+    )
+
+
+def test_two_handbooks_that_disagree_are_both_shown_and_nothing_runs(
+    config: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """T03 end to end: both readings on the sheet, each with its source."""
+    _with_disagreeing_handbooks(config, tmp_path, monkeypatch)
+    capsys.readouterr()
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "")
+    assert _flow_ops(config, "--variant", "registered", "--yes") == 2
+    out = capsys.readouterr().out
+    assert "文档之间的分歧 · 统计口径" in out
+    assert "运营手册.md" in out
+    assert "增长周报.md" in out
+    assert "没有执行任何查询" in out
+
+
+def test_adopting_a_handbook_records_the_users_choice_with_that_source(
+    config: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """D07: the words are the handbook's, the decision is the user's."""
+    _with_disagreeing_handbooks(config, tmp_path, monkeypatch)
+    capsys.readouterr()
+    code = _flow_ops(config, "--variant", "registered", "--adopt", "counting_basis:0", "--yes")
+    out = capsys.readouterr().out
+    assert code == 0
+    final_sheet = out[out.rfind("口径确认单") : out.find("结果（")]
+    assert "统计口径：按注册日期计数    [本次约定]" in final_sheet
+    assert "出处：运营手册.md" in final_sheet
+    assert "已采用其中一种" in final_sheet
+    assert "  3" in out.split("结果（")[1]
+
+
+def test_an_unknown_adopt_key_is_refused_and_lists_the_real_ones(
+    config: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _with_disagreeing_handbooks(config, tmp_path, monkeypatch)
+    capsys.readouterr()
+    assert _flow_ops(config, "--variant", "registered", "--adopt", "counting_basis:9", "--yes") == 2
+    assert "counting_basis:0" in capsys.readouterr().err
+
+
+def test_the_result_line_claims_only_what_the_query_executed(
+    config: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Document rules explain the 口径; the maintainer mapping is what runs.
+
+    A live run printed 「统计周期=按自然月」 in the result line above an
+    all-time COUNT — the number claimed a rule its query never applied.
+    """
+    _with_disagreeing_handbooks(config, tmp_path, monkeypatch)
+    capsys.readouterr()
+    _flow_ops(config, "--variant", "registered", "--adopt", "counting_basis:0", "--yes")
+    out = capsys.readouterr().out
+    recap = out.split("结果（")[1].splitlines()[0]
+    assert "选定口径=注册口径" in recap
+    assert "统计口径" not in recap
+    assert "系统不核对两者是否一致" in out
+
+
+def test_a_maintainer_only_result_carries_no_disclaimer(
+    config: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Nothing to disclaim when every confirmed rule is one the query applied."""
+    assert _flow(config, "--variant", "first_order", "--yes") == 0
+    assert "系统不核对" not in capsys.readouterr().out
+
+
+# ------------------------------------------------- K7: rules nothing stated
+
+
+def _require_time_window(tmp_path: Path) -> None:
+    (tmp_path / "metrics.yaml").write_text(
+        METRICS.replace(
+            "    tables: [users]\n", "    tables: [users]\n    required_rules: [time_window]\n", 1
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_a_rule_nothing_states_is_asked_for_and_marked_as_the_users(
+    config: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """D07: the user states it; the sheet says so; the result does not claim it."""
+    _require_time_window(tmp_path)
+    code = _flow(config, "--variant", "registered", "--rule", "time_window=按自然月统计", "--yes")
+    out = capsys.readouterr().out
+    assert code == 0
+    final_sheet = out[out.rfind("口径确认单") : out.find("结果（")]
+    assert "统计周期：按自然月统计    [本次约定]" in final_sheet
+    assert "统计周期" not in out.split("结果（")[1].splitlines()[0]
+    assert "系统不核对两者是否一致" in out
+
+
+def test_declining_to_state_a_required_rule_runs_nothing(
+    config: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _require_time_window(tmp_path)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "")
+    assert _flow(config, "--variant", "registered", "--yes") == 2
+    out = capsys.readouterr().out
+    assert "尚未确定：" in out and "统计周期" in out
+    assert "没有执行任何查询" in out
+
+
+def test_a_rule_for_a_gap_that_does_not_exist_is_refused(
+    config: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _require_time_window(tmp_path)
+    assert _flow(config, "--variant", "registered", "--rule", "refund_handling=x", "--yes") == 2
+    assert "time_window" in capsys.readouterr().err

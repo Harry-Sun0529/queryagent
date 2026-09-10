@@ -89,3 +89,24 @@ def test_missing_metrics_list_rejected(tmp_path: Path) -> None:
     path.write_text("not_metrics: []\n", encoding="utf-8")
     with pytest.raises(ValueError, match="metrics"):
         YamlMetricStore(path)
+
+
+def test_required_rules_are_loaded(tmp_path: Path) -> None:
+    path = tmp_path / "m.yaml"
+    path.write_text(
+        "metrics:\n  - name: gmv\n    definition: 成交额\n    required_rules: [time_window]\n",
+        encoding="utf-8",
+    )
+    metric = YamlMetricStore(path).get("gmv")
+    assert metric is not None
+    assert metric.required_rules == ("time_window",)
+
+
+def test_required_rules_must_be_a_list(tmp_path: Path) -> None:
+    path = tmp_path / "m.yaml"
+    path.write_text(
+        "metrics:\n  - name: gmv\n    definition: 成交额\n    required_rules: time_window\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="required_rules"):
+        YamlMetricStore(path)

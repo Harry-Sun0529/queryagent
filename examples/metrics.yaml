@@ -13,9 +13,9 @@ metrics:
   - name: new_users
     display_name: 新增用户
     aliases: [新用户, 新增, new users]
+    # 单行书写：YAML 折行会在中文句中插入空格，而这段文字会原样显示在确认单上。
     definition: >
-      统计新加入的用户数；不含 channel='internal_test' 的测试账号。按哪一列
-      归属日期，见下方 variants：两种取法数字差异很大，需选定后才能执行。
+      统计新加入的用户数；不含 channel='internal_test' 的测试账号。按哪一列归属日期，见下方 variants：两种取法数字差异很大，需选定后才能执行。
     caution: >
       运营口径按 users.first_order_at（首单口径）计数，两种口径数字差异很大；
       如问题未指明口径且涉及报表，需与用户确认采用哪种。
@@ -43,6 +43,9 @@ metrics:
       需与用户确认用支付口径还是净额口径。
     tables: [orders]
     sql_hint: "SUM(amount) FROM orders WHERE status = 'paid'"
+    # 口径必须写明统计周期。文档写明了就引用文档；没写就列为缺失，由用户本次约定补上，
+    # 系统不替用户默认一个周期。
+    required_rules: [time_window]
     variants:
       - key: paid
         label: 支付口径

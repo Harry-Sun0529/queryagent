@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from queryagent.knowledge.models import EvidenceHit, EvidenceRef, IndexedChunk
 from queryagent.knowledge.provider import RetrievalScope
 from queryagent.workflow.evidence_builder import EvidenceDraftBuilder
@@ -235,3 +237,149 @@ def test_an_injected_instruction_cannot_become_a_rule_value() -> None:
 def test_retrieval_is_scoped_to_the_actor() -> None:
     provider, _, _ = _build(_hits(REGISTERED), {"rules": []})
     assert provider.scopes == [RetrievalScope(subject_id="alice", workspace_id="ops")]
+
+
+# ------------------------------------------ T03: the configuration flow uses
+
+DISAGREEMENT = {
+    "rules": [
+        {
+            "key": "counting_basis",
+            "value": "按注册日期计数",
+            "citation": 0,
+            "quote": "新增用户按 users.created_at 的注册日期计数",
+        },
+        {
+            "key": "counting_basis",
+            "value": "按首单日期计数",
+            "citation": 1,
+            "quote": "新增用户按 users.first_order_at 的首单日期计数",
+        },
+    ]
+}
+
+
+def test_documents_disagreeing_block_even_when_no_key_is_required() -> None:
+    """T03, in the configuration `flow` actually uses: ``required_keys=()``.
+
+    The K6 test above passes a required key and `flow` passes none, so the
+    one test of this behaviour never reached the path users take — where the
+    disagreement was silently dropped, and adding a second team's handbook
+    made the counting basis vanish from the sheet.
+    """
+    _, _, definition = _build(_hits(REGISTERED, FIRST_ORDER), DISAGREEMENT, required=())
+    assert {c.summary for c in definition.candidates} == {"按注册日期计数", "按首单日期计数"}
+    assert all(c.rule_key == "counting_basis" for c in definition.candidates)
+    assert all(c.evidence_ref for c in definition.candidates)
+    assert "counting_basis" in definition.missing
+
+
+def test_one_grounded_reading_of_an_unrequired_key_does_not_block() -> None:
+    """§4.5.5 still holds: extraction fills holes, it does not dig them."""
+    single = {"rules": [DISAGREEMENT["rules"][0]]}
+    _, _, definition = _build(_hits(REGISTERED), single, required=())
+    assert definition.rule("counting_basis") is not None
+    assert definition.missing == ()
+
+
+def test_a_document_disagreement_survives_composition_with_the_metric() -> None:
+    """The second place it was lost: the composite kept only the metric's gaps."""
+    from queryagent.metrics.base import Metric
+    from queryagent.workflow.builder import MetricDraftBuilder
+    from queryagent.workflow.evidence_builder import CompositeDraftBuilder
+
+    class OneMetric:
+        def match(self, question: str, top_k: int = 3) -> list[Metric]:
+            return [Metric(name="new_users", definition="新增用户数", display_name="新增用户")]
+
+        def get(self, name: str) -> Metric | None:
+            return None
+
+    evidence = EvidenceDraftBuilder(
+        StubProvider(_hits(REGISTERED, FIRST_ORDER)), RecordingLLM(DISAGREEMENT), required_keys=()
+    )
+    composite = CompositeDraftBuilder(MetricDraftBuilder(OneMetric()), evidence)
+    definition = composite.build("上个月新增用户有多少？", ALICE)
+    assert "counting_basis" in definition.missing
+    assert not definition.is_complete
+
+
+# ------------------------------------ K7: required rules the documents fill
+
+
+def _metric_store(**fields: object) -> object:
+    from queryagent.metrics.base import Metric
+
+    metric = Metric(name="new_users", definition="新增用户数", display_name="新增用户", **fields)  # type: ignore[arg-type]
+
+    class Store:
+        def match(self, question: str, top_k: int = 3) -> list[Metric]:
+            return [metric]
+
+        def get(self, name: str) -> Metric | None:
+            return metric
+
+    return Store()
+
+
+def _composite(hits: tuple[EvidenceHit, ...], payload: dict[str, object], **fields: object):
+    from queryagent.workflow.builder import MetricDraftBuilder
+    from queryagent.workflow.evidence_builder import CompositeDraftBuilder
+
+    evidence = EvidenceDraftBuilder(StubProvider(hits), RecordingLLM(payload), required_keys=())
+    builder = CompositeDraftBuilder(MetricDraftBuilder(_metric_store(**fields)), evidence)  # type: ignore[arg-type]
+    return builder.build("上个月新增用户有多少？", ALICE)
+
+
+def test_a_required_rule_starts_as_a_gap_on_the_maintainer_side() -> None:
+    from queryagent.workflow.builder import MetricDraftBuilder
+
+    store = _metric_store(required_rules=("time_window",))
+    definition = MetricDraftBuilder(store).build("新增用户")  # type: ignore[arg-type]
+    assert definition.missing == ("time_window",)
+
+
+def test_an_unknown_required_rule_is_a_maintainer_config_error() -> None:
+    from queryagent.workflow.builder import MetricDraftBuilder
+
+    with pytest.raises(ValueError, match="required_rules"):
+        MetricDraftBuilder(_metric_store(required_rules=("vibes",))).build("新增用户")  # type: ignore[arg-type]
+
+
+def test_one_grounded_document_rule_fills_a_required_gap() -> None:
+    single = {"rules": [DISAGREEMENT["rules"][0]]}
+    definition = _composite(_hits(REGISTERED), single, required_rules=("counting_basis",))
+    rule = definition.rule("counting_basis")
+    assert rule is not None and rule.source is RuleSource.DOC
+    assert "counting_basis" not in definition.missing
+
+
+def test_documents_silent_on_a_required_rule_leave_the_gap_open() -> None:
+    """K7/D07: silence is listed as missing, never defaulted."""
+    definition = _composite(_hits(REGISTERED), {"rules": []}, required_rules=("time_window",))
+    assert "time_window" in definition.missing
+    assert not definition.is_complete
+
+
+def test_documents_disagreeing_on_a_required_rule_keep_the_gap_open() -> None:
+    definition = _composite(
+        _hits(REGISTERED, FIRST_ORDER), DISAGREEMENT, required_rules=("counting_basis",)
+    )
+    assert definition.missing.count("counting_basis") == 1
+    assert len([c for c in definition.candidates if c.rule_key == "counting_basis"]) == 2
+
+
+def test_the_extraction_prompt_defines_every_rule_key() -> None:
+    """A key that is only named is a key the model guesses at.
+
+    Live, it filed 「归属到 orders.created_at 的下单日期」 under time_window —
+    an attribution date read as a reporting period — which filled a gap the
+    maintainer required the user to state.
+    """
+    from queryagent.workflow.evidence_builder import build_extraction_messages
+    from queryagent.workflow.models import ALLOWED_RULE_KEYS
+
+    system = build_extraction_messages("问题", ())[0].content
+    for key in ALLOWED_RULE_KEYS:
+        assert f"- {key}:" in system
+    assert "NOT which date a record is attributed to" in system

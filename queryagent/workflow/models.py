@@ -60,6 +60,25 @@ class Rule:
         return self.source is RuleSource.USER
 
 
+# Maintainer-owned vocabulary. Extraction fills these holes; it never digs
+# new ones — a model inventing a rule key would otherwise create a blocking
+# `missing` entry out of nothing and no draft would ever be confirmable
+# (§4.5.5).
+ALLOWED_RULE_KEYS = (
+    "counting_basis",
+    "filters",
+    "time_window",
+    "dedup",
+    "refund_handling",
+    "amount_basis",
+)
+
+VARIANT_RULE_KEY = "variant"
+"""The one rule the compiler consumes: which maintainer-declared reading runs."""
+
+CONFLICT_SEPARATOR = ":"
+
+
 @dataclass(frozen=True)
 class Candidate:
     """One competing reading of the same metric (D02: conflicts stay visible)."""
@@ -68,6 +87,20 @@ class Candidate:
     label: str
     summary: str
     evidence_ref: str = ""
+
+    @property
+    def rule_key(self) -> str:
+        """The rule that choosing this candidate would fill.
+
+        Two kinds of candidate share this type. A maintainer-declared variant
+        (key ``registered``) decides what executes. One side of a document
+        disagreement (key ``counting_basis:1``) decides what the 口径 means
+        and executes nothing. Keeping them apart is what stops a user being
+        asked to pick a handbook sentence as if it were a query.
+        """
+        if CONFLICT_SEPARATOR in self.key:
+            return self.key.split(CONFLICT_SEPARATOR, 1)[0]
+        return VARIANT_RULE_KEY
 
 
 @dataclass(frozen=True)

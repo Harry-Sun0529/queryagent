@@ -44,6 +44,9 @@ class Metric:
         tables: Tables this metric touches (aids schema trimming later).
         sql_hint: Optional SQL fragment hint for the model.
         variants: Competing readings a user may choose between.
+        required_rules: Rule keys the 口径 must state before it can be
+            confirmed. A gap the documents do not fill is listed as missing
+            and has to be supplied by the user (§4.5.5, D07).
     """
 
     name: str
@@ -54,6 +57,7 @@ class Metric:
     tables: tuple[str, ...] = ()
     sql_hint: str = ""
     variants: tuple[MetricVariant, ...] = ()
+    required_rules: tuple[str, ...] = ()
 
 
 class MetricStore(Protocol):
