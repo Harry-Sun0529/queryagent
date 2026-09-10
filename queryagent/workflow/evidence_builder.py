@@ -21,13 +21,15 @@ execute with (§10.6, K11/K12).
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import dataclasses
+from collections.abc import Callable, Mapping, Sequence
 from typing import Protocol
 
-from queryagent.knowledge.models import EvidenceHit, IndexedChunk
+from queryagent.knowledge.models import EvidenceHit, EvidenceRef, IndexedChunk
 from queryagent.knowledge.provider import RetrievalScope, scope_of
 from queryagent.llm.base import Message, ModelResponse
 from queryagent.tools import ToolSpec
+from queryagent.workflow.enforcement import Terms, implied_variants, preselect_variant
 from queryagent.workflow.extraction import ALLOWED_RULE_KEYS, validate_extraction
 from queryagent.workflow.models import (
     CONFLICT_SEPARATOR,
@@ -44,6 +46,9 @@ __all__ = [
 ]
 
 MAX_EVIDENCE = 8
+
+Correspond = Callable[[str, str], tuple[str, ...]]
+"""(rule key, verified quote) → the readings that quote corresponds to."""
 
 _OPEN = "<<<EVIDENCE {index}>>>"
 _CLOSE = "<<<END EVIDENCE {index}>>>"
@@ -141,15 +146,25 @@ class EvidenceDraftBuilder:
         self._display_name = display_name
         self._limit = limit
 
-    def build(self, actor: ActorContext, question: str) -> BusinessDefinition:
-        """Retrieve, extract, and assemble — without ever trusting the model."""
+    def build(
+        self, actor: ActorContext, question: str, *, correspond: Correspond | None = None
+    ) -> BusinessDefinition:
+        """Retrieve, extract, and assemble — without ever trusting the model.
+
+        ``correspond``, when given, tags each surviving rule with the
+        executable readings its quote matches (T39). The quote is read back
+        out of the chunk its citation names, never taken from the model.
+        """
         hits = self._provider.search(scope_of(actor), question, limit=self._limit)
         chunks = tuple(hit.chunk for hit in hits)
         messages = build_extraction_messages(question, chunks)
         # No tools, deliberately: there is nothing on this path to execute.
         response = self._backend.complete(messages, None)
         result = validate_extraction(chunks, response.text)
-        return self._assemble(result.rules)
+        rules = result.rules
+        if correspond is not None:
+            rules = tuple(_with_correspondence(rule, chunks, correspond) for rule in rules)
+        return self._assemble(rules)
 
     def _assemble(self, extracted: tuple[Rule, ...]) -> BusinessDefinition:
         by_key: dict[str, list[Rule]] = {}
@@ -182,6 +197,7 @@ class EvidenceDraftBuilder:
                         label=rule.value,
                         summary=rule.value,
                         evidence_ref=rule.evidence_ref,
+                        implies=rule.implies,
                     )
                     for index, rule in enumerate(distinct.values())
                 )
@@ -196,6 +212,19 @@ class EvidenceDraftBuilder:
             missing=tuple(missing),
             candidates=tuple(candidates),
         )
+
+
+def _with_correspondence(
+    rule: Rule, chunks: tuple[IndexedChunk, ...], correspond: Correspond
+) -> Rule:
+    ref = EvidenceRef.parse(rule.evidence_ref)
+    chunk = next(
+        (c for c in chunks if (c.doc_id, c.chunk_id) == (ref.doc_id, ref.chunk_id)), None
+    )
+    if chunk is None:
+        return rule
+    implies = correspond(rule.key, chunk.text[ref.quote_start : ref.quote_end])
+    return dataclasses.replace(rule, implies=implies) if implies else rule
 
 
 class CompositeDraftBuilder:
@@ -214,17 +243,37 @@ class CompositeDraftBuilder:
     and adds nothing the compiler consumes. A document cannot introduce a
     variant, which keeps K-I10 intact: what executes is still only what a
     maintainer wrote down.
+
+    Since T39 a document can *choose* one of those variants: when the
+    maintainer declared the words each reading's SQL answers to
+    (``enforcement``) and the documents' verified quotes agree on one
+    reading, the draft arrives with it filled in as 「文档依据」. Choosing
+    among maintainer statements is the only way a document reaches the SQL.
     """
 
-    def __init__(self, metrics: object, evidence: EvidenceDraftBuilder | None) -> None:
+    def __init__(
+        self,
+        metrics: object,
+        evidence: EvidenceDraftBuilder | None,
+        *,
+        enforcement: Mapping[str, Terms] | None = None,
+    ) -> None:
         self._metrics = metrics
         self._evidence = evidence
+        self._enforcement = enforcement or {}
 
     def build(self, question: str, actor: ActorContext | None = None) -> BusinessDefinition:
         base: BusinessDefinition = self._metrics.build(question)  # type: ignore[attr-defined]
         if self._evidence is None or actor is None:
             return base
-        found = self._evidence.build(actor, question)
+        terms = self._enforcement.get(base.metric)
+        correspond: Correspond | None = None
+        if terms:
+
+            def correspond(key: str, quote: str) -> tuple[str, ...]:
+                return implied_variants(terms, key, quote)
+
+        found = self._evidence.build(actor, question, correspond=correspond)
         # Document rules are added, never substituted: a maintainer rule the
         # documents contradict becomes a visible disagreement rather than a
         # silent overwrite.
@@ -233,7 +282,7 @@ class CompositeDraftBuilder:
         # and one grounded document rule does. A disagreement does not: it
         # arrives in found.missing and keeps the gap open, with both readings.
         filled = {rule.key for rule in extra}
-        return BusinessDefinition(
+        merged = BusinessDefinition(
             metric=base.metric,
             display_name=base.display_name,
             rules=base.rules + extra,
@@ -241,3 +290,4 @@ class CompositeDraftBuilder:
             + tuple(key for key in found.missing if key not in base.missing),
             candidates=base.candidates + found.candidates,
         )
+        return preselect_variant(merged)

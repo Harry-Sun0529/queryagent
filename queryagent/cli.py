@@ -76,6 +76,7 @@ from queryagent.trace import (
 )
 from queryagent.workflow.builder import VARIANT_RULE_KEY, MetricDraftBuilder
 from queryagent.workflow.compiler import TemplateCompiler
+from queryagent.workflow.enforcement import consistent_variant, enforcement_table
 from queryagent.workflow.errors import (
     ConfirmationRequired,
     MappingNotFound,
@@ -100,6 +101,7 @@ from queryagent.workflow.models import (
 )
 from queryagent.workflow.periods import PeriodError, find_period, parse_period
 from queryagent.workflow.render import (
+    render_conflicts,
     render_coverage,
     render_definition_summary,
     render_draft,
@@ -676,6 +678,7 @@ def _cmd_flow(args: argparse.Namespace) -> int:
     actor = ActorContext(subject_id=args.subject, workspace_id=args.workspace)
     today = _today(config)
     dimensions = load_dimensions(config.workflow.mappings_path)
+    mappings = load_mappings(config.workflow.mappings_path)
 
     with contextlib.ExitStack() as stack:
         connector = make_connector(config.database)
@@ -710,9 +713,10 @@ def _cmd_flow(args: argparse.Namespace) -> int:
                     dimensions=dimensions,
                 ),
                 evidence,
+                enforcement=enforcement_table(mappings),
             ),
             compiler=TemplateCompiler(
-                load_mappings(config.workflow.mappings_path),
+                mappings,
                 dialect=connector.dialect,
                 dimensions=dimensions,
             ),
@@ -764,6 +768,21 @@ def _run_flow(
             expected_version=draft.version,
             rules=(_stated_grouping(group_by, dimensions),),
         )
+    documented = draft.definition.rule(VARIANT_RULE_KEY)
+    if args.variant and documented is not None and documented.value != args.variant:
+        # The handbooks chose a reading; the user named another on purpose.
+        # Theirs runs, and the sheet says what it disagrees with (E12).
+        known = sorted(
+            c.key for c in draft.definition.candidates if c.rule_key == VARIANT_RULE_KEY
+        )
+        if args.variant not in known:
+            raise ValueError(f"未知口径 '{args.variant}'；可选：{', '.join(known)}")
+        draft = workflow.amend(
+            actor,
+            draft.draft_id,
+            expected_version=draft.version,
+            rules=(Rule(VARIANT_RULE_KEY, args.variant, RuleSource.USER, note="覆盖文档依据"),),
+        )
     if PERIOD_RULE_KEY in draft.definition.missing:
         _explain_missing_period(args.question, today)
     if GROUP_RULE_KEY in draft.definition.missing:
@@ -813,6 +832,9 @@ def _run_flow(
     grouping_note = render_grouping_note(draft.definition)
     if grouping_note:
         print(f"  （{grouping_note}）")
+    conflicts = render_conflicts(draft.definition)
+    if conflicts:
+        print(f"  （注意：{conflicts}）")
     unenforced = render_unenforced(draft.definition)
     if unenforced:
         print(f"  （{unenforced}）")
@@ -969,6 +991,7 @@ def _open_choices(
                 RuleSource.USER,
                 evidence_ref=chosen.evidence_ref,
                 note="采用文档写法",
+                implies=chosen.implies,
             )
         )
     for key in gaps:
@@ -992,11 +1015,31 @@ def _open_choices(
         rules.append(Rule(key, value, RuleSource.USER))
     if VARIANT_RULE_KEY in definition.missing:
         variants = {c.key for c in definition.candidates if c.rule_key == VARIANT_RULE_KEY}
+        implied = consistent_variant([*definition.rules, *rules], variants)
+        if implied is not None and not args.variant:
+            # The wording the user adopted names one executable reading; asking
+            # them to pick again invites picking the other one (E13).
+            reading, anchor = implied
+            rules.append(
+                Rule(
+                    VARIANT_RULE_KEY,
+                    reading,
+                    RuleSource.USER,
+                    evidence_ref=anchor.evidence_ref,
+                    note="由采用的文档写法对应",
+                )
+            )
+            return tuple(rules)
         choice = args.variant or _prompt_variant(draft)
         if not choice:
             return None
         if choice not in variants:
             raise ValueError(f"未知口径 '{choice}'；可选：{', '.join(sorted(variants))}")
+        if implied is not None and choice != implied[0]:
+            raise ValueError(
+                f"采用的文档写法对应口径 {implied[0]}，--variant 却选了 {choice}；"
+                "同一条命令里两者矛盾，请只保留一个"
+            )
         rules.append(Rule(VARIANT_RULE_KEY, choice, RuleSource.USER))
     return tuple(rules)
 

@@ -38,6 +38,9 @@ class Rule:
     source: RuleSource
     evidence_ref: str = ""
     note: str = ""
+    implies: tuple[str, ...] = ()
+    """Variant keys whose maintainer-declared wording the cited quote contains
+    (T39). Empty when the rule cites nothing, or corresponds to no reading."""
 
     def __post_init__(self) -> None:
         """Structural checks only.
@@ -108,6 +111,9 @@ class Candidate:
     label: str
     summary: str
     evidence_ref: str = ""
+    implies: tuple[str, ...] = ()
+    """For one side of a document disagreement: the readings its quote
+    corresponds to, so adopting it can settle which one runs (T39)."""
 
     @property
     def rule_key(self) -> str:
@@ -178,18 +184,35 @@ class BusinessDefinition:
         payload = {
             "metric": self.metric,
             "rules": sorted(
-                [rule.key, rule.value, rule.source.value, rule.evidence_ref] for rule in self.rules
+                [
+                    rule.key,
+                    rule.value,
+                    rule.source.value,
+                    rule.evidence_ref,
+                    *_implied(rule.implies),
+                ]
+                for rule in self.rules
             ),
             "missing": sorted(self.missing),
             # Candidate wording is on the screen the user approves, so it is
             # part of what they approved. Silently rewording an option they
             # chose between must invalidate the confirmation.
             "candidates": sorted(
-                [c.key, c.label, c.summary, c.evidence_ref] for c in self.candidates
+                [c.key, c.label, c.summary, c.evidence_ref, *_implied(c.implies)]
+                for c in self.candidates
             ),
         }
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _implied(implies: tuple[str, ...]) -> list[str]:
+    """Which reading a quote corresponds to is on the sheet, so it is hashed.
+
+    Only when present: a draft with no correspondences hashes exactly as it
+    did before T39, so confirmations recorded by v0.7 still match.
+    """
+    return ["implies=" + ",".join(implies)] if implies else []
 
 
 @dataclass(frozen=True)

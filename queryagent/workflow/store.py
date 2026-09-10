@@ -312,6 +312,7 @@ def _encode_definition(definition: BusinessDefinition) -> str:
                     "source": r.source.value,
                     "evidence_ref": r.evidence_ref,
                     "note": r.note,
+                    "implies": list(r.implies),
                 }
                 for r in definition.rules
             ],
@@ -322,6 +323,7 @@ def _encode_definition(definition: BusinessDefinition) -> str:
                     "label": c.label,
                     "summary": c.summary,
                     "evidence_ref": c.evidence_ref,
+                    "implies": list(c.implies),
                 }
                 for c in definition.candidates
             ],
@@ -342,11 +344,22 @@ def _decode_definition(text: str) -> BusinessDefinition:
                 source=RuleSource(r["source"]),
                 evidence_ref=r["evidence_ref"],
                 note=r["note"],
+                implies=tuple(r.get("implies", ())),
             )
             for r in raw["rules"]
         ),
         missing=tuple(raw["missing"]),
-        candidates=tuple(Candidate(**c) for c in raw["candidates"]),
+        # Drafts written before T39 have no "implies"; they read as none.
+        candidates=tuple(
+            Candidate(
+                key=c["key"],
+                label=c["label"],
+                summary=c["summary"],
+                evidence_ref=c["evidence_ref"],
+                implies=tuple(c.get("implies", ())),
+            )
+            for c in raw["candidates"]
+        ),
     )
 
 

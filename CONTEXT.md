@@ -53,8 +53,14 @@ specs for in-flight work in `docs/specs/`.
   documents stating a rule differently become two cited readings; nothing
   runs until the user adopts one, and the adoption is 本次约定 citing that
   document. A metric's `required_rules` are gaps until a document states them
-  or the user writes them down. Neither changes the SQL: documents explain,
-  mappings execute.
+  or the user writes them down. Documents never become SQL: they explain,
+  and mappings execute.
+- **Correspondence（对应）** — a document rule whose verified quote contains
+  the words a mapping declares under `enforces:` for that rule's key
+  corresponds to that mapping's reading. It is how a document is checked
+  against what runs (applied / contradicted / not checked) and the only way
+  one reaches the SQL: by choosing among readings a maintainer wrote. By
+  declared words, not meaning; a quote naming two readings matches neither.
 - **Period（统计区间）** — the absolute date range a draft is bounded to,
   resolved from the question's time words (or stated with `--period`) when
   the draft is prepared, and hashed with it. Only the user sets it; documents

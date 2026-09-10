@@ -132,6 +132,19 @@ class EvidenceRef:
         """
         return f"{self.doc_id}#{self.chunk_id}@{self.quote_start}:{self.quote_end}"
 
+    @classmethod
+    def parse(cls, rendered: str) -> EvidenceRef:
+        """Inverse of :meth:`render`; offsets that are not numbers read as 0."""
+        body, _, span = rendered.partition("@")
+        doc_id, _, chunk_id = body.partition("#")
+        start, _, end = span.partition(":")
+        return cls(
+            doc_id=doc_id,
+            chunk_id=chunk_id,
+            quote_start=int(start) if start.isdigit() else 0,
+            quote_end=int(end) if end.isdigit() else 0,
+        )
+
 
 @dataclass(frozen=True)
 class IndexedChunk:

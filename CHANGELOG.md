@@ -27,6 +27,18 @@ frozen from v0.1.1 (spec §四).
   different splits are asked about instead of approximated; `--group-by`
   states or replaces one (`none` for one total). Documents cannot set it,
   and a dimension not declared for a mapping's table is refused, not joined.
+- Document rules are checked against what runs. A structured mapping may
+  declare `enforces:` — the rule keys its SQL applies and the words a
+  handbook would use for them. A document rule whose verified quote contains
+  a reading's words corresponds to it: the sheet marks it 「已由所选口径执行」
+  or 「与所选口径不一致」, the result line counts applied rules as part of
+  what ran, and contradicted ones are named under the result. When the
+  documents agree on one reading the draft arrives with it chosen, marked
+  「文档依据」 with its citation; adopting one side of a disagreement chooses
+  its reading; a `--variant` contradicting the adopted wording is refused,
+  while `--variant` on its own may overrule a handbook, visibly. Documents
+  still never become SQL — they choose among statements a maintainer wrote.
+  A quote naming two readings claims neither.
 
 ### Changed
 

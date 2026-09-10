@@ -76,15 +76,7 @@ IdFactory = Callable[[], str]
 
 def _parse_ref(rendered: str) -> EvidenceRef:
     """Rebuild a citation from its stored string form."""
-    body, _, span = rendered.partition("@")
-    doc_id, _, chunk_id = body.partition("#")
-    start, _, end = span.partition(":")
-    return EvidenceRef(
-        doc_id=doc_id,
-        chunk_id=chunk_id,
-        quote_start=int(start) if start.isdigit() else 0,
-        quote_end=int(end) if end.isdigit() else 0,
-    )
+    return EvidenceRef.parse(rendered)
 
 
 def _now() -> datetime:

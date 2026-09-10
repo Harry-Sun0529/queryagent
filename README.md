@@ -200,12 +200,18 @@ states is listed as missing, and you write it down
 demo config puts a growth-team handbook in the same workspace as the ops one,
 so the disagreement shows up on the first run.
 
-Document rules explain a 口径; they do not change the query. What executes is
-the maintainer's mapping, and the result line names only what ran — that
-reading and the confirmed 统计区间 — while the other rules are listed in a note saying the two are not cross-checked. Nor
-does the system check that the handbook wording you adopt matches the
-executable reading you pick; the whole sheet is shown again before you
-confirm.
+Document text never becomes SQL; what executes is always a maintainer's
+mapping. But a mapping can declare which rules its statement applies and the
+words a handbook would use for them (`enforces:` in
+`examples/query_mappings.yaml`), and then document rules are checked against
+what runs. A rule whose quoted sentence contains a reading's words is marked
+「已由所选口径执行」 and counted in the result line, or 「与所选口径不一致」
+and named under the result. When the handbooks agree on one reading, the
+draft arrives with it chosen, marked 「文档依据」 with its citation; adopting
+one side of a disagreement chooses that side's reading; `--variant` can
+still overrule a handbook, and the conflict is shown. The match is by
+declared words, not by meaning: a quote naming two readings claims neither,
+and rules nothing matched stay in a note saying they were not checked.
 
 Documents are scoped to a business workspace: an identity in one workspace
 does not retrieve — not "does not display" — another's. Document text is
