@@ -6,6 +6,7 @@ validates the seam with SQLite and (schedule permitting) ClickHouse.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -43,8 +44,16 @@ class Connector(Protocol):
         """Return the schema of every table visible to the connection."""
         ...
 
-    def execute(self, sql: str, *, timeout_s: int, max_rows: int) -> QueryResult:
-        """Run one read query with enforced timeout and row cap."""
+    def execute(
+        self, sql: str, *, timeout_s: int, max_rows: int, params: Sequence[object] = ()
+    ) -> QueryResult:
+        """Run one read query with enforced timeout and row cap.
+
+        With ``params``, each ``?`` in ``sql`` is a placeholder filled in
+        order by the driver, never by string concatenation here. Without
+        them the statement runs exactly as written — the agent's own SQL
+        takes that path.
+        """
         ...
 
     def close(self) -> None:

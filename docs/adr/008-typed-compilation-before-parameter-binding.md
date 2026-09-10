@@ -1,6 +1,6 @@
 # ADR-008: Typed compilation before parameter binding
 
-Status: accepted · Date: 2026-09-10
+Status: superseded by [ADR-009](009-bound-parameters-for-workflow-values.md) · Date: 2026-09-10
 
 ## Decision
 

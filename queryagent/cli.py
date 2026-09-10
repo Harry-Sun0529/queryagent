@@ -783,6 +783,10 @@ def _run_flow(
     if unenforced:
         print(f"  （{unenforced}）")
     print(f"\n执行的 SQL（维护者映射 {draft.definition.metric}）：\n  {run.sql}")
+    if run.params:
+        # The values are bound, not part of the text above; show them apart
+        # so the reader sees both what was sent and what filled it in.
+        print(f"  参数（按 ? 的顺序绑定）：{', '.join(run.params)}")
     return 0
 
 

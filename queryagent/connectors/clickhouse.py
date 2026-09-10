@@ -10,12 +10,14 @@ exact ``max_rows``; timeouts use the server-side ``max_execution_time``.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from clickhouse_driver import Client
 from clickhouse_driver.errors import Error as ClickHouseDriverError
 
 from queryagent.connectors.base import QueryResult
+from queryagent.connectors.params import to_pyformat
 from queryagent.errors import QueryError
 from queryagent.schema import ColumnSchema, TableSchema
 
@@ -80,16 +82,25 @@ class ClickHouseConnector:
             for table_name, table_comment in table_rows
         ]
 
-    def execute(self, sql: str, *, timeout_s: int, max_rows: int) -> QueryResult:
-        """Run one query with server-side timeout and row-cap settings."""
+    def execute(
+        self, sql: str, *, timeout_s: int, max_rows: int, params: Sequence[object] = ()
+    ) -> QueryResult:
+        """Run one query with server-side timeout and row-cap settings.
+
+        clickhouse-driver escapes values client-side and substitutes them
+        with ``%`` from a dict, so ``?`` becomes ``%(p0)s``, ``%(p1)s``… and
+        the statement's other ``%`` signs are doubled.
+        """
         settings: dict[str, Any] = {
             "max_execution_time": timeout_s,
             "max_result_rows": max_rows + 1,
             "result_overflow_mode": "break",
         }
+        query = to_pyformat(sql, len(params), named=True) if params else sql
+        values = {f"p{index}": value for index, value in enumerate(params)} if params else None
         try:
             raw_rows, column_defs = self._client.execute(
-                sql, with_column_types=True, settings=settings
+                query, values, with_column_types=True, settings=settings
             )
         except ClickHouseDriverError as exc:
             raise QueryError(str(exc), dialect=self.dialect) from exc

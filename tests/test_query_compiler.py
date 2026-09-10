@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from queryagent.workflow.compiler import TemplateCompiler
+from queryagent.workflow.compiler import CompiledQuery, TemplateCompiler
 from queryagent.workflow.errors import MappingNotFound, WorkflowStateError
 from queryagent.workflow.mappings import QueryMapping, load_mappings
 from queryagent.workflow.models import (
@@ -47,7 +47,7 @@ def _august() -> Rule:
     return Rule(PERIOD_RULE_KEY, AUGUST, RuleSource.USER)
 
 
-def _count(tmp_path: Path, sql: str) -> int:
+def _count(tmp_path: Path, query: CompiledQuery) -> int:
     db = tmp_path / "shop.db"
     connection = sqlite3.connect(db)
     connection.execute("CREATE TABLE users (created_at TEXT, channel TEXT, status TEXT)")
@@ -63,7 +63,7 @@ def _count(tmp_path: Path, sql: str) -> int:
     )
     connection.commit()
     try:
-        return int(connection.execute(sql).fetchone()[0])
+        return int(connection.execute(query.sql, query.params).fetchone()[0])
     finally:
         connection.close()
 
@@ -73,10 +73,20 @@ def _count(tmp_path: Path, sql: str) -> int:
 
 def test_a_confirmed_period_includes_both_whole_end_days(tmp_path: Path) -> None:
     """P5: the first instant of the 1st and the last second of the 31st are in."""
-    sql = TemplateCompiler({("new_users", "registered"): REGISTERED}).compile(
+    query = TemplateCompiler({("new_users", "registered"): REGISTERED}).compile(
         _definition(_august())
     )
-    assert _count(tmp_path, sql) == 2
+    assert _count(tmp_path, query) == 2
+
+
+def test_the_period_travels_as_parameters_not_as_text() -> None:
+    """F1: the statement holds placeholders; the dates are bound beside it."""
+    query = TemplateCompiler({("new_users", "registered"): REGISTERED}).compile(
+        _definition(_august())
+    )
+    assert "2026-" not in query.sql
+    assert "created_at >= ? AND created_at < ?" in query.sql
+    assert query.params == ("2026-08-01", "2026-09-01")
 
 
 def test_a_date_only_text_column_keeps_its_first_and_last_day(tmp_path: Path) -> None:
@@ -93,11 +103,11 @@ def test_a_date_only_text_column_keeps_its_first_and_last_day(tmp_path: Path) ->
         [("2026-07-31",), ("2026-08-01",), ("2026-08-31",), ("2026-09-01",)],
     )
     connection.commit()
-    sql = TemplateCompiler({("new_users", "registered"): REGISTERED}).compile(
+    query = TemplateCompiler({("new_users", "registered"): REGISTERED}).compile(
         _definition(_august())
     )
     try:
-        assert connection.execute(sql).fetchone()[0] == 2
+        assert connection.execute(query.sql, query.params).fetchone()[0] == 2
     finally:
         connection.close()
 
@@ -111,15 +121,18 @@ def test_an_or_in_a_maintainer_fragment_cannot_escape_the_period(tmp_path: Path)
         time_column="created_at",
         where=("status = 'paid' OR status = 'refunded'", "channel <> 'internal_test'"),
     )
-    sql = TemplateCompiler({("new_users", "registered"): mapping}).compile(_definition(_august()))
-    assert _count(tmp_path, sql) == 2
+    query = TemplateCompiler({("new_users", "registered"): mapping}).compile(
+        _definition(_august())
+    )
+    assert _count(tmp_path, query) == 2
 
 
 def test_without_a_period_no_time_condition_is_added(tmp_path: Path) -> None:
     """P9 at the compiler: no period means no window, stated elsewhere, not faked here."""
-    sql = TemplateCompiler({("new_users", "registered"): REGISTERED}).compile(_definition())
-    assert "created_at" not in sql
-    assert _count(tmp_path, sql) == 4
+    query = TemplateCompiler({("new_users", "registered"): REGISTERED}).compile(_definition())
+    assert "created_at" not in query.sql
+    assert query.params == ()
+    assert _count(tmp_path, query) == 4
 
 
 # ------------------------------------------------------------- P6 refused
@@ -135,7 +148,7 @@ def test_a_whole_statement_mapping_refuses_a_period_instead_of_ignoring_it() -> 
 def test_a_whole_statement_mapping_still_runs_without_a_period() -> None:
     """The 1A form keeps working where it was ever correct."""
     compiler = TemplateCompiler({("new_users", "registered"): "SELECT COUNT(*) FROM users"})
-    assert compiler.compile(_definition()) == "SELECT COUNT(*) FROM users"
+    assert compiler.compile(_definition()) == CompiledQuery("SELECT COUNT(*) FROM users")
 
 
 def test_a_mapping_without_a_time_column_refuses_a_period() -> None:
@@ -156,14 +169,15 @@ def test_a_period_that_is_not_canonical_is_refused_not_interpolated() -> None:
 
 def test_rule_text_from_users_and_documents_never_reaches_the_sql() -> None:
     """P7: explanatory rules are not compiler input at all."""
-    sql = TemplateCompiler({("new_users", "registered"): REGISTERED}).compile(
+    query = TemplateCompiler({("new_users", "registered"): REGISTERED}).compile(
         _definition(
             _august(),
             Rule("filters", "x'); DELETE FROM users; --", RuleSource.USER),
             Rule("counting_basis", "UNION SELECT password", RuleSource.DOC, evidence_ref="d#c@0:1"),
         )
     )
-    assert "DELETE" not in sql and "UNION" not in sql
+    everything = query.sql + " ".join(query.params)
+    assert "DELETE" not in everything and "UNION" not in everything
 
 
 def test_a_variant_value_is_a_lookup_key_never_interpolated() -> None:
@@ -180,10 +194,10 @@ def test_a_variant_value_is_a_lookup_key_never_interpolated() -> None:
     [("sqlite", '"新增用户数"'), ("clickhouse", '"新增用户数"'), ("mysql", "`新增用户数`")],
 )
 def test_the_alias_is_quoted_for_the_dialect(dialect: str, alias: str) -> None:
-    sql = TemplateCompiler({("new_users", "registered"): REGISTERED}, dialect=dialect).compile(
+    query = TemplateCompiler({("new_users", "registered"): REGISTERED}, dialect=dialect).compile(
         _definition()
     )
-    assert f"AS {alias}" in sql
+    assert f"AS {alias}" in query.sql
 
 
 # ------------------------------------------------------------- loading

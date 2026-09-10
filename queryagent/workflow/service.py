@@ -26,7 +26,7 @@ from typing import Protocol
 from queryagent.connectors.base import QueryResult
 from queryagent.knowledge.models import EvidenceRef, RefStatus
 from queryagent.knowledge.provider import RetrievalScope, scope_of
-from queryagent.workflow.compiler import TemplateCompiler
+from queryagent.workflow.compiler import CompiledQuery, TemplateCompiler
 from queryagent.workflow.errors import (
     ConfirmationRequired,
     NotFound,
@@ -68,7 +68,7 @@ class RefChecker(Protocol):
     ) -> tuple[object, ...]: ...
 
 
-Executor = Callable[[str], QueryResult]
+Executor = Callable[[CompiledQuery], QueryResult]
 Clock = Callable[[], datetime]
 IdFactory = Callable[[], str]
 
@@ -319,7 +319,7 @@ class QueryWorkflow:
 
         # Compiling before claiming the key keeps an unmappable definition
         # from burning the caller's idempotency key on a run that never ran.
-        sql = self._compiler.compile(draft.definition)
+        query = self._compiler.compile(draft.definition)
 
         run = QueryRun(
             run_id=self._new_id(),
@@ -328,14 +328,15 @@ class QueryWorkflow:
             subject_id=actor.subject_id,
             idempotency_key=idempotency_key,
             status=RunStatus.EXECUTING,
-            sql=sql,
+            sql=query.sql,
+            params=query.params,
         )
         existing = self._store.claim_run(run)
         if existing is not None:
             return existing  # T13: the same request, not a second query
 
         try:
-            result = self._execute_sql(sql)
+            result = self._execute_sql(query)
         except Exception as exc:
             failed = QueryRun(
                 run_id=run.run_id,
@@ -344,7 +345,8 @@ class QueryWorkflow:
                 subject_id=run.subject_id,
                 idempotency_key=run.idempotency_key,
                 status=RunStatus.FAILED,
-                sql=sql,
+                sql=query.sql,
+                params=query.params,
                 error=f"{type(exc).__name__}: {exc}",
             )
             self._store.finish_run(failed)
@@ -356,7 +358,8 @@ class QueryWorkflow:
             subject_id=run.subject_id,
             idempotency_key=run.idempotency_key,
             status=RunStatus.SUCCEEDED,
-            sql=sql,
+            sql=query.sql,
+            params=query.params,
             columns=tuple(result.columns),
             rows=tuple(tuple(row) for row in result.rows),
             truncated=result.truncated,

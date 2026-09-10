@@ -149,6 +149,41 @@ def test_finished_run_is_persisted_with_its_result(store: SqliteWorkflowStore) -
     assert loaded.rows == ((7,),)
 
 
+def test_a_state_file_from_before_bound_values_is_upgraded_in_place(tmp_path: Path) -> None:
+    """T36: a v0.7 state file has no params column; its runs stay readable."""
+    import sqlite3
+
+    path = tmp_path / "workflow.db"
+    old = sqlite3.connect(path)
+    old.execute(
+        "CREATE TABLE runs (run_id TEXT PRIMARY KEY, draft_id TEXT NOT NULL, "
+        "confirmation_id TEXT NOT NULL, subject_id TEXT NOT NULL, "
+        "idempotency_key TEXT NOT NULL UNIQUE, status TEXT NOT NULL, "
+        "sql TEXT NOT NULL DEFAULT '', columns TEXT NOT NULL DEFAULT '[]', "
+        "rows TEXT NOT NULL DEFAULT '[]', truncated INTEGER NOT NULL DEFAULT 0, "
+        "error TEXT NOT NULL DEFAULT '')"
+    )
+    old.execute(
+        "INSERT INTO runs (run_id, draft_id, confirmation_id, subject_id, idempotency_key, "
+        "status, sql) VALUES ('r0', 'd0', 'c0', 'alice', 'k0', 'succeeded', 'SELECT 1')"
+    )
+    old.commit()
+    old.close()
+
+    store = SqliteWorkflowStore(path)
+    assert store.get_run("alice", "r0").params == ()
+    store.create_draft(_draft())
+    store.claim_run(
+        QueryRun("r1", "d1", "c1", "alice", "k1", RunStatus.EXECUTING, sql="SELECT ?")
+    )
+    store.finish_run(
+        QueryRun(
+            "r1", "d1", "c1", "alice", "k1", RunStatus.SUCCEEDED, sql="SELECT ?", params=("x",)
+        )
+    )
+    assert store.get_run("alice", "r1").params == ("x",)
+
+
 def test_missing_draft_is_reported_as_not_found(store: SqliteWorkflowStore) -> None:
     from queryagent.workflow.errors import NotFound
 

@@ -57,15 +57,22 @@ tables the agent legitimately needs.
 
 ## Compiled queries (`queryagent flow`)
 
-A confirmed 统计区间 reaches SQL through a typed compiler
-([ADR-008](docs/adr/008-typed-compilation-before-parameter-binding.md)). The
-statement is assembled from maintainer fragments in `query_mappings.yaml` and
-from dates that exist only as `datetime.date` values decoded from a rule of
-the form `YYYY-MM-DD..YYYY-MM-DD`. The question's text, document rules and
-the user's own conventions are never interpolated. Mapping fragments are
-concatenated as written — the trust whole-statement mappings always had — so
-a mapping change is a code change and should be reviewed as one. The
-compiled statement still passes the layer-1 whitelist before it runs.
+A confirmed 统计区间 reaches the database as bound parameters
+([ADR-009](docs/adr/009-bound-parameters-for-workflow-values.md), superseding
+the typed compilation of ADR-008). The statement text is assembled from
+maintainer fragments in `query_mappings.yaml`, identifiers validated when
+that file loads, and `?` placeholders; the dates travel beside it, each
+decoded from a rule of the form `YYYY-MM-DD..YYYY-MM-DD` first. The
+question's text, document rules and the user's own conventions are never
+part of the statement. Mapping fragments are concatenated as written — the
+trust whole-statement mappings always had — so a mapping change is a code
+change and should be reviewed as one. The statement, with its placeholders,
+passes the layer-1 whitelist before it runs.
+
+What "bound" means depends on the driver: SQLite binds at the engine;
+PyMySQL and clickhouse-driver escape each value client-side and substitute
+it. That removes this project's own string building from the path; it is not
+a server-side prepared statement, and no stronger than the driver's escaper.
 
 ## Indexed documents
 

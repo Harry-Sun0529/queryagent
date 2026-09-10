@@ -107,7 +107,9 @@ def test_a_compiled_period_agrees_with_clickhouses_own_month_function(
             Rule(PERIOD_RULE_KEY, period, RuleSource.USER),
         ),
     )
-    compiled = connector.execute(compiler.compile(definition), timeout_s=10, max_rows=1)
+    query = compiler.compile(definition)
+    assert query.params and "20" not in query.sql  # F1: the dates are bound, not text
+    compiled = connector.execute(query.sql, timeout_s=10, max_rows=1, params=query.params)
     native = connector.execute(
         "SELECT count() FROM users WHERE channel != 'internal_test' "
         f"AND toYYYYMM(created_at) = {stamp}",
@@ -116,3 +118,22 @@ def test_a_compiled_period_agrees_with_clickhouses_own_month_function(
     )
     assert compiled.rows == native.rows
     assert compiled.rows[0][0] > 0
+
+
+def test_a_percent_sign_in_the_statement_survives_bound_values(
+    connector: ClickHouseConnector,
+) -> None:
+    """F2: clickhouse-driver formats with `%`, so a LIKE pattern must reach the server intact."""
+    bound = connector.execute(
+        "SELECT count() FROM users WHERE channel LIKE '%rgan%' AND created_at >= ?",
+        timeout_s=10,
+        max_rows=1,
+        params=("2026-08-01",),
+    )
+    native = connector.execute(
+        "SELECT count() FROM users WHERE channel = 'organic' AND created_at >= '2026-08-01'",
+        timeout_s=10,
+        max_rows=1,
+    )
+    assert bound.rows == native.rows
+    assert bound.rows[0][0] > 0
