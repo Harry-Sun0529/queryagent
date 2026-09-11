@@ -29,6 +29,7 @@ _COLUMNS_SQL = (
     "SELECT table, name, type, comment FROM system.columns "
     "WHERE database = currentDatabase() ORDER BY table, position"
 )
+_TOO_MANY_ROWS = 158  # ClickHouse error code when max_rows_to_read is exceeded
 
 
 class ClickHouseConnector:
@@ -45,7 +46,11 @@ class ClickHouseConnector:
         password: str = "",
         database: str = "default",
         connect_timeout_s: int = 10,
+        max_rows_scanned: int | None = None,
     ) -> None:
+        # budget.max_rows_scanned (slice 1E): the one scan limit an engine we
+        # support enforces itself, rather than a timeout standing in for it.
+        self._max_rows_scanned = max_rows_scanned
         self._client = Client(
             host=host,
             port=port,
@@ -96,6 +101,9 @@ class ClickHouseConnector:
             "max_result_rows": max_rows + 1,
             "result_overflow_mode": "break",
         }
+        if self._max_rows_scanned is not None:
+            settings["max_rows_to_read"] = self._max_rows_scanned
+            settings["read_overflow_mode"] = "throw"
         query = to_pyformat(sql, len(params), named=True) if params else sql
         values = {f"p{index}": value for index, value in enumerate(params)} if params else None
         try:
@@ -103,6 +111,16 @@ class ClickHouseConnector:
                 query, values, with_column_types=True, settings=settings
             )
         except ClickHouseDriverError as exc:
+            if getattr(exc, "code", None) == _TOO_MANY_ROWS:
+                # Named as the limit it is: a scan budget refusing the read,
+                # not a slow query or a broken one (G7). The server's stack
+                # trace is noise to the person reading this.
+                detail = str(exc).split("Stack trace")[0].strip()
+                raise QueryError(
+                    f"超过扫描上限：这条语句要读取的行数超过维护者设定的 "
+                    f"{self._max_rows_scanned} 行（budget.max_rows_scanned）。{detail}",
+                    dialect=self.dialect,
+                ) from exc
             raise QueryError(str(exc), dialect=self.dialect) from exc
         elapsed = self._client.last_query.elapsed if self._client.last_query else 0.0
         truncated = len(raw_rows) > max_rows

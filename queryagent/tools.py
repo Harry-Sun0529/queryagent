@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from queryagent import safety
+from queryagent.budget import BudgetExceeded
 from queryagent.connectors.base import Connector, QueryResult
 from queryagent.errors import QueryError, ToolValidationError
 from queryagent.schema import render_schema
@@ -102,6 +103,12 @@ class ToolRegistry:
             return Observation(f"Query failed ({exc.dialect}): {exc.original_error}", True)
         except ToolValidationError as exc:
             return Observation(str(exc), True)
+        except BudgetExceeded as exc:
+            # A spent budget is not the model's to repair. Saying so is what
+            # stops the loop retrying until it runs out of turns (E07).
+            return Observation(
+                f"{exc}。这是维护者设定的上限，重试不会成功；请基于已有结果作答。", True
+            )
         # SafetyViolation (and any unexpected exception) deliberately
         # propagates — see the module docstring.
 

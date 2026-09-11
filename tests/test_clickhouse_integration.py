@@ -70,6 +70,25 @@ def test_error_wrapped_with_dialect(connector: ClickHouseConnector) -> None:
     assert exc_info.value.dialect == "clickhouse"
 
 
+def test_a_scan_limit_is_enforced_by_the_engine_and_named_as_one() -> None:
+    """G7 (slice 1E): 50 000 rows against a 1 000-row budget fails as a scan
+    limit, not a timeout — the row cap alone would have let it read them all."""
+    limited = ClickHouseConnector(
+        host="127.0.0.1",
+        port=DEMO_PORT,
+        user="demo",
+        password="demo_ch_password",
+        database="demo_shop",
+        max_rows_scanned=1000,
+    )
+    try:
+        with pytest.raises(QueryError, match="扫描上限"):
+            limited.execute("SELECT sum(id) FROM users", timeout_s=10, max_rows=10)
+        assert limited.execute("SELECT 1", timeout_s=10, max_rows=10).rows == ((1,),)
+    finally:
+        limited.close()
+
+
 def test_a_compiled_period_agrees_with_clickhouses_own_month_function(
     connector: ClickHouseConnector,
 ) -> None:

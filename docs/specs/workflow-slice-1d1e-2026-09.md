@@ -24,7 +24,7 @@
 |---|---|---|
 | E01 | 预算只写在 `config.yaml` 的 `budget:` 段；没有任何 CLI 参数、MCP 参数、口径规则或文档能提高它。段不存在就不启用，行为与 v0.8 完全一致 | 交接文档原话：不可被模型或用户提高。存在即开关，与 `knowledge:` 同理，回退可以写成测试 |
 | E02 | 预算作用于面向使用者的入口：`flow` / `ask` / `chat`（v1.0 加上 `mcp`）；不作用于 `eval` | eval 是维护者的测量工具，自带并发与熔断；受每日额度限制会让基准跑不完 |
-| E03 | 预算项：每次请求语句数、每人每天执行次数、每人每天累计执行秒数、同一状态文件上的并发数，以及可选的扫描行数上限。扫描上限只有 ClickHouse 能由引擎强制（`max_rows_to_read`），在其他方言上配置它，加载时直接拒绝 | 写了却不生效的上限是假话。只有一个方言做得到真正的扫描上限，就照实只支持这一个 |
+| E03 | 预算项：每次请求语句数、每人每天语句数（含探测）、每人每天累计执行秒数、同一状态文件上的并发数，以及可选的扫描行数上限。扫描上限只有 ClickHouse 能由引擎强制（`max_rows_to_read`），在其他方言上配置它，加载时直接拒绝 | 写了却不生效的上限是假话。只有一个方言做得到真正的扫描上限，就照实只支持这一个 |
 | E04 | flow 的准入放在确认、证据、编译都通过之后、占用幂等键之前；一次执行按「探测 + 业务查询」两条预占。被拒绝时零 SQL，幂等键不被消耗 | 与 1A 的顺序原则一致：越早的拒绝，副作用越少 |
 | E05 | 并发用存储里带到期时间的租约（单条超时 + 余量），`BEGIN IMMEDIATE` 保证原子，跨进程有效；崩溃留下的租约到期自动释放 | 多个 CLI 进程可能共用一个状态文件，只在进程内计数挡不住 |
 | E06 | 超限时说清卡在哪一项、何时恢复。每日额度用尽退出码 2，并发已满退出码 75 | ADR-006：前者是环境/输入，后者是稍后可重试 |
@@ -45,7 +45,7 @@
   ```yaml
   budget:                          # 可选；不写就与 v0.8 完全一致
     max_queries_per_request: 3     # 一次确认执行（含探测）或一次 ask 探索
-    max_runs_per_day: 50           # 每个主体每天，按 workflow.timezone 计日
+    max_queries_per_day: 200       # 每个主体每天的语句数（含探测），按 workflow.timezone 计日
     max_query_seconds_per_day: 600 # 客户端计时，不是服务器 CPU 时间
     max_concurrent: 2              # 同一状态文件上同时执行的查询
     max_rows_scanned: 50000000     # 仅 ClickHouse；其他方言配置了会在加载时报错
@@ -58,8 +58,8 @@
 
 - 映射文件：维度可加 `values:`（取值键 → 问题里的说法），结构化映射可加
   `freshness: {lag_days: N}`。
-- `QueryRun` 新增 `started_at`、`elapsed_ms`、`mapping_fingerprint`，沿用 `_LATER_RUN_COLUMNS`
-  自动补列；新表 `budget_leases`、`budget_ledger`、`freshness_cache` 在同一状态文件里。
+- `QueryRun` 新增 `mapping_fingerprint`（T42），沿用 `_LATER_RUN_COLUMNS` 自动补列；预算用掉的
+  语句与秒数记在账本里，不记在 run 上；新表 `budget_leases`、`budget_ledger`、`freshness_cache` 在同一状态文件里。
 - `RuleSource.HISTORY` 是单向变更：v0.8 打不开含历史规则的草案；v0.8 写下的草案在 v0.9 可读。
 - 新错误 `BudgetExceeded(WorkflowError)`，带 `item` 与 `retry_after`。新 CLI 参数 `--filter`、
   `--no-history`。`COMPILED_RULE_KEYS` 加入 `filter`；文档抽取的允许键不变。
@@ -127,7 +127,7 @@ MySQL / SQLite 的服务器扫描、CPU、内存上限（只有超时）；按 E
 
 ## 9. 真机验证
 
-- 预算：`max_runs_per_day: 2` 跑三次 flow，第三次退出码 2、runs 表计数不变；`max_concurrent: 1`
+- 预算：`max_queries_per_day: 2` 跑三次 flow（整条 `sql:` 映射，每次一条语句），第三次退出码 2、runs 表计数不变；`max_concurrent: 1`
   同时发两个慢查询，第二个退出码 75；ClickHouse 上很小的 `max_rows_scanned` 由引擎拒绝；`ask`
   配 `max_queries_per_request: 1` 接真实 DeepSeek，跑一条后带预算提示收尾。
 - 新鲜度：声明 T+1 后问「本月成交额」，确认单零查询给出预期，执行后点名滞后；`probe` 模式下

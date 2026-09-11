@@ -62,6 +62,32 @@ class SafetyConfig:
 
 
 @dataclass(frozen=True)
+class BudgetConfig:
+    """Totals across statements, set by a maintainer (slice 1E, ADR-011).
+
+    ``SafetyConfig`` bounds one statement; this bounds how many run, for how
+    long and how many at once. ``None`` leaves an item unlimited. The whole
+    section is optional and its absence means no totals at all — how every
+    release before 0.9 behaved, and the rollback path.
+
+    Nothing but this file sets these: no command-line flag, workflow rule,
+    document or tool argument reaches them.
+    """
+
+    max_queries_per_request: int | None = None
+    """Statements one confirmed run (its probe included) or one agent question may execute."""
+    max_queries_per_day: int | None = None
+    """Statements one subject may execute per business day (``workflow.timezone``)."""
+    max_query_seconds_per_day: int | None = None
+    """Client-measured seconds one subject's statements may take per business day."""
+    max_concurrent: int | None = None
+    """Requests executing at once against one state file, across processes."""
+    max_rows_scanned: int | None = None
+    """Rows one statement may read. ClickHouse enforces this in the engine; no
+    other supported database can, so it is refused anywhere else."""
+
+
+@dataclass(frozen=True)
 class WorkflowConfig:
     """The confirmation-gated query flow (v0.6, `queryagent flow`).
 
@@ -141,6 +167,7 @@ class AppConfig:
     metrics_path: str | None = None
     workflow: WorkflowConfig = field(default_factory=WorkflowConfig)
     knowledge: KnowledgeConfig = field(default_factory=KnowledgeConfig)
+    budget: BudgetConfig | None = None  # None: no totals configured
     trace: bool = True  # record event streams to .queryagent/traces/
     trace_dir: str | None = None  # where; default is relative to the cwd
 
@@ -161,16 +188,55 @@ def load_config(path: str | Path) -> AppConfig:
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError(f"{path}: top level must be a mapping")
+    database = _load_database(_section(raw, "database"))
     return AppConfig(
         llm=_load_llm(_section(raw, "llm")),
-        database=_load_database(_section(raw, "database")),
+        database=database,
         safety=_load_safety(raw.get("safety") or {}),
         metrics_path=_opt_str(raw, "metrics_path"),
         workflow=_load_workflow(raw.get("workflow") or {}),
         knowledge=_load_knowledge(raw.get("knowledge") or {}),
+        budget=_load_budget(raw.get("budget"), database.type),
         trace=_opt_bool(raw, "trace", default=True),
         trace_dir=_opt_str(raw, "trace_dir"),
     )
+
+
+_BUDGET_KEYS = (
+    "max_queries_per_request",
+    "max_queries_per_day",
+    "max_query_seconds_per_day",
+    "max_concurrent",
+    "max_rows_scanned",
+)
+
+
+def _load_budget(section: Any, db_type: str) -> BudgetConfig | None:
+    """Absent means unlimited; present means every key is a real, enforceable limit.
+
+    An unknown key is refused because a misspelt limit limits nothing and
+    says nothing. A scan limit on a database that cannot enforce it is
+    refused for the same reason: a limit written down but not applied is a
+    false statement about the deployment (E03).
+    """
+    if not section:
+        return None
+    if not isinstance(section, dict):
+        raise ValueError("budget section must be a mapping of limits")
+    unknown = sorted(str(key) for key in section if key not in _BUDGET_KEYS)
+    if unknown:
+        raise ValueError(
+            f"budget: unknown keys {unknown}; allowed: {', '.join(_BUDGET_KEYS)}. "
+            "A misspelt limit would silently limit nothing."
+        )
+    limits = {str(key): _pos_int(section, str(key), 1, "budget") for key in section}
+    if "max_rows_scanned" in limits and db_type != "clickhouse":
+        raise ValueError(
+            f"budget.max_rows_scanned cannot be enforced on {db_type}: only ClickHouse limits "
+            "the rows a statement reads, in the engine. Remove it rather than keep a limit "
+            "that limits nothing; safety.timeout_s is what bounds a statement there."
+        )
+    return BudgetConfig(**limits)
 
 
 def _load_knowledge(section: dict[str, Any]) -> KnowledgeConfig:
