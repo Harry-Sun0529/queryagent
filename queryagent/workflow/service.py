@@ -431,6 +431,7 @@ class QueryWorkflow:
             sql=query.sql,
             params=query.params,
             expected_through=self._expected_through(draft.definition),
+            mapping_fingerprint=self._compiler.fingerprint(draft.definition),
         )
         # A replay is the same request, not a new one: it answers from the
         # stored run whatever today's budget says (T13). Found in testing —
@@ -475,6 +476,7 @@ class QueryWorkflow:
                 freshness_sql=freshness_sql,
                 data_through=data_through,
                 expected_through=run.expected_through,
+                mapping_fingerprint=run.mapping_fingerprint,
             )
             self._store.finish_run(failed)
             raise
@@ -493,6 +495,7 @@ class QueryWorkflow:
             freshness_sql=freshness_sql,
             data_through=data_through,
             expected_through=run.expected_through,
+            mapping_fingerprint=run.mapping_fingerprint,
         )
         self._store.finish_run(finished)
         return finished

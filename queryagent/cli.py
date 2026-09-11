@@ -95,6 +95,7 @@ from queryagent.workflow.evidence_builder import CompositeDraftBuilder, Evidence
 from queryagent.workflow.execution import make_connector_executor
 from queryagent.workflow.freshness import PROBE, FreshnessPolicy, describe_lag
 from queryagent.workflow.grouping import Dimension, GroupingError, find_grouping, parse_grouping
+from queryagent.workflow.history import HistoryDraftBuilder
 from queryagent.workflow.mappings import load_dimensions, load_mappings
 from queryagent.workflow.models import (
     CONFLICT_SEPARATOR,
@@ -119,7 +120,7 @@ from queryagent.workflow.render import (
     render_unenforced,
     rule_label,
 )
-from queryagent.workflow.service import QueryWorkflow
+from queryagent.workflow.service import DraftBuilder, QueryWorkflow
 from queryagent.workflow.store import SqliteWorkflowStore
 
 _trace_notice_shown = False
@@ -224,6 +225,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         dest="group_by",
         help="split the result: day, week, month, a declared dimension (e.g. channel), "
         "or none for one total; recorded as 本次约定",
+    )
+    flow.add_argument(
+        "--no-history",
+        dest="no_history",
+        action="store_true",
+        help="do not offer the choices you confirmed last time for this metric. With --yes "
+        "they are never offered: nobody would read them before the run",
     )
     flow.add_argument(
         "--yes",
@@ -795,22 +803,31 @@ def _cmd_flow(args: argparse.Namespace) -> int:
                 make_backend(config.llm),
                 required_keys=(),  # gaps come from the maintainer metric, not extraction
             )
-        workflow = QueryWorkflow(
-            store=store,
-            builder=CompositeDraftBuilder(
-                MetricDraftBuilder(
-                    YamlMetricStore(config.metrics_path),
-                    today=lambda: today,
-                    dimensions=dimensions,
-                ),
-                evidence,
-                enforcement=enforcement_table(mappings),
-            ),
-            compiler=TemplateCompiler(
-                mappings,
-                dialect=connector.dialect,
+        compiler = TemplateCompiler(mappings, dialect=connector.dialect, dimensions=dimensions)
+        builder: DraftBuilder = CompositeDraftBuilder(
+            MetricDraftBuilder(
+                YamlMetricStore(config.metrics_path),
+                today=lambda: today,
                 dimensions=dimensions,
             ),
+            evidence,
+            enforcement=enforcement_table(mappings),
+        )
+        if not (args.yes or args.no_history):
+            # E14: remembered choices are offered only where a person reads
+            # the sheet before anything runs.
+            builder = HistoryDraftBuilder(
+                builder,
+                store,
+                fingerprint=compiler.fingerprint,
+                ref_checker=provider,
+                zone=ZoneInfo(config.workflow.timezone),
+                max_age_days=config.workflow.history_max_age_days,
+            )
+        workflow = QueryWorkflow(
+            store=store,
+            builder=builder,
+            compiler=compiler,
             executor=make_connector_executor(
                 connector,
                 timeout_s=config.safety.timeout_s,
@@ -862,8 +879,9 @@ def _run_flow(
         )
     documented = draft.definition.rule(VARIANT_RULE_KEY)
     if args.variant and documented is not None and documented.value != args.variant:
-        # The handbooks chose a reading; the user named another on purpose.
-        # Theirs runs, and the sheet says what it disagrees with (E12).
+        # The handbooks — or the user's own last choice — picked a reading;
+        # the user named another on purpose. Theirs runs, and the sheet says
+        # what it disagrees with (E12).
         known = sorted(
             c.key for c in draft.definition.candidates if c.rule_key == VARIANT_RULE_KEY
         )
@@ -873,7 +891,18 @@ def _run_flow(
             actor,
             draft.draft_id,
             expected_version=draft.version,
-            rules=(Rule(VARIANT_RULE_KEY, args.variant, RuleSource.USER, note="覆盖文档依据"),),
+            rules=(
+                Rule(
+                    VARIANT_RULE_KEY,
+                    args.variant,
+                    RuleSource.USER,
+                    note=(
+                        "覆盖历史选择"
+                        if documented.source is RuleSource.HISTORY
+                        else "覆盖文档依据"
+                    ),
+                ),
+            ),
         )
     if PERIOD_RULE_KEY in draft.definition.missing:
         _explain_missing_period(args.question, today)

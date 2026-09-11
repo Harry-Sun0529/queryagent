@@ -22,11 +22,14 @@ class RuleSource(Enum):
     tell a documented rule from someone's assumption. ``DOC`` therefore
     requires a citation; ``USER`` marks a convention agreed for this request
     only and must never be rendered as if the document said it (D07).
+    ``HISTORY`` is a choice this subject confirmed on an earlier run, offered
+    again (T42): theirs, but not made this time, and never a team standard.
     """
 
     DOC = "doc"
     USER = "user"
     MAINTAINER = "maintainer"
+    HISTORY = "history"
 
 
 @dataclass(frozen=True)
@@ -56,6 +59,8 @@ class Rule:
             raise ValueError("rule key must not be empty")
         if self.source is RuleSource.DOC and not self.evidence_ref:
             raise ValueError("a doc-sourced rule needs an evidence_ref to cite")
+        if self.source is RuleSource.HISTORY and not self.note:
+            raise ValueError("a history rule must say which earlier choice it repeats")
 
     @property
     def is_user_supplied(self) -> bool:
@@ -92,6 +97,10 @@ GROUP_RULE_KEY = "group_by"
 maintainer declared, or explicitly not at all. Like the period, only the
 user sets it; documents cannot, so a handbook cannot turn a number into a
 table or a table into a number."""
+
+PREVIOUS_CHOICE_KEY = "previous_choice"
+"""A reading this subject confirmed before that differs from the one the
+documents now select (T42). Shown and hashed; never compiled, never reused."""
 
 COMPILED_RULE_KEYS = (VARIANT_RULE_KEY, PERIOD_RULE_KEY, GROUP_RULE_KEY)
 """Rules the compiler turns into SQL. Every other rule explains the 口径."""
@@ -312,3 +321,6 @@ class QueryRun:
     expected_through: str = ""
     """ISO date the maintainer's declared cadence said the data should reach
     when this ran (T41); '' when no cadence was declared."""
+    mapping_fingerprint: str = ""
+    """Digest of the mapping that ran (T42), so a remembered choice can tell
+    whether what it chose has changed since; '' for runs before 0.9."""

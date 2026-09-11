@@ -9,8 +9,10 @@ here silently produces a wrong number under a correct-looking 口径 (§18).
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -81,6 +83,20 @@ def load_mappings(path: str | Path) -> Mappings:
             raise ValueError(f"{path}: duplicate mapping for {key[0]}/{key[1] or '(no variant)'}")
         table[key] = entry
     return table
+
+
+def mapping_fingerprint(entry: str | QueryMapping) -> str:
+    """A digest of one mapping, to tell whether it changed since a run used it (T42).
+
+    Every field counts — fragments, time column, cadence, enforced words: a
+    change to any of them may change what a remembered choice meant.
+    """
+    payload = (
+        entry
+        if isinstance(entry, str)
+        else json.dumps(asdict(entry), ensure_ascii=False, sort_keys=True)
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 def _parse_entry(item: Any, where: str) -> tuple[tuple[str, str], str | QueryMapping]:

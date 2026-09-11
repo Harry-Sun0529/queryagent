@@ -112,6 +112,8 @@ class WorkflowConfig:
     the compiler's ``MAX()`` probe; ``off`` says nothing until the result."""
     freshness_probe_timeout_s: int = 2
     freshness_cache_minutes: int = 10
+    history_max_age_days: int = 90
+    """How long a confirmed choice is offered again to the same person (T42)."""
 
 
 @dataclass(frozen=True)
@@ -344,6 +346,7 @@ def _load_workflow(section: dict[str, Any]) -> WorkflowConfig:
         freshness_before_confirm=mode,
         freshness_probe_timeout_s=_pos_int(section, "freshness_probe_timeout_s", 2, "workflow"),
         freshness_cache_minutes=_pos_int(section, "freshness_cache_minutes", 10, "workflow"),
+        history_max_age_days=_pos_int(section, "history_max_age_days", 90, "workflow"),
     )
 
 

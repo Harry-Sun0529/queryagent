@@ -71,7 +71,8 @@ CREATE TABLE IF NOT EXISTS runs (
     error TEXT NOT NULL DEFAULT '',
     freshness_sql TEXT NOT NULL DEFAULT '',
     data_through TEXT NOT NULL DEFAULT '',
-    expected_through TEXT NOT NULL DEFAULT ''
+    expected_through TEXT NOT NULL DEFAULT '',
+    mapping_fingerprint TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS freshness_cache (
     source TEXT NOT NULL,
@@ -88,6 +89,7 @@ _LATER_RUN_COLUMNS = (
     ("freshness_sql", "TEXT NOT NULL DEFAULT ''"),
     ("data_through", "TEXT NOT NULL DEFAULT ''"),
     ("expected_through", "TEXT NOT NULL DEFAULT ''"),
+    ("mapping_fingerprint", "TEXT NOT NULL DEFAULT ''"),
 )
 
 
@@ -274,7 +276,8 @@ class SqliteWorkflowStore:
     def finish_run(self, run: QueryRun) -> None:
         self._conn.execute(
             "UPDATE runs SET status=?, sql=?, params=?, columns=?, rows=?, truncated=?, error=?, "
-            "freshness_sql=?, data_through=?, expected_through=? WHERE run_id=?",
+            "freshness_sql=?, data_through=?, expected_through=?, mapping_fingerprint=? "
+            "WHERE run_id=?",
             (
                 run.status.value,
                 run.sql,
@@ -286,6 +289,7 @@ class SqliteWorkflowStore:
                 run.freshness_sql,
                 run.data_through,
                 run.expected_through,
+                run.mapping_fingerprint,
                 run.run_id,
             ),
         )
@@ -308,6 +312,42 @@ class SqliteWorkflowStore:
         if row["subject_id"] != subject_id:
             raise PermissionDenied("not permitted")
         return _decode_run(row)
+
+    # --------------------------------------------------------------- history
+
+    def last_confirmed(
+        self, subject_id: str, workspace_id: str, metric: str, since: datetime
+    ) -> tuple[BusinessDefinition, datetime, str] | None:
+        """The newest definition this subject confirmed and ran for ``metric`` (T42).
+
+        Derived, not kept in a table of its own: a confirmation and a
+        successful run are the record. Only a draft still at the version that
+        was confirmed counts — one amended after its run no longer holds what
+        was approved. Returns the definition, when it was confirmed, and the
+        fingerprint of the mapping that ran.
+        """
+        rows = self._conn.execute(
+            "SELECT d.version, d.definition_hash, d.definition, c.draft_version, "
+            "c.definition_hash AS confirmed_hash, c.confirmed_at, r.mapping_fingerprint "
+            "FROM runs r JOIN confirmations c ON c.confirmation_id = r.confirmation_id "
+            "JOIN drafts d ON d.draft_id = r.draft_id "
+            "WHERE r.subject_id = ? AND d.subject_id = ? AND d.workspace_id = ? "
+            "AND r.status = ? ORDER BY c.confirmed_at DESC",
+            (subject_id, subject_id, workspace_id, RunStatus.SUCCEEDED.value),
+        ).fetchall()
+        for row in rows:
+            confirmed_at = datetime.fromisoformat(row["confirmed_at"])
+            if confirmed_at < since:
+                return None
+            if (row["version"], row["definition_hash"]) != (
+                row["draft_version"],
+                row["confirmed_hash"],
+            ):
+                continue
+            definition = _decode_definition(row["definition"])
+            if definition.metric == metric:
+                return definition, confirmed_at, row["mapping_fingerprint"]
+        return None
 
     # ------------------------------------------------------------- freshness
 
@@ -437,4 +477,5 @@ def _decode_run(row: sqlite3.Row) -> QueryRun:
         freshness_sql=row["freshness_sql"],
         data_through=row["data_through"],
         expected_through=row["expected_through"],
+        mapping_fingerprint=row["mapping_fingerprint"],
     )
