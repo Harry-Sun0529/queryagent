@@ -8,6 +8,8 @@ frozen from v0.1.1 (spec §四).
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-09-11
+
 ### Added
 
 - The result says how far the data reaches. After confirmation, each run
