@@ -93,15 +93,15 @@ class HistoryDraftBuilder:
         )
         if found is None:
             return current
-        past, confirmed_at, ran = found
-        if not ran or ran != self._fingerprint(past):
+        ran_fingerprint = found.mapping_fingerprint
+        if not ran_fingerprint or ran_fingerprint != self._fingerprint(found.definition):
             # The mapping behind that choice changed — or the run predates
             # fingerprints, and nobody can tell whether it did.
             return current
-        day = f"{confirmed_at.astimezone(self._zone):%Y-%m-%d}"
+        day = f"{found.confirmed_at.astimezone(self._zone):%Y-%m-%d}"
         remembered = [
             rule
-            for rule in past.rules
+            for rule in found.definition.rules
             if rule.source in (RuleSource.USER, RuleSource.HISTORY)
             and rule.key not in NOT_REMEMBERED
             and self._still_stands(actor, rule)
@@ -109,8 +109,13 @@ class HistoryDraftBuilder:
         return _offer(current, remembered, day)
 
     def _still_stands(self, actor: ActorContext, rule: Rule) -> bool:
-        """A choice resting on a document is offered only while that document checks out."""
-        if not rule.evidence_ref or rule.key == VARIANT_RULE_KEY:
+        """A choice resting on a document is offered only while that document checks out.
+
+        That includes a reading chosen *because* of an adopted wording (「由采用
+        的文档写法对应」): it rests on the document as much as the wording does.
+        Found in review — the wording lapsed while the reading it chose stayed.
+        """
+        if not rule.evidence_ref:
             return True
         if self._ref_checker is None:
             return False
@@ -129,8 +134,10 @@ def _offer(current: BusinessDefinition, remembered: list[Rule], day: str) -> Bus
     shown: list[Rule] = []
     for rule in remembered:
         if rule.key == VARIANT_RULE_KEY:
-            documented = current.rule(VARIANT_RULE_KEY)
-            if documented is not None and documented.value != rule.value:
+            chosen = current.rule(VARIANT_RULE_KEY)
+            if chosen is not None:
+                if chosen.source is not RuleSource.DOC or chosen.value == rule.value:
+                    continue
                 # E12: the documents chose another reading. Theirs stays; the
                 # sheet says what this person picked last time.
                 candidate = current.candidate(rule.value)

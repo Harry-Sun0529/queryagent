@@ -155,21 +155,23 @@ def _rule_text(
     """
     if rule.key == PERIOD_RULE_KEY:
         try:
-            text = Period.decode(rule.value).render()
+            return _noted(Period.decode(rule.value).render(), rule)
         except ValueError:
             return rule.value
-        return f"{text}（{rule.note}）" if rule.note else text
     if rule.key == GROUP_RULE_KEY:
-        text = grouping_text(rule.value, labels)
-        return f"{text}（{rule.note}）" if rule.note else text
+        return _noted(grouping_text(rule.value, labels), rule)
     if rule.key == FILTER_RULE_KEY:
-        text = filter_text(rule.value, labels)
-        return f"{text}（{rule.note}）" if rule.note else text
+        return _noted(filter_text(rule.value, labels), rule)
     if rule.key == VARIANT_RULE_KEY:
         candidate = definition.candidate(rule.value)
         if candidate is not None:
             return f"{candidate.label} — {candidate.summary}"
     return rule.value
+
+
+def _noted(text: str, rule: Rule) -> str:
+    """A rule's rendered value, with the words it was read from when there are any."""
+    return f"{text}（{rule.note}）" if rule.note else text
 
 
 def render_draft(

@@ -385,3 +385,45 @@ def test_the_flow_prints_the_cadence_note_below_the_sheet(
     assert "维护者声明该表按 T+100000 更新" in sheet
     assert "整个统计区间可能都还没有数据" in sheet
     assert "3.0" in result
+
+
+def test_probe_mode_through_main_probes_before_confirmation_and_runs_nothing_else(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """G9 with the product's own short-timeout executor — found in review that only a
+    fake probe had been tested. Declined: the probe ran, the query did not."""
+    connection = sqlite3.connect(tmp_path / "shop.db")
+    connection.execute("CREATE TABLE orders (created_at TEXT, amount REAL)")
+    connection.execute("INSERT INTO orders VALUES ('2026-08-05', 3.0)")
+    connection.commit()
+    connection.close()
+    (tmp_path / "metrics.yaml").write_text(
+        "metrics:\n  - name: gmv\n    display_name: 成交额\n    definition: 订单金额求和。\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "mappings.yaml").write_text(
+        "mappings:\n  - metric: gmv\n    from: orders\n    measure: SUM(amount)\n"
+        "    label: gmv\n    time_column: created_at\n",
+        encoding="utf-8",
+    )
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        CONFIG.format(
+            db=tmp_path / "shop.db",
+            metrics=tmp_path / "metrics.yaml",
+            mappings=tmp_path / "mappings.yaml",
+            state=tmp_path / "workflow.db",
+            extra="  freshness_before_confirm: probe\n",
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "")
+    code = main(
+        ["flow", "成交额是多少？", "--config", str(config), "--period", "2026-08-01..2026-08-31"]
+    )
+    assert code == 2
+    assert "库中最新一条记录在 2026-08-05" in capsys.readouterr().out
+    state = sqlite3.connect(tmp_path / "workflow.db")
+    assert state.execute("SELECT COUNT(*) FROM runs").fetchone() == (0,)
+    assert state.execute("SELECT latest FROM freshness_cache").fetchall() == [("2026-08-05",)]
+    state.close()
