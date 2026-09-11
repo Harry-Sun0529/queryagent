@@ -20,20 +20,29 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Protocol
 
 from queryagent.budget import Budget, Lease, Unmetered, metered
 from queryagent.connectors.base import QueryResult
 from queryagent.knowledge.models import EvidenceRef, RefStatus
 from queryagent.knowledge.provider import RetrievalScope, scope_of
-from queryagent.workflow.compiler import CompiledQuery, TemplateCompiler
-from queryagent.workflow.coverage import latest_date
+from queryagent.workflow.compiler import CompiledQuery, FreshnessTarget, TemplateCompiler
+from queryagent.workflow.coverage import confirmed_period, latest_date
 from queryagent.workflow.errors import (
     ConfirmationRequired,
     NotFound,
     StaleVersion,
     WorkflowStateError,
+)
+from queryagent.workflow.freshness import (
+    OFF,
+    PROBE,
+    PROBE_FAILED,
+    FreshnessPolicy,
+    describe_declared,
+    describe_probed,
+    expected_latest,
 )
 from queryagent.workflow.models import (
     VARIANT_RULE_KEY,
@@ -47,6 +56,7 @@ from queryagent.workflow.models import (
     RuleSource,
     RunStatus,
 )
+from queryagent.workflow.periods import Period
 from queryagent.workflow.store import SqliteWorkflowStore
 
 
@@ -98,6 +108,7 @@ class QueryWorkflow:
         new_id: IdFactory = _uuid,
         ref_checker: RefChecker | None = None,
         budget: Budget | None = None,
+        freshness: FreshnessPolicy | None = None,
     ) -> None:
         self._store = store
         self._builder = builder
@@ -109,6 +120,7 @@ class QueryWorkflow:
         # Fixed here, from the maintainer's config. No method below takes a
         # budget, so nothing a caller passes later can raise it (G2).
         self._budget = budget if budget is not None else Unmetered()
+        self._freshness = freshness if freshness is not None else FreshnessPolicy()
 
     # ------------------------------------------------------------- prepare
 
@@ -192,6 +204,78 @@ class QueryWorkflow:
         raise ConfirmationRequired(
             "口径所依据的文档已失效（内容变更、被移除，或访问权限调整）；需要重新生成确认单"
         )
+
+    # ----------------------------------------------------------- freshness
+
+    def freshness_advisory(self, actor: ActorContext, draft_id: str) -> tuple[str, ...]:
+        """Notes for the sheet on how far the data reaches, before confirmation (T41).
+
+        Advice, not state: not stored on the draft and not in its hash, so a
+        probe's answer changing as data loads never expires a confirmation
+        (G10). In the default ``declared`` mode this runs nothing (G8). In
+        ``probe`` mode the only statements it may run are the compiler's own
+        ``MAX()`` probes, cached and charged to the budget (G9, ADR-010).
+        Nothing is said without a period: there is no range to fall short of.
+        """
+        draft = self._store.get_draft(actor.subject_id, draft_id)
+        period = confirmed_period(draft.definition)
+        if self._freshness.mode == OFF or period is None:
+            return ()
+        targets = self._compiler.freshness_targets(draft.definition)
+        notes = []
+        for target in targets:
+            note = self._freshness_note(actor, target, period)
+            if note:
+                # Before a reading is chosen, each reading's table may reach
+                # a different date; say which is which.
+                prefix = f"{target.source}.{target.time_column}：" if len(targets) > 1 else ""
+                notes.append(prefix + note)
+        return tuple(notes)
+
+    def _freshness_note(self, actor: ActorContext, target: FreshnessTarget, period: Period) -> str:
+        if self._freshness.mode == PROBE:
+            found = self._probe_before_confirmation(actor, target)
+            if found is not None:
+                latest, probed_at = found
+                return describe_probed(period, latest, probed_at, self._freshness.zone)
+            if target.lag_days is None:
+                return PROBE_FAILED
+        if target.lag_days is None:
+            return ""
+        return describe_declared(period, target.lag_days, self._freshness.today())
+
+    def _probe_before_confirmation(
+        self, actor: ActorContext, target: FreshnessTarget
+    ) -> tuple[date, datetime] | None:
+        """The newest record's date in one table and when it was read, or None.
+
+        Cached per table for ``cache_minutes``; the answer is the same for
+        everyone who may query the table. A failure — timeout, error, spent
+        budget — costs the note, never the draft.
+        """
+        policy = self._freshness
+        if policy.probe is None:
+            return None
+        now = self._clock()
+        cached = self._store.cached_freshness(target.source, target.time_column)
+        if cached is not None and now - cached[1] < timedelta(minutes=policy.cache_minutes):
+            return date.fromisoformat(cached[0]), cached[1]
+        try:
+            with self._budget.admit(actor.subject_id, queries=1) as lease, metered(lease):
+                latest = _latest_in(policy.probe(target.probe))
+        except Exception:  # noqa: BLE001 - advice only; see the docstring
+            return None
+        if latest is None:
+            return None
+        self._store.cache_freshness(target.source, target.time_column, latest.isoformat(), now)
+        return latest, now
+
+    def _expected_through(self, definition: BusinessDefinition) -> str:
+        """Where the declared cadence says this reading's data should reach today, or ''."""
+        targets = self._compiler.freshness_targets(definition)
+        if len(targets) != 1 or targets[0].lag_days is None:
+            return ""
+        return expected_latest(self._freshness.today(), targets[0].lag_days).isoformat()
 
     # --------------------------------------------------------------- amend
 
@@ -346,6 +430,7 @@ class QueryWorkflow:
             status=RunStatus.EXECUTING,
             sql=query.sql,
             params=query.params,
+            expected_through=self._expected_through(draft.definition),
         )
         # A replay is the same request, not a new one: it answers from the
         # stored run whatever today's budget says (T13). Found in testing —
@@ -389,6 +474,7 @@ class QueryWorkflow:
                 error=f"{type(exc).__name__}: {exc}",
                 freshness_sql=freshness_sql,
                 data_through=data_through,
+                expected_through=run.expected_through,
             )
             self._store.finish_run(failed)
             raise
@@ -406,6 +492,7 @@ class QueryWorkflow:
             truncated=result.truncated,
             freshness_sql=freshness_sql,
             data_through=data_through,
+            expected_through=run.expected_through,
         )
         self._store.finish_run(finished)
         return finished
@@ -427,6 +514,11 @@ class QueryWorkflow:
                 result = self._execute_sql(probe)
         except Exception:  # noqa: BLE001 - reported as "unknown" on the result
             return ""
-        first = result.rows[0][0] if result.rows and result.rows[0] else None
-        latest = latest_date(first)
+        latest = _latest_in(result)
         return latest.isoformat() if latest else ""
+
+
+def _latest_in(result: QueryResult) -> date | None:
+    """The date in a ``MAX(time_column)`` result, or None when there is none."""
+    first = result.rows[0][0] if result.rows and result.rows[0] else None
+    return latest_date(first)

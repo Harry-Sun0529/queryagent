@@ -93,6 +93,7 @@ from queryagent.workflow.errors import (
 )
 from queryagent.workflow.evidence_builder import CompositeDraftBuilder, EvidenceDraftBuilder
 from queryagent.workflow.execution import make_connector_executor
+from queryagent.workflow.freshness import PROBE, FreshnessPolicy, describe_lag
 from queryagent.workflow.grouping import Dimension, GroupingError, find_grouping, parse_grouping
 from queryagent.workflow.mappings import load_dimensions, load_mappings
 from queryagent.workflow.models import (
@@ -710,6 +711,34 @@ def _budget(config: AppConfig, stack: contextlib.ExitStack) -> Budget:
     return ledger
 
 
+def _freshness_policy(config: AppConfig, connector: Connector, today: date) -> FreshnessPolicy:
+    """ADR-010: the declared cadence by default; the probe only if the maintainer opted in."""
+    workflow = config.workflow
+    probe = (
+        make_connector_executor(
+            connector, timeout_s=workflow.freshness_probe_timeout_s, max_rows=1
+        )
+        if workflow.freshness_before_confirm == PROBE
+        else None
+    )
+    return FreshnessPolicy(
+        mode=workflow.freshness_before_confirm,
+        today=lambda: today,
+        probe=probe,
+        cache_minutes=workflow.freshness_cache_minutes,
+        zone=ZoneInfo(workflow.timezone),
+    )
+
+
+def _print_freshness(workflow: QueryWorkflow, actor: ActorContext, draft: DefinitionDraft) -> None:
+    """Below the sheet, apart from it: advice about the data, not part of the 口径."""
+    notes = workflow.freshness_advisory(actor, draft.draft_id)
+    if notes:
+        print("\n数据新鲜度（确认前的参考，不属于口径）：")
+        for note in notes:
+            print(f"  · {note}")
+
+
 def _scan_limit(config: AppConfig) -> int | None:
     return config.budget.max_rows_scanned if config.budget else None
 
@@ -789,6 +818,7 @@ def _cmd_flow(args: argparse.Namespace) -> int:
             ),
             ref_checker=provider,
             budget=_budget(config, stack),
+            freshness=_freshness_policy(config, connector, today),
         )
         known = {source.workspace for source in config.knowledge.sources}
         if provider is not None and actor.workspace_id not in known:
@@ -856,6 +886,7 @@ def _run_flow(
     if cited:
         workflow.attach_evidence(actor, draft.draft_id, cited)
     print(render_draft(draft, citations, labels))
+    _print_freshness(workflow, actor, draft)
     if provider is not None and not citations:
         print("\n（未检索到该身份可见的相关文档；以下口径仅来自系统映射）")
 
@@ -870,6 +901,7 @@ def _run_flow(
             )
             print()
             print(render_draft(draft, citations, labels))
+            _print_freshness(workflow, actor, draft)
 
     if not args.yes and not _prompt_confirm():
         print("\n[已取消] 未确认口径，没有执行任何查询。")
@@ -891,6 +923,9 @@ def _run_flow(
     coverage = render_coverage(draft.definition, run)
     if coverage:
         print(f"  （{coverage}）")
+    lag = describe_lag(run.expected_through, run.data_through)
+    if lag:
+        print(f"  （{lag}）")
     grouping_note = render_grouping_note(draft.definition)
     if grouping_note:
         print(f"  （{grouping_note}）")

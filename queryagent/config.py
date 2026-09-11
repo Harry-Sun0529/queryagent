@@ -106,6 +106,12 @@ class WorkflowConfig:
     timezone: str = "Asia/Shanghai"
     """Which day "今天" is when a question says 「上个月」. It does not convert
     stored timestamps: data is compared in the time it was stored in."""
+    freshness_before_confirm: str = "declared"
+    """What the sheet may learn about the data's reach before confirmation
+    (ADR-010): ``declared`` cadence only, zero queries; ``probe`` also runs
+    the compiler's ``MAX()`` probe; ``off`` says nothing until the result."""
+    freshness_probe_timeout_s: int = 2
+    freshness_cache_minutes: int = 10
 
 
 @dataclass(frozen=True)
@@ -325,11 +331,24 @@ def _load_workflow(section: dict[str, Any]) -> WorkflowConfig:
         ZoneInfo(timezone)
     except (ZoneInfoNotFoundError, ValueError) as exc:
         raise ValueError(f"workflow.timezone: unknown time zone {timezone!r}") from exc
+    mode = _opt_str(section, "freshness_before_confirm") or "declared"
+    if mode not in _FRESHNESS_MODES:
+        raise ValueError(
+            f"workflow.freshness_before_confirm must be one of {', '.join(_FRESHNESS_MODES)}, "
+            f"got {mode!r}"
+        )
     return WorkflowConfig(
         mappings_path=_opt_str(section, "mappings_path"),
         state_path=_opt_str(section, "state_path") or ".queryagent/workflow.db",
         timezone=timezone,
+        freshness_before_confirm=mode,
+        freshness_probe_timeout_s=_pos_int(section, "freshness_probe_timeout_s", 2, "workflow"),
+        freshness_cache_minutes=_pos_int(section, "freshness_cache_minutes", 10, "workflow"),
     )
+
+
+# Spelled out rather than imported: config loads before the workflow package.
+_FRESHNESS_MODES = ("declared", "probe", "off")
 
 
 def _load_llm(section: dict[str, Any]) -> LLMConfig:
