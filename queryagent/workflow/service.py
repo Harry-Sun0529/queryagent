@@ -35,6 +35,7 @@ from queryagent.workflow.errors import (
     WorkflowStateError,
 )
 from queryagent.workflow.models import (
+    VARIANT_RULE_KEY,
     ActorContext,
     BusinessDefinition,
     Confirmation,
@@ -72,11 +73,6 @@ class RefChecker(Protocol):
 Executor = Callable[[CompiledQuery], QueryResult]
 Clock = Callable[[], datetime]
 IdFactory = Callable[[], str]
-
-
-def _parse_ref(rendered: str) -> EvidenceRef:
-    """Rebuild a citation from its stored string form."""
-    return EvidenceRef.parse(rendered)
 
 
 def _now() -> datetime:
@@ -181,7 +177,7 @@ class QueryWorkflow:
         stored = self._store.evidence_of(actor.subject_id, draft_id)
         if not stored:
             return
-        refs = tuple(_parse_ref(ref) for ref in stored)
+        refs = tuple(EvidenceRef.parse(ref) for ref in stored)
         statuses = self._ref_checker.check_refs(scope_of(actor), refs)
         if all(status is RefStatus.OK for status in statuses):
             return
@@ -222,6 +218,25 @@ class QueryWorkflow:
             raise WorkflowStateError(
                 f"用户补充的规则只能标为「本次约定」，不能自称文档依据或系统映射：{keys}"
             )
+        # One amendment is one act of one user. Adopting a handbook's wording
+        # that names one reading while choosing another in the same breath
+        # is a contradiction, and running either is a guess (F13). Choosing
+        # against a handbook in a *separate* amendment stays allowed — it is
+        # shown on the sheet as a conflict.
+        chosen = next((rule for rule in rules if rule.key == VARIANT_RULE_KEY), None)
+        if chosen is not None:
+            contradicted = sorted(
+                rule.key
+                for rule in rules
+                if rule.key != VARIANT_RULE_KEY
+                and rule.implies
+                and chosen.value not in rule.implies
+            )
+            if contradicted:
+                raise WorkflowStateError(
+                    f"同一次补充里，采用的文档写法（{', '.join(contradicted)}）对应的口径与"
+                    f"选定口径 {chosen.value} 矛盾；请只保留一个"
+                )
         current = self._store.get_draft(actor.subject_id, draft_id)
         definition = current.definition.with_rules(rules)
         updated = DefinitionDraft(

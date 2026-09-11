@@ -9,9 +9,10 @@ resembles: 「日均」 read as 「每天」 is a table posing as an average, an
 as nothing it is a total posing as one.
 
 Time grains are fixed here; dimensions are declared by a maintainer, per
-table, in the mappings file. Words for a dimension nobody declared are not
-recognised at all — the system cannot know that 「按渠道」 was a request to
-split — which is a limit the docs state rather than a guess this code makes.
+table, in the mappings file. A split by something nobody declared is asked
+about when the question says it in an explicit shape (「各城市的」,
+「按城市分组」); looser phrasings of an undeclared split are not recognised,
+which is a limit the docs state rather than a guess this code makes.
 """
 
 from __future__ import annotations
@@ -99,12 +100,24 @@ def grouping_text(value: str, labels: Mapping[str, str] | None = None) -> str:
 _UNSUPPORTED = re.compile(
     r"日均|周均|月均|平均每[天日周月]|每[天日周月]平均|每小时|按小时|每季度|按季度|每年|按年"
 )
+# 「分」 is a split word only on its own: in 「部分」 or 「区分」 it is part of
+# another word, and 「部分渠道」 is a subset, not a split. 「按日期」 is not
+# 「按日」 either — it is as often which date attributes a record as how the
+# result is split, so it is left to the undeclared-split check below.
+_SPLIT_FEN = r"(?<![部区])分"
 _TIME_PATTERNS = (
-    (re.compile(r"每一?天|每日|按天|按日|逐日|分天|分日"), DAY),
-    (re.compile(r"每一?周|每个?星期|按周|逐周|分周"), WEEK),
-    (re.compile(r"每一?个?月|按月|逐月|分月"), MONTH),
+    (re.compile(rf"每一?天|每日|按天|按日(?!期)|逐日|{_SPLIT_FEN}天|{_SPLIT_FEN}日(?!期)"), DAY),
+    (re.compile(rf"每一?周|每个?星期|按周|逐周|{_SPLIT_FEN}周"), WEEK),
+    (re.compile(rf"每一?个?月|按月|逐月|{_SPLIT_FEN}月"), MONTH),
 )
-_SPLIT_WORDS = r"(?:按|分|各|每一个|每个|不同)\s*"
+_SPLIT_WORDS = rf"(?:按|{_SPLIT_FEN}|各个|各|每一个|每个|不同)\s*"
+# A split asked for by something no maintainer declared: 「各城市的」,
+# 「每个用户的」, 「按城市分组」. Recognised only in these explicit shapes, and
+# never where a declared dimension or a time grain already matched.
+_UNDECLARED = re.compile(
+    r"(?:(?<![部区])各个?(?![自位种类])|每一?个|不同的?)([一-鿿]{1,4}?)的"
+    r"|按([一-鿿]{1,4}?)(?:分组|拆分|划分|分别|统计)"
+)
 
 
 def _dimension_pattern(dimension: Dimension) -> re.Pattern[str]:
@@ -134,6 +147,17 @@ def find_grouping(question: str, dimensions: tuple[Dimension, ...] = ()) -> Foun
         found.extend(
             (m.start(), FoundGrouping(f"{DIMENSION_PREFIX}{dimension.key}", m.group(0)))
             for m in _dimension_pattern(dimension).finditer(question)
+        )
+    taken = [(start, start + len(item.phrase)) for start, item in found]
+    for match in _UNDECLARED.finditer(question):
+        start, end = match.span()
+        if any(start < right and left < end for left, right in taken):
+            continue
+        noun = match.group(1) or match.group(2)
+        declared = "、".join(d.label for d in dimensions) or "无"
+        raise GroupingError(
+            f"问题像是要按「{noun}」分组，但维护者没有声明这个维度（已声明：{declared}）。"
+            "可以按天 / 周 / 月或已声明的维度分组；要一个总数请写不分组。"
         )
     if not found:
         return None

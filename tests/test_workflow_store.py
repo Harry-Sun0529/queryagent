@@ -184,6 +184,38 @@ def test_a_state_file_from_before_bound_values_is_upgraded_in_place(tmp_path: Pa
     assert store.get_run("alice", "r1").params == ("x",)
 
 
+def test_correspondences_are_written_only_when_present(tmp_path: Path) -> None:
+    """A v0.7 reader builds candidates with Candidate(**c); an unknown key breaks it."""
+    import dataclasses
+    import json
+    import sqlite3
+
+    from queryagent.workflow.models import Candidate
+
+    definition = BusinessDefinition(
+        metric="new_users",
+        display_name="新增用户",
+        rules=(
+            Rule(
+                "counting_basis",
+                "按注册日期",
+                RuleSource.DOC,
+                evidence_ref="d1#c1@0:9",
+                implies=("registered",),
+            ),
+        ),
+        candidates=(Candidate("registered", "注册口径", "按注册日期"),),
+    )
+    path = tmp_path / "workflow.db"
+    store = SqliteWorkflowStore(path)
+    store.create_draft(dataclasses.replace(_draft(), definition=definition))
+    raw = json.loads(
+        sqlite3.connect(path).execute("SELECT definition FROM drafts").fetchone()[0]
+    )
+    assert "implies" not in raw["candidates"][0]
+    assert store.get_draft("alice", "d1").definition.rules[0].implies == ("registered",)
+
+
 def test_missing_draft_is_reported_as_not_found(store: SqliteWorkflowStore) -> None:
     from queryagent.workflow.errors import NotFound
 

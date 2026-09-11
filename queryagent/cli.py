@@ -760,13 +760,12 @@ def _run_flow(
             expected_version=draft.version,
             rules=(_stated_period(args.period, today),),
         )
-    group_by = getattr(args, "group_by", None)
-    if group_by:
+    if args.group_by:
         draft = workflow.amend(
             actor,
             draft.draft_id,
             expected_version=draft.version,
-            rules=(_stated_grouping(group_by, dimensions),),
+            rules=(_stated_grouping(args.group_by, dimensions),),
         )
     documented = draft.definition.rule(VARIANT_RULE_KEY)
     if args.variant and documented is not None and documented.value != args.variant:
@@ -996,7 +995,7 @@ def _open_choices(
         )
     for key in gaps:
         if key == GROUP_RULE_KEY:
-            text = getattr(args, "group_by", None) or supplied.get(key) or _prompt_grouping()
+            text = args.group_by or supplied.get(key) or _prompt_grouping()
             if not text:
                 return None
             rules.append(_stated_grouping(text, dimensions))

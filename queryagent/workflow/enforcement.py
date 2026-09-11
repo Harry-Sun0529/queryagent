@@ -53,10 +53,11 @@ def _fold(text: str) -> str:
 def implied_variants(terms: Terms, key: str, quote: str) -> tuple[str, ...]:
     """The readings whose declared words for ``key`` appear in ``quote``.
 
-    Several readings may share a word — both 新增用户 readings exclude test
-    accounts — and then the rule is applied by each of them. Two readings
-    matched on words the other does not share means the quote names both,
-    and nothing is claimed.
+    A word only one matched reading declares singles that reading out; words
+    every matched reading shares (both 新增用户 readings exclude test
+    accounts) mean each of them applies the rule. So: one reading with words
+    of its own → that reading; two or more → the quote names several, and
+    nothing is claimed; none → all the readings that matched.
     """
     folded = _fold(quote)
     matched: dict[str, frozenset[str]] = {}
@@ -64,10 +65,15 @@ def implied_variants(terms: Terms, key: str, quote: str) -> tuple[str, ...]:
         hits = frozenset(word for word in by_key.get(key, ()) if _fold(word) in folded)
         if hits:
             matched[variant] = hits
-    words = list(matched.values())
-    for index, first in enumerate(words):
-        if any(not first & other for other in words[index + 1 :]):
-            return ()
+    own = [
+        variant
+        for variant, hits in matched.items()
+        if hits - frozenset().union(*(h for v, h in matched.items() if v != variant))
+    ]
+    if len(own) > 1:
+        return ()
+    if own:
+        return (own[0],)
     return tuple(sorted(matched))
 
 

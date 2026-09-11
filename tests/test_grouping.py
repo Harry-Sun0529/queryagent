@@ -1,4 +1,4 @@
-"""T38: 「每天」「按渠道」 become one confirmable grouping, or a question to ask.
+"""Slice 1C-2: 「每天」「按渠道」 become one confirmable grouping, or a question (T38).
 
 Parsing, the groups a period touches, and the draft rule. The SQL is in
 test_query_compiler.py; the numbers per group in the end-to-end and
@@ -28,8 +28,17 @@ from queryagent.workflow.grouping import (
     parse_grouping,
 )
 from queryagent.workflow.mappings import load_dimensions
-from queryagent.workflow.models import GROUP_RULE_KEY, RuleSource
+from queryagent.workflow.models import (
+    GROUP_RULE_KEY,
+    PERIOD_RULE_KEY,
+    BusinessDefinition,
+    QueryRun,
+    Rule,
+    RuleSource,
+    RunStatus,
+)
 from queryagent.workflow.periods import Period
+from queryagent.workflow.render import render_rows
 
 CHANNEL = Dimension("channel", "渠道", ("来源渠道",), (("users", "channel"),))
 REGION = Dimension("region", "地区", ("区域",), (("users", "region"),))
@@ -86,9 +95,24 @@ def test_the_same_grouping_said_twice_is_one() -> None:
     assert found is not None and found.value == DAY
 
 
-def test_words_for_an_undeclared_dimension_are_not_recognised() -> None:
-    """The stated limit: without a declaration there is no way to know 渠道 is a split."""
-    assert find_grouping("上个月各渠道的新增用户") is None
+@pytest.mark.parametrize(
+    "question", ["上个月各城市的新增用户", "按城市分组的新增用户", "每个用户的成交额"]
+)
+def test_a_split_by_an_undeclared_dimension_is_asked_about_rather_than_totalled(
+    question: str,
+) -> None:
+    """F9: a table was asked for; one total would silently answer something else."""
+    with pytest.raises(GroupingError, match="没有声明这个维度"):
+        find_grouping(question, DIMENSIONS)
+
+
+@pytest.mark.parametrize(
+    "question",
+    ["上个月部分渠道的新增用户", "部分月份的成交额", "区分日期的新增用户", "上个月各自的新增用户"],
+)
+def test_words_that_merely_contain_a_split_word_are_not_a_split(question: str) -> None:
+    """Found in review: 「部分」 is a subset and 「区分」 a verb, not 「分」 + a noun."""
+    assert find_grouping(question, DIMENSIONS) is None
 
 
 @pytest.mark.parametrize(
@@ -137,7 +161,7 @@ def test_weekly_groups_start_on_the_monday_before_the_period() -> None:
     assert edges_are_partial(AUGUST, WEEK)
 
 
-def test_monthly_groups_and_their_edges() -> None:
+def test_the_months_a_period_touches_are_its_groups_and_partial_ones_are_flagged() -> None:
     summer = Period(date(2026, 7, 15), date(2026, 9, 10))
     assert bucket_starts(summer, MONTH) == (date(2026, 7, 1), date(2026, 8, 1), date(2026, 9, 1))
     assert edges_are_partial(summer, MONTH)
@@ -233,3 +257,43 @@ def test_a_mappings_file_without_dimensions_declares_none(tmp_path: Path) -> Non
     path = tmp_path / "m.yaml"
     path.write_text("mappings: []\n", encoding="utf-8")
     assert load_dimensions(path) == ()
+
+
+# ------------------------------------------------------------ filled result
+
+
+def _daily_lines(rows: tuple[tuple[object, ...], ...], data_through: str) -> list[str]:
+    definition = BusinessDefinition(
+        "new_users",
+        "新增用户",
+        rules=(
+            Rule(PERIOD_RULE_KEY, "2026-08-01..2026-08-05", RuleSource.USER),
+            Rule(GROUP_RULE_KEY, DAY, RuleSource.USER),
+        ),
+    )
+    run = QueryRun(
+        "r", "d", "c", "alice", "k", RunStatus.SUCCEEDED,
+        columns=("日期", "n"),
+        rows=rows,
+        freshness_sql="SELECT MAX(created_at) FROM users",
+        data_through=data_through,
+    )  # fmt: skip
+    return render_rows(definition, run)
+
+
+def test_an_empty_day_inside_the_data_reads_no_records_and_after_it_no_data() -> None:
+    """F8: the two absences are different claims, and each day gets its own line."""
+    lines = _daily_lines((("2026-08-01", 5), ("2026-08-03", 2)), "2026-08-03")
+    assert lines[1:] == [
+        "  2026-08-01 | 5",
+        "  2026-08-02 | （无记录）",
+        "  2026-08-03 | 2",
+        "  2026-08-04 | （无数据）",
+        "  2026-08-05 | （无数据）",
+    ]
+
+
+def test_when_the_datas_reach_is_unknown_an_empty_day_is_called_neither() -> None:
+    """Found in review: a failed probe must not turn 无数据 into 无记录 (F5)."""
+    lines = _daily_lines((("2026-08-01", 5),), "")
+    assert lines[2:] == [f"  2026-08-0{day} | （未知：无记录或尚无数据）" for day in (2, 3, 4, 5)]

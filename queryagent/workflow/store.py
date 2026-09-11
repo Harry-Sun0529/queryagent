@@ -312,7 +312,7 @@ def _encode_definition(definition: BusinessDefinition) -> str:
                     "source": r.source.value,
                     "evidence_ref": r.evidence_ref,
                     "note": r.note,
-                    "implies": list(r.implies),
+                    **_implies_field(r.implies),
                 }
                 for r in definition.rules
             ],
@@ -323,13 +323,20 @@ def _encode_definition(definition: BusinessDefinition) -> str:
                     "label": c.label,
                     "summary": c.summary,
                     "evidence_ref": c.evidence_ref,
-                    "implies": list(c.implies),
+                    **_implies_field(c.implies),
                 }
                 for c in definition.candidates
             ],
         },
         ensure_ascii=False,
     )
+
+
+def _implies_field(implies: tuple[str, ...]) -> dict[str, list[str]]:
+    """Written only when present, so a v0.7 reader — which builds candidates
+    with ``Candidate(**c)`` — can still open every draft that uses no T39
+    correspondence."""
+    return {"implies": list(implies)} if implies else {}
 
 
 def _decode_definition(text: str) -> BusinessDefinition:

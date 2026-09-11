@@ -78,12 +78,14 @@ def describe_emptiness(
     nothing to match. COUNT's 0 is a real answer and gets no note here; the
     coverage note says when that 0 is only an absence of data.
     """
+    # Short on purpose: the coverage note printed next says where the data
+    # ends and why this is not 0; saying it twice is noise.
+    beyond = period is not None and latest is not None and latest < period.start
     if not rows:
-        return "查询没有返回任何行"
+        # A grouped query over a period with no data returns no groups at all.
+        return "结果为空：统计区间内还没有数据" if beyond else "查询没有返回任何行"
     if all(value is None for row in rows for value in row):
-        if period is not None and latest is not None and latest < period.start:
-            # Short on purpose: the coverage note printed next says where the
-            # data ends and why this is not 0; saying it twice is noise.
+        if beyond:
             return "结果为空：统计区间内还没有数据"
         return "结果为空：该统计区间内没有匹配的记录。空不等于 0"
     return ""

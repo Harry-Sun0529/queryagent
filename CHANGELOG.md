@@ -26,7 +26,9 @@ frozen from v0.1.1 (spec §四).
   weeks and months are said to be partial. 「日均」, 「每小时」 and two
   different splits are asked about instead of approximated; `--group-by`
   states or replaces one (`none` for one total). Documents cannot set it,
-  and a dimension not declared for a mapping's table is refused, not joined.
+  a dimension not declared for a mapping's table is refused, not joined,
+  and a split by something no maintainer declared (「各城市的」) is asked
+  about rather than answered with a total.
 - Document rules are checked against what runs. A structured mapping may
   declare `enforces:` — the rule keys its SQL applies and the words a
   handbook would use for them. A document rule whose verified quote contains
