@@ -76,6 +76,7 @@ from queryagent.trace import (
     prune_traces,
     read_trace,
 )
+from queryagent.web.server import ConfirmationServer
 from queryagent.workflow.answers import (
     adopted_rule,
     implied_variant_rule,
@@ -91,6 +92,7 @@ from queryagent.workflow.errors import (
     PermissionDenied,
     StaleVersion,
     WorkflowError,
+    WorkflowStateError,
 )
 from queryagent.workflow.grouping import (
     Dimension,
@@ -108,6 +110,7 @@ from queryagent.workflow.models import (
     Candidate,
     Channel,
     DefinitionDraft,
+    DraftProgress,
     DraftStatus,
     Rule,
     RuleSource,
@@ -119,6 +122,7 @@ from queryagent.workflow.render import (
     rule_label,
 )
 from queryagent.workflow.service import QueryWorkflow
+from queryagent.workflow.store import SqliteWorkflowStore
 from queryagent.workflow.wiring import (
     WorkflowWiring,
     build_workflow,
@@ -271,6 +275,33 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="do not offer the choices this person confirmed last time",
     )
 
+    web = subparsers.add_parser(
+        "web",
+        help="the local confirmation page (127.0.0.1 only): review and confirm what an "
+        "agent prepared",
+    )
+    web.add_argument("--config", default="config.yaml", help="path to config.yaml")
+    web.add_argument("--subject", default=_local_subject(), help="the person confirming")
+    web.add_argument("--workspace", default="default", help="business workspace id")
+    web.add_argument("--port", type=int, default=8765, help="port on 127.0.0.1 (default 8765)")
+
+    drafts = subparsers.add_parser("drafts", help="list the 口径 waiting for your confirmation")
+    drafts.add_argument("--config", default="config.yaml", help="path to config.yaml")
+    drafts.add_argument("--subject", default=_local_subject(), help="acting user id")
+    drafts.add_argument("--workspace", default="default", help="business workspace id")
+
+    confirm = subparsers.add_parser(
+        "confirm",
+        help="review one draft in the terminal and confirm it; the agent that prepared it "
+        "then executes it, once",
+    )
+    confirm.add_argument(
+        "draft_id", help="the draft id, or its first characters as the sheet shows them"
+    )
+    confirm.add_argument("--config", default="config.yaml", help="path to config.yaml")
+    confirm.add_argument("--subject", default=_local_subject(), help="acting user id")
+    confirm.add_argument("--workspace", default="default", help="business workspace id")
+
     kb = subparsers.add_parser("kb", help="build and inspect the document evidence index")
     kb.add_argument("kb_action", choices=["import", "list"], help="what to do")
     kb.add_argument("--config", default="config.yaml", help="path to config.yaml")
@@ -311,6 +342,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "ask": _cmd_ask,
         "flow": _cmd_flow,
         "mcp": _cmd_mcp,
+        "web": _cmd_web,
+        "drafts": _cmd_drafts,
+        "confirm": _cmd_confirm,
         "kb": _cmd_kb,
         "replay": _cmd_replay,
         "eval": _cmd_eval,
@@ -857,6 +891,117 @@ def _cmd_mcp(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return make_server(wiring, actor).serve(sys.stdin.buffer, sys.stdout.buffer)
+
+
+def _cmd_web(args: argparse.Namespace) -> int:
+    """Serve the local confirmation page until Ctrl-C (T45, P06).
+
+    Bound to 127.0.0.1 only; there is no option to listen anywhere else. The
+    login link is printed once and works once.
+    """
+    config = load_config(args.config)
+    actor = ActorContext(
+        subject_id=args.subject, workspace_id=args.workspace, channel=Channel.WEB
+    )
+    with contextlib.ExitStack() as stack:
+        wiring = build_workflow(config, actor, stack, offer_history=True)
+        for notice in wiring.notices:
+            print(notice, file=sys.stderr)
+        try:
+            server = ConfirmationServer(wiring, actor, args.port)
+        except OSError as exc:
+            raise ValueError(
+                f"无法在 127.0.0.1:{args.port} 启动确认页（{exc}）；用 --port 换一个端口"
+            ) from exc
+        stack.callback(server.server_close)
+        print(f"确认页（{actor.subject_id}@{actor.workspace_id}）：{server.login_url}", flush=True)
+        print("登录链接只能用一次，且只在本机可访问。按 Ctrl-C 关闭。", flush=True)
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            print("\n确认页已关闭。")
+    return 0
+
+
+def _cmd_drafts(args: argparse.Namespace) -> int:
+    """List the drafts waiting on this person, so an agent's drafts are not confirmed blind."""
+    config = load_config(args.config)
+    store = SqliteWorkflowStore(config.workflow.state_path)
+    try:
+        drafts = store.pending_drafts(args.subject, args.workspace)
+    finally:
+        store.close()
+    if not drafts:
+        print(f"没有等待 {args.subject}@{args.workspace} 确认的口径。")
+        return 0
+    print(f"等待 {args.subject}@{args.workspace} 确认的口径：")
+    for draft in drafts:
+        state = "待补充" if draft.status is DraftStatus.NEEDS_INPUT else "待确认"
+        print(
+            f"  #{draft.draft_id[:8]}  v{draft.version}  {state}  "
+            f"{draft.definition.display_name}  {draft.question}"
+        )
+    print("\n用 queryagent confirm <草案号> 在终端查看并确认，或用 queryagent web 在浏览器里确认。")
+    return 0
+
+
+def _cmd_confirm(args: argparse.Namespace) -> int:
+    """Review one draft in the terminal and confirm it (T45).
+
+    The terminal door for drafts an agent prepared over MCP: the sheet, any
+    open choices as prompts, then the same y/N as ``flow``. It confirms and
+    does not execute; the agent runs the confirmed version, once. Exit 0
+    when confirmed (or already confirmed), 2 when declined or refused.
+    """
+    config = load_config(args.config)
+    actor = ActorContext(subject_id=args.subject, workspace_id=args.workspace)
+    today = business_today(config)
+    with contextlib.ExitStack() as stack:
+        wiring = build_workflow(config, actor, stack, offer_history=False, today=lambda: today)
+        for notice in wiring.notices:
+            print(notice, file=sys.stderr)
+        workflow = wiring.workflow
+        draft = workflow.find_draft(actor, args.draft_id)
+        if draft.workspace_id != actor.workspace_id:
+            raise WorkflowStateError(
+                f"草案 #{draft.draft_id[:8]} 属于业务空间 '{draft.workspace_id}'；"
+                f"加上 --workspace {draft.workspace_id} 再确认"
+            )
+        progress = workflow.progress(actor, draft.draft_id)
+        if progress is DraftProgress.EXPIRED:
+            raise ConfirmationRequired(f"draft {draft.draft_id} has expired; prepare it again")
+        if progress in (DraftProgress.CONFIRMED, DraftProgress.EXECUTED):
+            print(f"草案 #{draft.draft_id[:8]} v{draft.version} 的当前版本已经确认过。")
+            return 0
+        citations = wiring.citations(actor, draft.question)
+        print(render_draft(draft, citations, wiring.labels))
+        _print_freshness(workflow, actor, draft)
+        if draft.status is DraftStatus.NEEDS_INPUT:
+            asked = argparse.Namespace(
+                adopt=[], rule=[], variant=None, period=None, group_by=None, value_filter=None
+            )
+            rules = _open_choices(draft, asked, citations, today, wiring.dimensions)
+            if rules is None:
+                print("\n[已取消] 口径仍有未定项，没有确认。")
+                return 2
+            if rules:
+                draft = workflow.amend(
+                    actor, draft.draft_id, expected_version=draft.version, rules=rules
+                )
+                print()
+                print(render_draft(draft, citations, wiring.labels))
+                _print_freshness(workflow, actor, draft)
+        if not _prompt_confirm():
+            print("\n[已取消] 未确认口径，没有执行任何查询。")
+            return 2
+        workflow.confirm(
+            actor, draft.draft_id, version=draft.version, definition_hash=draft.definition_hash
+        )
+        print(
+            f"\n已在终端确认 #{draft.draft_id[:8]} v{draft.version}。回到 Agent，让它调用 "
+            "execute_query 执行；一次确认只执行一次。"
+        )
+        return 0
 
 
 def _explain_missing_period(question: str, today: date) -> None:

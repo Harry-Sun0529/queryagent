@@ -256,12 +256,14 @@ def sheet_lines(
         lines.extend(["", header])
         lines.extend(_candidate_lines(variants, citations))
     for rule_key, options in disagreements.items():
-        # Once adopted, the choice is a 本次约定 rule above, with its source;
-        # the options stay listed so the rejected reading is not hidden.
+        # Once adopted, the choice is a rule above, marked with whoever adopted
+        # it; the options stay listed so the rejected reading is not hidden.
+        adopted = definition.rule(rule_key)
+        mark = _SOURCE_LABELS[adopted.source if adopted is not None else RuleSource.USER]
         state = (
             "需要你采用其中一种写法"
             if rule_key in definition.missing
-            else "已采用其中一种，见上方「本次约定」"
+            else f"已采用其中一种，见上方「{mark}」"
         )
         lines.extend(["", f"文档之间的分歧 · {rule_label(rule_key)}（{state}）："])
         lines.extend(_candidate_lines(options, citations, definition))

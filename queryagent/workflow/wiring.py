@@ -12,7 +12,7 @@ from __future__ import annotations
 import contextlib
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone, tzinfo
 from zoneinfo import ZoneInfo
 
 from queryagent.budget import Budget, SqliteBudgetLedger, Unmetered
@@ -50,6 +50,8 @@ class WorkflowWiring:
     today: Callable[[], date]
     notices: tuple[str, ...]
     """Things the operator should hear before the first draft, for stderr."""
+    zone: tzinfo = timezone.utc
+    """The business time zone: what a page shows a stored moment in."""
 
     @property
     def labels(self) -> dict[str, str]:
@@ -180,6 +182,7 @@ def build_workflow(
         provider=provider,
         today=resolve_today,
         notices=tuple(notices),
+        zone=ZoneInfo(config.workflow.timezone),
     )
 
 

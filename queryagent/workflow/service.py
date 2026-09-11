@@ -176,6 +176,19 @@ class QueryWorkflow:
         """Read one draft the actor owns."""
         return self._store.get_draft(actor.subject_id, draft_id)
 
+    def pending_drafts(self, actor: ActorContext) -> tuple[DefinitionDraft, ...]:
+        """The actor's drafts in their workspace still waiting on them, newest first (T45)."""
+        return self._store.pending_drafts(actor.subject_id, actor.workspace_id)
+
+    def find_draft(self, actor: ActorContext, prefix: str) -> DefinitionDraft:
+        """The actor's draft whose id starts with ``prefix``; the sheet shows eight characters."""
+        ids = self._store.draft_ids_starting(actor.subject_id, prefix)
+        if not ids:
+            raise NotFound(f"no such draft: {prefix}")
+        if len(ids) > 1:
+            raise WorkflowStateError(f"草案号 {prefix} 对应 {len(ids)} 份草案；请多写几位")
+        return self._store.get_draft(actor.subject_id, ids[0])
+
     def get_run(self, actor: ActorContext, run_id: str) -> QueryRun:
         """Read one run the actor owns."""
         return self._store.get_run(actor.subject_id, run_id)

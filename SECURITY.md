@@ -18,6 +18,11 @@ you would take toward user-supplied SQL.
    handbooks flow into the prompt too. This is the *easiest* of the four for
    an insider to write to: anyone who can edit a Markdown file in an indexed
    directory can put "ignore previous instructions" in front of the model.
+5. **The calling agent** — since 1.0 an agent host can drive the confirmed
+   flow over MCP. The agent may be wrong, or steered by something it read;
+   the one thing it must not be able to do is approve a query on its
+   person's behalf. The confirmation page it points the person to is a local
+   web server, with the usual local-server attacks against it.
 
 ## Defence in depth (three independent layers)
 
@@ -109,6 +114,51 @@ other draft — deleting the file forgets them. A remembered choice that
 adopted a document is re-checked against the subject's current access
 before it is offered, and one that no longer checks out is dropped without
 saying which document it was.
+
+## Agents over MCP (`queryagent mcp`)
+
+[ADR-013](docs/adr/013-agents-prepare-people-confirm.md). The MCP server has
+five tools — list, prepare, amend, status, execute — and none of them
+confirms. Beneath that, the service refuses a confirmation from the MCP
+channel, and the lookup `execute_query` relies on accepts only confirmations
+recorded from the terminal or the page. Without one, nothing runs.
+
+- **Identity** is the `--subject` / `--workspace` the host's configuration
+  starts the server with. No tool takes an identity; an argument naming one
+  is refused.
+- **What the agent fills in** is marked 「Agent 代填」, is part of the content
+  hash, is highlighted on the page, and is named again on the result. It
+  cannot be written as 「本次约定」 or 「文档依据」.
+- **One confirmation authorises one run.** The confirmation is the
+  idempotency key; running again takes a person confirming again.
+- stdout carries protocol frames only.
+
+## The confirmation page (`queryagent web`)
+
+Bound to 127.0.0.1, with no option to bind anywhere else. Logging in takes a
+link printed on the terminal that started the server; it works once, and
+anyone who can read that terminal can use it. The session lives in the
+server's memory, as an `HttpOnly; SameSite=Strict` cookie, so a restart logs
+everyone out.
+
+| attack | check, in this order |
+|---|---|
+| DNS rebinding (another site's hostname resolving to 127.0.0.1) | every request's `Host` must be this server's own address |
+| CSRF (another site's form, riding the cookie) | `SameSite=Strict`; every POST's `Origin` must be this server; every form carries an HMAC token bound to the session, the action, and the draft version and hash on screen |
+| XSS (documents and questions are untrusted text) | every string is HTML-escaped; `Content-Security-Policy: default-src 'none'` runs no script at all; `frame-ancestors 'none'` |
+
+A refused request changes nothing. A confirmation names the version and hash
+it was rendered with, so a draft an agent amends while the person reads is
+refused rather than confirmed in its new form. The login token is masked in
+the request log.
+
+**Honest boundary.** This design stops an agent confirming *through the tool
+protocol*, and another website confirming *through the browser*. It does not
+stop an agent that has an arbitrary shell as the same OS user: that agent can
+run `queryagent confirm`, read the login link off the terminal, or write the
+state file directly. There is no TLS, which is acceptable only because
+nothing leaves the loopback interface. Deployments with several people need
+real authentication, which 1.0 does not provide.
 
 ## Indexed documents
 

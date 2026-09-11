@@ -14,120 +14,23 @@ import sqlite3
 import subprocess
 import sys
 from collections.abc import Iterator
-from datetime import date
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from queryagent.connectors.sqlite import SQLiteConnector
 from queryagent.mcp.server import INVALID_PARAMS, METHOD_NOT_FOUND, PROTOCOL_VERSION, McpServer
-from queryagent.mcp.tools import QueryTools, make_server
-from queryagent.metrics.yaml_store import YamlMetricStore
-from queryagent.workflow.builder import MetricDraftBuilder
-from queryagent.workflow.compiler import CompiledQuery, TemplateCompiler
+from queryagent.mcp.tools import QueryTools
 from queryagent.workflow.errors import PermissionDenied, WorkflowStateError
-from queryagent.workflow.execution import make_connector_executor
-from queryagent.workflow.mappings import load_mappings
 from queryagent.workflow.models import ActorContext, Channel, DraftProgress, Rule, RuleSource
-from queryagent.workflow.service import QueryWorkflow
-from queryagent.workflow.store import SqliteWorkflowStore
-from queryagent.workflow.wiring import WorkflowWiring
-
-AGENT = ActorContext(subject_id="alice", workspace_id="ops", channel=Channel.MCP)
-ALICE = ActorContext(subject_id="alice", workspace_id="ops")
-ALICE_WEB = ActorContext(subject_id="alice", workspace_id="ops", channel=Channel.WEB)
-
-METRICS = """\
-metrics:
-  - name: new_users
-    display_name: 新增用户
-    definition: 统计新加入的用户数；归属日期取法见 variants。
-    tables: [users]
-    variants:
-      - key: registered
-        label: 注册口径
-        definition: 按 created_at 归属日期计数
-      - key: first_order
-        label: 首单口径
-        definition: 按 first_order_at 归属日期计数
-"""
-
-MAPPINGS = """\
-mappings:
-  - metric: new_users
-    variant: registered
-    sql: SELECT COUNT(*) AS n FROM users
-  - metric: new_users
-    variant: first_order
-    sql: SELECT COUNT(*) AS n FROM users WHERE first_order_at IS NOT NULL
-"""
-
-
-class Parts:
-    """A wired workflow over a tiny SQLite file, with every statement counted."""
-
-    def __init__(self, tmp_path: Path) -> None:
-        db = tmp_path / "shop.db"
-        connection = sqlite3.connect(db)
-        connection.execute("CREATE TABLE users (id INTEGER, first_order_at TEXT)")
-        connection.executemany(
-            "INSERT INTO users VALUES (?,?)", [(1, "2026-01-01"), (2, None), (3, None)]
-        )
-        connection.commit()
-        connection.close()
-        (tmp_path / "metrics.yaml").write_text(METRICS, encoding="utf-8")
-        (tmp_path / "mappings.yaml").write_text(MAPPINGS, encoding="utf-8")
-        self.state = tmp_path / "wf.db"
-        self.store = SqliteWorkflowStore(self.state)
-        self.connector = SQLiteConnector(path=str(db))
-        real = make_connector_executor(self.connector, timeout_s=5, max_rows=100)
-        self.executed: list[str] = []
-
-        def counting(query: CompiledQuery) -> Any:
-            self.executed.append(query.sql)
-            return real(query)
-
-        metrics = YamlMetricStore(tmp_path / "metrics.yaml")
-        self.workflow = QueryWorkflow(
-            store=self.store,
-            builder=MetricDraftBuilder(metrics),
-            compiler=TemplateCompiler(load_mappings(tmp_path / "mappings.yaml")),
-            executor=counting,
-        )
-        self.wiring = WorkflowWiring(
-            workflow=self.workflow,
-            metrics=metrics,
-            dimensions=(),
-            provider=None,
-            today=lambda: date(2026, 9, 10),
-            notices=(),
-        )
-        self.server = make_server(self.wiring, AGENT)
-
-    def confirmations(self) -> int:
-        with sqlite3.connect(self.state) as connection:
-            return int(connection.execute("SELECT COUNT(*) FROM confirmations").fetchone()[0])
-
-    def call(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
-        reply = self.server.handle(
-            {
-                "jsonrpc": "2.0",
-                "id": 7,
-                "method": "tools/call",
-                "params": {"name": name, "arguments": arguments or {}},
-            }
-        )
-        assert reply is not None
-        return reply
+from tests.wired import AGENT, ALICE, ALICE_WEB, Parts
 
 
 @pytest.fixture
 def parts(tmp_path: Path) -> Iterator[Parts]:
     built = Parts(tmp_path)
     yield built
-    built.connector.close()
-    built.store.close()
+    built.close()
 
 
 def _result(reply: dict[str, Any]) -> dict[str, Any]:
@@ -164,7 +67,7 @@ def test_the_tool_table_offers_no_way_to_confirm(parts: Parts) -> None:
 def test_calling_a_confirm_tool_that_does_not_exist_is_a_protocol_error(parts: Parts) -> None:
     reply = parts.call("confirm_query", {"draft_id": "x"})
     assert reply["error"]["code"] == INVALID_PARAMS
-    assert parts.confirmations() == 0
+    assert parts.confirmations() == []
 
 
 def test_no_sequence_of_mcp_calls_creates_a_confirmation_or_runs_sql(parts: Parts) -> None:
@@ -200,7 +103,7 @@ def test_no_sequence_of_mcp_calls_creates_a_confirmation_or_runs_sql(parts: Part
         if "draft_id" in content and "version" in content:
             drafts.append((content["draft_id"], content["version"]))
     assert drafts, "the property is vacuous if no draft was ever prepared"
-    assert parts.confirmations() == 0
+    assert parts.confirmations() == []
     assert parts.executed == []
 
 
@@ -211,7 +114,7 @@ def test_the_service_refuses_a_confirmation_from_the_agent_channel(parts: Parts)
         parts.workflow.confirm(
             AGENT, draft.draft_id, version=draft.version, definition_hash=draft.definition_hash
         )
-    assert parts.confirmations() == 0
+    assert parts.confirmations() == []
 
 
 def test_a_confirmation_row_marked_mcp_is_not_accepted_as_a_persons(parts: Parts) -> None:

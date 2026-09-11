@@ -100,6 +100,8 @@ def variant_rule(definition: BusinessDefinition, key: str, source: RuleSource) -
             note = "覆盖历史选择"
         elif current.source is RuleSource.DOC:
             note = "覆盖文档依据"
+        elif current.source is RuleSource.AGENT:
+            note = "覆盖 Agent 代填"
     return Rule(VARIANT_RULE_KEY, key, source, note=note)
 
 
