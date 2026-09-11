@@ -23,6 +23,7 @@ from queryagent.knowledge.embedding import EmbeddingClient
 from queryagent.knowledge.index import SqliteKnowledgeIndex
 from queryagent.knowledge.provider import LocalKnowledgeProvider, scope_of
 from queryagent.llm import make_backend
+from queryagent.llm.base import LLMBackend
 from queryagent.metrics.yaml_store import YamlMetricStore
 from queryagent.workflow.builder import MetricDraftBuilder
 from queryagent.workflow.compiler import TemplateCompiler
@@ -86,6 +87,8 @@ def build_workflow(
     *,
     offer_history: bool,
     today: Callable[[], date] | None = None,
+    connector: Connector | None = None,
+    extraction_backend: LLMBackend | None = None,
 ) -> WorkflowWiring:
     """Open everything the workflow needs, registering each release on ``stack``.
 
@@ -100,6 +103,11 @@ def build_workflow(
             where a person reads the sheet before anything runs (E14).
         today: Which day relative time words resolve against. A long-running
             door leaves it to follow the clock; one command fixes it.
+        connector: The data source to use instead of opening the configured
+            one; the caller releases it. Scenario evaluation passes one that
+            counts every statement, so what it measures is this assembly.
+        extraction_backend: The model that reads documents, instead of the
+            configured one. Scenario evaluation passes a scripted extractor.
     """
     if not config.metrics_path:
         raise ValueError(
@@ -116,8 +124,9 @@ def build_workflow(
     metrics = YamlMetricStore(config.metrics_path)
     notices: list[str] = []
 
-    connector = make_connector(config.database, max_rows_scanned=scan_limit(config))
-    stack.callback(connector.close)
+    if connector is None:
+        connector = make_connector(config.database, max_rows_scanned=scan_limit(config))
+        stack.callback(connector.close)
     store = SqliteWorkflowStore(config.workflow.state_path)
     stack.callback(store.close)
     provider = None
@@ -135,7 +144,7 @@ def build_workflow(
             )
         evidence = EvidenceDraftBuilder(
             provider,
-            make_backend(config.llm),
+            extraction_backend if extraction_backend is not None else make_backend(config.llm),
             required_keys=(),  # gaps come from the maintainer metric, not extraction
         )
     compiler = TemplateCompiler(mappings, dialect=connector.dialect, dimensions=dimensions)

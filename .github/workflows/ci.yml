@@ -16,4 +16,13 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev]"
+      # The workflow scenarios (T46) are a release gate: they run on a fresh
+      # demo database, and are required rather than skipped when it is missing.
+      - name: Build the demo database for the scenario evaluation
+        run: >-
+          python examples/demo_ecommerce/generate_data.py
+          --out "$RUNNER_TEMP/initdb" --sqlite-out "$RUNNER_TEMP/demo_shop.db"
       - run: make test
+        env:
+          QUERYAGENT_SCENARIO_DB: ${{ runner.temp }}/demo_shop.db
+          QUERYAGENT_REQUIRE_DEMO: "1"
