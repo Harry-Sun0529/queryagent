@@ -172,11 +172,40 @@ missing one cannot hide. 「日均」 is a different metric, not a split, and is
 asked about, as is a split by something nobody declared (「各城市的」);
 `--group-by none` asks for one total.
 
+Restricting the count to one value works the same way. 「上个月广告渠道的新增
+用户」 is confirmed as 「取值过滤：只统计「渠道」为 ads」 and the value is bound
+into the query. The values a dimension may take are a closed set the
+maintainer declares (`values:`), so 「抖音渠道」 — a value nobody declared, which
+would match nothing and read as 0 — is asked about. `--filter 渠道=广告` states
+one; `--filter none` asks for every value.
+
 The result also says how far the data reaches. The demo data ends on
 2026-08-22, so 「上个月」 asked in September is reported as covering 1–22
 August with the last 9 days named as having no data, and 「本月」 as having
-no data yet rather than a total of 0. That check is a query, so it runs
-after you confirm, never before.
+no data yet rather than a total of 0. The sheet can warn before you confirm,
+in one of two ways ([ADR-010](docs/adr/010-freshness-before-confirmation.md)):
+a maintainer declares each mapping's cadence (`freshness: {lag_days: 1}` for
+T+1) and the sheet works out what should be there, with no query at all; or
+sets `workflow.freshness_before_confirm: probe`, letting that one `MAX()`
+probe run before confirmation, cached and counted against the budget. Either
+note is advice, outside the 口径. The result reports what the probe found
+when the query ran — and, when a cadence was declared, how many days the
+data is behind it.
+
+Ask about the same metric again and the sheet offers what you chose last
+time: 「选定口径：首单口径（沿用你 2026-09-10 确认过的选择）[历史选择]」. It is
+your choice in this workspace only, never another person's; it fills only
+what is still open, never a reading the documents select; and it lapses when
+the mapping behind it changes
+([ADR-012](docs/adr/012-history-is-a-proposal.md)). It is never offered with
+`--yes`, since nobody would read it; `--no-history` turns it off.
+
+A maintainer can cap what all of this may cost (`budget:` in `config.yaml`,
+[ADR-011](docs/adr/011-budgets-are-configuration.md)): statements per
+request, statements and seconds per person per day, requests at once, and on
+ClickHouse the rows one statement may read. No flag or prompt raises them. A
+refused run touches nothing and names the limit that refused it; `ask` and
+`chat` are held to the same totals.
 
 ### Document evidence
 
@@ -444,7 +473,6 @@ make demo-down   # tear down demo databases
 
 - PostgreSQL connector (validates the Connector seam further)
 - Per-subject document ACLs (today's scoping is per business workspace)
-- Cross-session memory for confirmed metric choices
 - Embedding-based matching as an optional MetricStore implementation
 - Published eval numbers (strong + weak model, self-built + public subset)
 

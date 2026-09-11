@@ -38,6 +38,8 @@ claimed_by: opus-session-2026-09-11
   **实施中发现**：先准入会让额度只剩一条时的重放被拒，而重放什么都不执行。
 - agent 路径：`BudgetedConnector` 逐条准入；超限回到模型的是错误 Observation（写明"重试不会
   成功"），模型据此用已有结果作答。
+- `BudgetExceeded` 继承 `QueryAgentError`，不是方案写的 `WorkflowError`：agent 路径也会抛它，
+  不经过 workflow 层。退出码按 `retryable` 分；并发满时，消息写明最迟多久空出一个（review 补）。
 - 扫描上限走 ClickHouse 引擎的 `max_rows_to_read`，错误码 158 改写成「超过扫描上限」；在其他
   方言上配置，加载时拒绝。
 - 真机：

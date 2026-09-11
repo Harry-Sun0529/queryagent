@@ -8,6 +8,59 @@ frozen from v0.1.1 (spec §四).
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-09-11
+
+### Added
+
+- Budgets a maintainer sets and nothing else can raise (`budget:` in
+  `config.yaml`, ADR-011): statements per request (a confirmed run with its
+  probe, or one agent question), statements and client-measured seconds per
+  subject per business day, requests executing at once against one state
+  file, and on ClickHouse the rows one statement may read (`max_rows_to_read`,
+  enforced by the engine; refused at load on MySQL and SQLite, which cannot
+  enforce it). `flow` admits a run after every check that needs no database
+  and before the idempotency claim, so a refused run touches nothing and
+  spends no key; a replay answers from the stored run whatever the
+  allowance. `ask` and `chat` admit each statement and tell the model when
+  the budget is spent. A spent allowance exits 2, a full concurrency slot
+  75. Without the section nothing changes.
+- The confirmation sheet warns about missing days before anyone confirms
+  (ADR-010). By default from a cadence a maintainer declares on a mapping
+  (`freshness: {lag_days: N}`), with no query at all; with
+  `workflow.freshness_before_confirm: probe` the compiler's own
+  `MAX(time_column)` probe may run before confirmation — short timeout,
+  cached per table, charged to the budget. The note is advice, not part of
+  the 口径: not stored, not hashed, and the result still reports the probe
+  taken when the query ran. A run records what the cadence expected, and the
+  result names data further behind than declared.
+- 历史选择: asking about a metric again offers the choices you confirmed on
+  your last successful run of it in the same workspace — the reading, an
+  adopted document wording, a gap in your own words — dated, hashed, and
+  filling only what is still open (ADR-012). Never the period, the split or
+  the filter; never another subject's; never over a reading the documents
+  select (shown beside it as 上次的选择). It lapses, without saying which
+  document, when the mapping that ran has changed (each run now records a
+  fingerprint of it), the option is gone, an adopted document no longer
+  checks out, or it is older than `workflow.history_max_age_days` (90). Not
+  offered with `--yes`; `--no-history` turns it off.
+- 取值过滤: 「广告渠道的新增用户」 counts one value of a dimension whose
+  mappings file declares `values:` — a closed set, with the words a question
+  uses for each. Confirmed as 本次约定, hashed, compiled as `column = ?` with
+  the value bound. A value nobody declared, two values or two dimensions are
+  asked about, since a bound value matching nothing would read as 0;
+  「各渠道」 and 「渠道分布」 are not filters. `--filter` states or replaces one
+  (`none` for every value). The demo mappings declare values for 渠道 and 地区.
+
+### Changed
+
+- Invariant I2 now reads "no *business* query before confirmation"
+  (ADR-010). In the default `declared` mode nothing at all runs before
+  confirmation, as before.
+- The state file gains `budget_leases`, `budget_ledger` and `freshness_cache`
+  tables and two `runs` columns (`expected_through`, `mapping_fingerprint`),
+  added automatically. v0.9 opens every v0.8 state file; **v0.8 cannot open
+  a draft holding a 历史选择 rule** (a new `RuleSource`).
+
 ## [0.8.0] — 2026-09-11
 
 ### Added

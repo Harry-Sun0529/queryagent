@@ -1,6 +1,6 @@
 # 切片 1D/1E：预算、确认前新鲜度、历史沿用、取值过滤
 
-日期：2026-09-11。状态：计划（验收标准在实现前固定）。承接 v0.8.0（`885e30b`），
+日期：2026-09-11。状态：计划（验收标准在实现前固定）；已实现，结果见 §10。承接 v0.8.0（`885e30b`），
 铁基线 694 passed / 1 skipped。
 
 ## 1. 为什么做这一刀
@@ -58,10 +58,13 @@
 
 - 映射文件：维度可加 `values:`（取值键 → 问题里的说法），结构化映射可加
   `freshness: {lag_days: N}`。
-- `QueryRun` 新增 `mapping_fingerprint`（T42），沿用 `_LATER_RUN_COLUMNS` 自动补列；预算用掉的
+- `QueryRun` 新增 `expected_through`（T41）与 `mapping_fingerprint`（T42），沿用 `_LATER_RUN_COLUMNS` 自动补列；预算用掉的
   语句与秒数记在账本里，不记在 run 上；新表 `budget_leases`、`budget_ledger`、`freshness_cache` 在同一状态文件里。
 - `RuleSource.HISTORY` 是单向变更：v0.8 打不开含历史规则的草案；v0.8 写下的草案在 v0.9 可读。
-- 新错误 `BudgetExceeded(WorkflowError)`，带 `item` 与 `retry_after`。新 CLI 参数 `--filter`、
+- 新错误 `BudgetExceeded(QueryAgentError)`（agent 路径也会抛，不属于 workflow 层），带 `item`
+  与 `retryable`，并发满时消息写明最迟多久空出，据此决定退出码 2 或 75。新规则键
+  `previous_choice`（「上次的选择」：只显示、进哈希、不编译、不沿用）；`filter` 可取 `none`
+  （明确不过滤）。新 CLI 参数 `--filter`、
   `--no-history`。`COMPILED_RULE_KEYS` 加入 `filter`；文档抽取的允许键不变。
 
 ## 4. 内部设计
@@ -136,3 +139,53 @@ MySQL / SQLite 的服务器扫描、CPU、内存上限（只有超时）；按 E
   的 where 后不再沿用；`--yes` 不预填。
 - 取值过滤：「上个月广告渠道的新增用户」= 2307，与按渠道分组的 ads 一致；加「每天」后逐日合计
   等于 2307；三方言对照。
+
+---
+
+## 10. 实施结果（2026-09-11）
+
+状态：**已实现**，T40–T43 关闭；800 passed / 1 skipped（基线 694），每个提交在提交前全量通过；
+MySQL / ClickHouse 集成测试在本地容器上运行（CI 上自动跳过）。
+
+| 票 | 真机与对照 |
+|---|---|
+| T40 预算 | SQLite：`max_queries_per_day: 2` 时 alice 第二次 flow 被拒（退出码 2，写明次日 00:00 恢复、只有维护者能调整），bob 不受影响；MySQL：两个并发 flow（`max_concurrent: 1`，查询带 `SLEEP(3)`）第二个退出码 75，结束后租约表为空；ClickHouse：引擎以错误码 158 拒绝读 5 万行（上限 1000），报「超过扫描上限」；`ask` 接 DeepSeek，第二条语句收到预算 Observation，模型以第一条的结果作答 |
+| T41 新鲜度 | 声明 T+1 问「本月成交额」：确认单零查询提示「预计最新数据到 2026-09-10，最后 1 天可能还没有数据」，结果点名滞后 19 天；`probe` 模式下拒绝确认的那次只跑了两条探测、runs 为 0，随后确认执行的那次命中缓存，结果 5812 |
+| T42 历史 | alice 选首单口径后再问：「历史选择」预填，得 3559；bob、finance 空间、改过的映射、`--yes` 四种情况都不预填 |
+| T43 过滤 | 「上个月广告渠道的新增用户」2307（= 按渠道分组的 ads），加「每天」22 天有记录、合计 2307；「抖音渠道」停在追问处；MySQL / ClickHouse 上绑定值与手写 `channel = 'ads'` 一致 |
+
+**实施中发现并改掉的**：
+- 先准入再查幂等键，会让额度只剩一条时的重放被拒，而重放什么都不执行。改为先查已有的 run（T40）。
+- 方案原稿的 `max_runs_per_day` 改为按语句计的 `max_queries_per_day`：flow 与 agent 路径用同一个
+  单位，才能共用一本账（T40）。原稿里 run 上的 `started_at` / `elapsed_ms` 没有加：用时记在账本里，
+  run 上再存一份没有读者。
+- ClickHouse 扫描上限的报错带出整段服务端堆栈，截掉（T40）。
+- 认没声明的取值时正则从句首起算：「上个月各渠道」被读成取值「上个月各」，「按来源渠道」被读成
+  「来源」（T43）。
+
+**发版前双轴 review（Standards / Spec）改掉的**：
+- Spec：历史沿用复查文档时跳过了口径规则，而「由采用的文档写法对应」选出的口径同样依据那份文档——
+  文档撤掉后写法不沿用了，它选出的口径却还在。现在一并复查（G14，补测试）。
+- Spec：「上次的选择」一行只在当前口径确实来自文档依据时出现，措辞才成立（E12）。
+- Spec：并发满时只说「稍后重试」，没说何时；现在写明最迟约多少秒后空出（E06）。
+- Spec：测试缺口——`ask` 的真实接线（此前只测了手工构造的 `BudgetedConnector`）、eval 不计量、
+  ClickHouse 错误码 158 的单元测试、`main()` 走一遍探测模式、v0.8 状态文件可读、过滤加分组的
+  实际执行合计。都补上了。
+- Spec：方案 §3 与代码不一致（`BudgetExceeded` 的基类与字段、`previous_choice`、
+  `expected_through`、`filter: none`）：代码是对的，改方案并在 T40 Resolution 里记下。
+- Standards：`pytest.raises(SystemExit)` 缺 `match=`；`clause =f"…"` 少一个空格（工具查不出）；
+  账本被拒时没有断言「什么都没预占」。
+- Standards（判断题，采纳）：`QueryRun` 两处逐字段复制改为 `dataclasses.replace`；存储层的裸元组
+  改为具名元组；`ran` 改名；规则备注的拼接收成一个函数；`--subject` 默认值只写一处；测试里的
+  `budget: object` 改用 `Budget` 协议。
+- Standards（判断题，未采纳，照实记）：新鲜度模式仍是字符串而非枚举——config 先于 workflow 加载，
+  枚举要么放错层、要么再写一份；三个一行的时钟函数；`Lease` 兼作空实现；`_declared_column` 用一个
+  动词参数区分报错措辞。
+
+**设计上的代价，照实写**：
+- 每日额度只和身份一样强：本地 `--subject` 可以换人，按人限额要等宿主传入身份（v1.0）。
+- 执行秒数由客户端计时，最后一条语句可能超出一个超时。
+- 声明的更新节奏是承诺不是事实：声明写错，确认单上的提醒就错；结果上的「滞后」说明是它显形的
+  地方。
+- 历史选择可能让人不看就确认：标记、日期、冲突行是缓解，确认这一步本身不变。
+- 取值识别是启发式：没声明的取值只在「独立成词 + 维度名」时被发现，更随意的说法可能认不出。
