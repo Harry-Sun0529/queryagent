@@ -1,4 +1,4 @@
-"""T36: values reach the database as parameters, in each driver's own form.
+"""Slice 1C-2: values reach the database as parameters, in each driver's own form (T36).
 
 The workflow writes ``?`` placeholders. SQLite binds them; PyMySQL and
 clickhouse-driver substitute client-side with ``query % escaped``, which
@@ -92,7 +92,7 @@ def test_without_values_a_connector_runs_the_statement_as_before(tmp_path: Path)
 def test_sqlite_reports_a_missing_value_as_a_query_error(tmp_path: Path) -> None:
     connector = SQLiteConnector(path=_db(tmp_path))
     try:
-        with pytest.raises(QueryError):
+        with pytest.raises(QueryError, match="bindings"):
             connector.execute(FRAGMENT, timeout_s=5, max_rows=5)
     finally:
         connector.close()

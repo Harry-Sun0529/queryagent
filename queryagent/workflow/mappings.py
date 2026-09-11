@@ -19,7 +19,7 @@ import yaml
 from queryagent.workflow.grouping import Dimension
 from queryagent.workflow.models import ALLOWED_RULE_KEYS
 
-_TABLE =re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?")
+_TABLE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?")
 _COLUMN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 

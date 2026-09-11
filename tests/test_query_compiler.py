@@ -277,7 +277,7 @@ def test_a_time_grain_needs_a_time_column() -> None:
 
 def test_a_grouping_that_is_not_canonical_is_refused_not_interpolated() -> None:
     forged = Rule(GROUP_RULE_KEY, "dim:channel; DROP TABLE users", RuleSource.USER)
-    with pytest.raises(WorkflowStateError):
+    with pytest.raises(WorkflowStateError, match="分组方式不是规范值"):
         TemplateCompiler({("new_users", "registered"): REGISTERED}).compile(_definition(forged))
 
 

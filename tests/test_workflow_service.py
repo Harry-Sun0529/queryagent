@@ -700,3 +700,30 @@ def test_a_whole_statement_mapping_is_not_probed(tmp_path: Path) -> None:
     run = _execute_registered(workflow, "新增用户多少？")
     assert run.freshness_sql == ""
     assert executor.executed == [run.sql]
+
+
+# ------------------------------------------------- T39: one act, one answer
+
+
+def test_adopting_one_reading_and_choosing_another_in_one_amendment_is_refused(
+    parts: tuple[QueryWorkflow, CountingExecutor],
+) -> None:
+    """F13 in the service, for every caller: the CLI is not the only door."""
+    workflow, executor = parts
+    draft = workflow.prepare(ALICE, "上个月新增用户多少？", request_id="r1")
+    adopted = Rule(
+        "counting_basis",
+        "按首单日期计数",
+        RuleSource.USER,
+        evidence_ref="d2#c2@0:9",
+        implies=("first_order",),
+    )
+    with pytest.raises(WorkflowStateError, match="矛盾"):
+        workflow.amend(
+            ALICE,
+            draft.draft_id,
+            expected_version=draft.version,
+            rules=(adopted, Rule("variant", "registered", RuleSource.USER)),
+        )
+    assert workflow.get_draft(ALICE, draft.draft_id).version == draft.version
+    assert executor.executed == []

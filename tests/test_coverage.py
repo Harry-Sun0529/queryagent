@@ -1,4 +1,4 @@
-"""T37: what a result covers, said in words, from the newest record in the data.
+"""Slice 1C-2: what a result covers, said in words, from the newest record (T37).
 
 Pure functions only; test_workflow_service.py proves the probe is recorded
 on the run, test_cli_flow.py that the words reach the user, and the
@@ -93,6 +93,11 @@ def test_an_empty_result_inside_the_data_is_no_matching_records() -> None:
 
 def test_a_count_of_zero_is_an_answer_and_gets_no_emptiness_note() -> None:
     assert describe_emptiness(((0,),), AUGUST, DEMO_LATEST) == ""
+
+
+def test_a_grouped_query_with_no_groups_after_the_data_ends_says_no_data_yet() -> None:
+    """F5 for a split: past the data there are no groups at all, not an empty one."""
+    assert describe_emptiness((), SEPTEMBER_SO_FAR, DEMO_LATEST) == "结果为空：统计区间内还没有数据"
 
 
 def test_no_rows_at_all_is_said_plainly() -> None:

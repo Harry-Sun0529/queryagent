@@ -417,6 +417,12 @@ def test_adopting_one_reading_and_naming_the_other_is_refused_before_any_query(
     assert code == 2
     assert "两者矛盾" in captured.err
     assert "结果（" not in captured.out
+    # Every execution claims a run first, so an empty runs table proves none ran.
+    connection = sqlite3.connect(tmp_path / "workflow.db")
+    try:
+        assert connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
+    finally:
+        connection.close()
 
 
 def test_choosing_against_the_handbook_runs_the_choice_and_names_the_conflict(

@@ -169,7 +169,8 @@ and 「每月」 work the same way, and 「各渠道」 splits by any dimension 
 maintainer declares for the mapping's table (`dimensions:` in
 `examples/query_mappings.yaml`). Every day of the period gets a line, so a
 missing one cannot hide. 「日均」 is a different metric, not a split, and is
-asked about; `--group-by none` asks for one total.
+asked about, as is a split by something nobody declared (「各城市的」);
+`--group-by none` asks for one total.
 
 The result also says how far the data reaches. The demo data ends on
 2026-08-22, so 「上个月」 asked in September is reported as covering 1–22

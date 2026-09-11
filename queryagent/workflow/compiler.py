@@ -97,10 +97,7 @@ class TemplateCompiler:
                 it can only have been produced by something other than the
                 period parser.
         """
-        rule = definition.rule(VARIANT_RULE_KEY)
-        variant = rule.value if rule else ""
-        where = f"{definition.metric}/{variant}" if variant else definition.metric
-        entry = self._templates.get((definition.metric, variant))
+        entry, where = self._lookup(definition)
         if entry is None:
             raise MappingNotFound(
                 f"no maintainer-defined query mapping for {where}; "
@@ -132,11 +129,17 @@ class TemplateCompiler:
         early for business reasons that say nothing about loading. None when
         there is no structured mapping with a time column to read.
         """
-        rule = definition.rule(VARIANT_RULE_KEY)
-        entry = self._templates.get((definition.metric, rule.value if rule else ""))
+        entry, _ = self._lookup(definition)
         if not isinstance(entry, QueryMapping) or not entry.time_column:
             return None
         return CompiledQuery(f"SELECT MAX({entry.time_column}) FROM {entry.source}")
+
+    def _lookup(self, definition: BusinessDefinition) -> tuple[str | QueryMapping | None, str]:
+        """The mapping for this definition's metric and reading, and its name."""
+        rule = definition.rule(VARIANT_RULE_KEY)
+        variant = rule.value if rule else ""
+        where = f"{definition.metric}/{variant}" if variant else definition.metric
+        return self._templates.get((definition.metric, variant)), where
 
 
 def _period_of(definition: BusinessDefinition) -> Period | None:

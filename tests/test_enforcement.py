@@ -1,4 +1,4 @@
-"""T39: a document rule corresponds to an executable reading, or no claim is made.
+"""Slice 1C-2: a document rule corresponds to a reading, or no claim is made (T39).
 
 Pure functions: matching a verified quote against the words a maintainer
 declared, the verdict against the chosen reading, and choosing a reading the
@@ -59,6 +59,12 @@ def test_a_quote_naming_two_readings_claims_neither() -> None:
     assert implied_variants(TERMS, "counting_basis", "不按注册日期，而按首单日期计数") == ()
 
 
+def test_a_word_only_one_reading_declares_singles_it_out_over_shared_words() -> None:
+    """E11 sharpened in review: words {x, y} against {x} is reading a, not both."""
+    terms = {"a": {"counting_basis": ("注册", "created_at")}, "b": {"counting_basis": ("注册",)}}
+    assert implied_variants(terms, "counting_basis", "按注册的 created_at 计数") == ("a",)
+
+
 def test_a_key_no_reading_declares_corresponds_to_nothing() -> None:
     assert implied_variants(TERMS, "dedup", OPS_QUOTE) == ()
 
@@ -77,7 +83,7 @@ def test_matching_ignores_case_and_width() -> None:
         (("registered",), "", UNCHECKED),
     ],
 )
-def test_the_verdict_against_the_chosen_reading(
+def test_a_rule_is_applied_contradicted_or_unchecked_by_the_chosen_reading(
     implies: tuple[str, ...], chosen: str, expected: str
 ) -> None:
     assert verdict(implies, chosen) == expected

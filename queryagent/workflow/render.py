@@ -307,7 +307,11 @@ def render_rows(definition: BusinessDefinition, run: QueryRun) -> list[str]:
                 key = start.isoformat()[:7] if grain == MONTH else start.isoformat()
                 if start in values:
                     cell = _cell(values[start])
-                elif latest is not None and start > latest:
+                elif latest is None:
+                    # The probe failed: this group may be empty or past the
+                    # data, and saying either would be the confusion F5 is for.
+                    cell = "（未知：无记录或尚无数据）"
+                elif start > latest:
                     cell = "（无数据）"
                 else:
                     cell = "（无记录）"
