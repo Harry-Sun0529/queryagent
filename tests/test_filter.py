@@ -269,14 +269,18 @@ def test_on_sqlite_the_filtered_count_is_the_count_python_makes(tmp_path: Path) 
     connection.executemany("INSERT INTO users VALUES (?,?)", rows)
     connection.commit()
     connection.close()
-    query = _compile(_rules(ADS))
+    total = _compile(_rules(ADS))
+    daily = _compile(_rules(ADS, Rule(GROUP_RULE_KEY, "day", RuleSource.USER)))
     connector = SQLiteConnector(path=str(tmp_path / "shop.db"))
-    result = connector.execute(query.sql, timeout_s=5, max_rows=10, params=query.params)  # type: ignore[attr-defined]
+    result = connector.execute(total.sql, timeout_s=5, max_rows=10, params=total.params)  # type: ignore[attr-defined]
+    by_day = connector.execute(daily.sql, timeout_s=5, max_rows=10, params=daily.params)  # type: ignore[attr-defined]
     connector.close()
     expected = sum(
         1 for channel, at in rows if channel == "ads" and "2026-08-01" <= at[:10] <= "2026-08-31"
     )
     assert result.rows == ((expected,),) == ((2,),)
+    # G17: split by day as well, the groups add up to the same total.
+    assert sum(row[1] for row in by_day.rows) == expected
 
 
 # ------------------------------------------------------------------ loading

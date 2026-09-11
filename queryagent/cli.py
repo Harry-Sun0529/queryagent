@@ -203,7 +203,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     flow.add_argument("question", help="natural-language question")
     flow.add_argument("--config", default="config.yaml", help="path to config.yaml")
-    flow.add_argument("--subject", default=os.environ.get("USER", "local"), help="acting user id")
+    flow.add_argument("--subject", default=_local_subject(), help="acting user id")
     flow.add_argument("--workspace", default="default", help="business workspace id")
     flow.add_argument(
         "--variant", help="pick a 口径 non-interactively (still requires --yes to execute)"

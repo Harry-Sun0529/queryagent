@@ -357,6 +357,22 @@ def test_a_choice_resting_on_a_withdrawn_document_is_not_offered_and_not_explain
     assert all(rule.evidence_ref != REF for rule in definition.rules)
 
 
+def test_a_reading_chosen_through_a_withdrawn_wording_lapses_with_it(tmp_path: Path) -> None:
+    """G14, found in review: 「由采用的文档写法对应」 rests on the document too."""
+    checker = Checker()
+    workflow, _ = _setup(tmp_path, inner=Disagreeing(), checker=checker)
+    derived = Rule(
+        VARIANT_RULE_KEY,
+        "first_order",
+        RuleSource.USER,
+        evidence_ref=REF,
+        note="由采用的文档写法对应",
+    )
+    _confirm_and_run(workflow, ALICE, "新增用户", ADOPT_GROWTH, derived)
+    checker.status = RefStatus.UNAVAILABLE
+    assert {VARIANT_RULE_KEY, "counting_basis"} <= set(_open(workflow).missing)
+
+
 def test_a_run_recorded_before_fingerprints_is_never_offered(tmp_path: Path) -> None:
     """G16: a v0.8 run cannot say whether its mapping changed, so it is not trusted to."""
     workflow, _ = _setup(tmp_path)

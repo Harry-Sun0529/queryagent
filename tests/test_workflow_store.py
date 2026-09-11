@@ -184,6 +184,37 @@ def test_a_state_file_from_before_bound_values_is_upgraded_in_place(tmp_path: Pa
     assert store.get_run("alice", "r1").params == ("x",)
 
 
+def test_a_v08_state_file_opens_and_its_runs_carry_no_fingerprint(tmp_path: Path) -> None:
+    """G16: 0.8 wrote runs without expected_through or mapping_fingerprint. 0.9 reads
+    them, and a run that cannot say which mapping ran is never offered as history."""
+    import sqlite3
+
+    path = tmp_path / "workflow.db"
+    old = sqlite3.connect(path)
+    old.execute(
+        "CREATE TABLE runs (run_id TEXT PRIMARY KEY, draft_id TEXT NOT NULL, "
+        "confirmation_id TEXT NOT NULL, subject_id TEXT NOT NULL, "
+        "idempotency_key TEXT NOT NULL UNIQUE, status TEXT NOT NULL, "
+        "sql TEXT NOT NULL DEFAULT '', params TEXT NOT NULL DEFAULT '[]', "
+        "columns TEXT NOT NULL DEFAULT '[]', rows TEXT NOT NULL DEFAULT '[]', "
+        "truncated INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', "
+        "freshness_sql TEXT NOT NULL DEFAULT '', data_through TEXT NOT NULL DEFAULT '')"
+    )
+    old.execute(
+        "INSERT INTO runs (run_id, draft_id, confirmation_id, subject_id, idempotency_key, "
+        "status, sql) VALUES ('r0', 'd0', 'c0', 'alice', 'k0', 'succeeded', 'SELECT 1')"
+    )
+    old.commit()
+    old.close()
+
+    run = SqliteWorkflowStore(path).get_run("alice", "r0")
+    assert (run.status, run.expected_through, run.mapping_fingerprint) == (
+        RunStatus.SUCCEEDED,
+        "",
+        "",
+    )
+
+
 def test_correspondences_are_written_only_when_present(tmp_path: Path) -> None:
     """A v0.7 reader builds candidates with Candidate(**c); an unknown key breaks it."""
     import dataclasses

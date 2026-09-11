@@ -8,6 +8,7 @@ test_clickhouse_integration.py.
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -18,14 +19,17 @@ import pytest
 
 from queryagent.budget import (
     LEASE_MARGIN_S,
+    Budget,
     BudgetedConnector,
     BudgetExceeded,
     SqliteBudgetLedger,
     Unmetered,
 )
-from queryagent.cli import _explain, main
+from queryagent.cli import _explain, _make_run_question, main
 from queryagent.config import BudgetConfig, load_config
 from queryagent.connectors.base import QueryResult
+from queryagent.connectors.sqlite import SQLiteConnector
+from queryagent.llm.base import Message, ModelResponse, ToolCall
 from queryagent.metrics.base import Metric
 from queryagent.schema import TableSchema
 from queryagent.tools import ToolRegistry, make_default_tools
@@ -150,6 +154,12 @@ def test_the_daily_allowance_is_per_subject_and_per_business_day(tmp_path: Path)
         ledger.admit("alice", queries=1)
     assert refused.value.retryable is False
     assert "2026-09-01 00:00（Asia/Shanghai）恢复" in str(refused.value)
+    # The refusal reserved nothing: a ledger allowing one more admits exactly one.
+    roomier = _ledger(tmp_path, clock, max_queries_per_day=4)
+    with roomier.admit("alice", queries=1):
+        pass
+    with pytest.raises(BudgetExceeded, match="max_queries_per_day"):
+        roomier.admit("alice", queries=1)
     with ledger.admit("bob", queries=3):  # someone else's allowance is their own
         pass
     clock.at = datetime(2026, 8, 31, 16, 30, tzinfo=timezone.utc)  # 00:30 on 09-01 in Shanghai
@@ -176,6 +186,8 @@ def test_the_concurrency_limit_holds_across_two_processes_sharing_the_state_file
         with pytest.raises(BudgetExceeded, match="max_concurrent") as refused:
             second.admit("bob", queries=1)
         assert refused.value.retryable is True
+        # E06: and when — the lease's expiry is the latest the slot can take.
+        assert "最迟约 15 秒后空出" in str(refused.value)
     with second.admit("bob", queries=1):
         pass
 
@@ -233,14 +245,14 @@ class CountingExecutor:
         return QueryResult(columns=("v",), rows=(("2026-08-22",),), elapsed_ms=1, truncated=False)
 
 
-def _workflow(tmp_path: Path, budget: object) -> tuple[QueryWorkflow, CountingExecutor]:
+def _workflow(tmp_path: Path, budget: Budget) -> tuple[QueryWorkflow, CountingExecutor]:
     executor = CountingExecutor()
     workflow = QueryWorkflow(
         store=SqliteWorkflowStore(tmp_path / "wf.db"),
         builder=MetricDraftBuilder(_GmvOnly()),
         compiler=TemplateCompiler(MAPPINGS),
         executor=executor.run,
-        budget=budget,  # type: ignore[arg-type]
+        budget=budget,
     )
     return workflow, executor
 
@@ -302,7 +314,7 @@ def test_no_workflow_call_takes_a_budget_argument() -> None:
 def test_no_command_line_flag_can_raise_a_budget(capsys: pytest.CaptureFixture[str]) -> None:
     """G2: every end-user command, and none of them mentions a budget."""
     for command in ("flow", "ask", "chat"):
-        with pytest.raises(SystemExit):
+        with pytest.raises(SystemExit, match="^0$"):
             main([command, "--help"])
         text = capsys.readouterr().out
         assert "budget" not in text
@@ -409,3 +421,115 @@ def test_a_full_slot_is_worth_retrying_and_a_spent_allowance_is_not() -> None:
     """E06: 75 tells a script to come back later; 2 tells it not to bother."""
     assert _explain(BudgetExceeded("满", item="max_concurrent", retryable=True))[2] == 75
     assert _explain(BudgetExceeded("用完", item="max_queries_per_day"))[2] == 2
+
+
+# ------------------------------------------------------ the agent's wiring
+
+ASK_CONFIG = """\
+llm:
+  backend: openai_compatible
+  model: deepseek-v4-flash
+  base_url: https://api.deepseek.com
+database:
+  type: sqlite
+  path: {db}
+workflow:
+  state_path: {state}
+trace: false
+budget:
+  max_queries_per_request: 1
+"""
+
+
+class TwoStatements:
+    """A model that runs two statements before answering — an agent exploring."""
+
+    def __init__(self) -> None:
+        self.calls: list[list[Message]] = []
+
+    def complete(
+        self, messages: list[Message], tools: object = None, **kwargs: object
+    ) -> ModelResponse:
+        self.calls.append(list(messages))
+        step = len(self.calls)
+        if step <= 2:
+            # Different text, same answer: the loop stops an identical call repeated.
+            sql = f"SELECT SUM(amount) FROM orders WHERE {step} = {step}"
+            call = ToolCall(id=f"t{step}", name="execute_sql", arguments={"sql": sql})
+            return ModelResponse(text="", tool_calls=(call,), stop_reason="tool_use")
+        return ModelResponse(text="成交额 9.5", stop_reason="stop")
+
+    def close(self) -> None:
+        pass
+
+    def tool_replies(self) -> list[str]:
+        return [m.content for m in self.calls[-1] if m.tool_call_id]
+
+
+def _ask_config(tmp_path: Path) -> Path:
+    connection = sqlite3.connect(tmp_path / "shop.db")
+    connection.execute("CREATE TABLE orders (amount REAL)")
+    connection.execute("INSERT INTO orders VALUES (9.5)")
+    connection.commit()
+    connection.close()
+    text = ASK_CONFIG.format(db=tmp_path / "shop.db", state=tmp_path / "workflow.db")
+    return _config(tmp_path, text)
+
+
+def test_ask_stops_the_model_at_the_statement_cap_through_the_real_wiring(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """G5 through main(): the connector ask builds is the budgeted one — found in
+    review that only a hand-built one was tested."""
+    backend = TwoStatements()
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setattr("queryagent.cli.make_backend", lambda _config: backend)
+    assert main(["ask", "成交额是多少", "--config", str(_ask_config(tmp_path))]) == 0
+    first, second = backend.tool_replies()
+    assert "9.5" in first
+    assert "max_queries_per_request" in second
+    state = sqlite3.connect(tmp_path / "workflow.db")
+    assert state.execute("SELECT SUM(queries) FROM budget_ledger").fetchone() == (1,)
+    state.close()
+
+
+def test_eval_is_not_metered_even_with_a_budget_configured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """E02: the eval's wiring passes no subject, so nothing is admitted or counted."""
+    backend = TwoStatements()
+    monkeypatch.setattr("queryagent.cli.make_backend", lambda _config: backend)
+    config = load_config(_ask_config(tmp_path))
+    connector = SQLiteConnector(path=str(tmp_path / "shop.db"))
+    with contextlib.ExitStack() as stack:
+        run_question = _make_run_question(connector, config, 8, stack)
+        list(run_question("成交额是多少"))
+    connector.close()
+    replies = backend.tool_replies()
+    assert len(replies) == 2 and all("9.5" in reply for reply in replies)
+    assert not (tmp_path / "workflow.db").exists()
+
+
+def test_clickhouse_names_an_exceeded_scan_limit_as_one() -> None:
+    """G7 without a server: error 158 reads as the scan limit it is, stack trace cut."""
+    pytest.importorskip("clickhouse_driver")
+    from clickhouse_driver.errors import ServerException
+
+    from queryagent.connectors.clickhouse import ClickHouseConnector
+    from queryagent.errors import QueryError
+
+    class Refusing:
+        last_query = None
+
+        def execute(self, *args: object, **kwargs: object) -> object:
+            raise ServerException(
+                "Limit for rows (controlled by 'max_rows_to_read' setting) exceeded. "
+                "Stack trace: 0. DB::Exception ...",
+                code=158,
+            )
+
+    connector = ClickHouseConnector(host="127.0.0.1", max_rows_scanned=1000)
+    connector._client = Refusing()
+    with pytest.raises(QueryError, match="超过扫描上限.*1000 行") as refused:
+        connector.execute("SELECT sum(id) FROM users", timeout_s=5, max_rows=5)
+    assert "Stack trace" not in str(refused.value)

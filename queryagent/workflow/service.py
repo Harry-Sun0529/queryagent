@@ -18,6 +18,7 @@ The three properties this class is built to hold:
 
 from __future__ import annotations
 
+import dataclasses
 import uuid
 from collections.abc import Callable
 from datetime import date, datetime, timedelta, timezone
@@ -258,8 +259,8 @@ class QueryWorkflow:
             return None
         now = self._clock()
         cached = self._store.cached_freshness(target.source, target.time_column)
-        if cached is not None and now - cached[1] < timedelta(minutes=policy.cache_minutes):
-            return date.fromisoformat(cached[0]), cached[1]
+        if cached is not None and now - cached.probed_at < timedelta(minutes=policy.cache_minutes):
+            return date.fromisoformat(cached.latest), cached.probed_at
         try:
             with self._budget.admit(actor.subject_id, queries=1) as lease, metered(lease):
                 latest = _latest_in(policy.probe(target.probe))
@@ -463,39 +464,25 @@ class QueryWorkflow:
             with metered(lease):
                 result = self._execute_sql(query)
         except Exception as exc:
-            failed = QueryRun(
-                run_id=run.run_id,
-                draft_id=run.draft_id,
-                confirmation_id=run.confirmation_id,
-                subject_id=run.subject_id,
-                idempotency_key=run.idempotency_key,
+            failed = dataclasses.replace(
+                run,
                 status=RunStatus.FAILED,
-                sql=query.sql,
-                params=query.params,
                 error=f"{type(exc).__name__}: {exc}",
                 freshness_sql=freshness_sql,
                 data_through=data_through,
-                expected_through=run.expected_through,
-                mapping_fingerprint=run.mapping_fingerprint,
             )
             self._store.finish_run(failed)
             raise
-        finished = QueryRun(
-            run_id=run.run_id,
-            draft_id=run.draft_id,
-            confirmation_id=run.confirmation_id,
-            subject_id=run.subject_id,
-            idempotency_key=run.idempotency_key,
+        # Replaced, not rebuilt field by field: a field added to the claimed
+        # run later is carried to the record without anyone remembering to.
+        finished = dataclasses.replace(
+            run,
             status=RunStatus.SUCCEEDED,
-            sql=query.sql,
-            params=query.params,
             columns=tuple(result.columns),
             rows=tuple(tuple(row) for row in result.rows),
             truncated=result.truncated,
             freshness_sql=freshness_sql,
             data_through=data_through,
-            expected_through=run.expected_through,
-            mapping_fingerprint=run.mapping_fingerprint,
         )
         self._store.finish_run(finished)
         return finished

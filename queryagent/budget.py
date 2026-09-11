@@ -20,6 +20,7 @@ killed mid-query must not hold its slot for ever.
 
 from __future__ import annotations
 
+import math
 import sqlite3
 import time
 import uuid
@@ -171,7 +172,7 @@ class SqliteBudgetLedger:
             self._conn.execute(
                 "DELETE FROM budget_leases WHERE expires_at <= ?", (now.timestamp(),)
             )
-            self._check(subject, day, queries)
+            self._check(subject, day, queries, now.timestamp())
             self._conn.execute(
                 "INSERT INTO budget_leases VALUES (?,?,?)",
                 (lease_id, subject, now.timestamp() + self._lease_seconds * queries),
@@ -187,14 +188,20 @@ class SqliteBudgetLedger:
             raise
         return _LedgerLease(self._conn, lease_id, subject, day.isoformat(), queries)
 
-    def _check(self, subject: str, day: date, queries: int) -> None:
+    def _check(self, subject: str, day: date, queries: int, now: float) -> None:
         limits = self._limits
         if limits.max_concurrent is not None:
-            (running,) = self._conn.execute("SELECT COUNT(*) FROM budget_leases").fetchone()
+            running, soonest = self._conn.execute(
+                "SELECT COUNT(*), MIN(expires_at) FROM budget_leases"
+            ).fetchone()
             if running >= limits.max_concurrent:
+                # E06: say when. A lease's expiry is the latest a slot can take
+                # to free up; a request that finishes releases it sooner.
+                wait = max(1, math.ceil(soonest - now))
                 raise BudgetExceeded(
                     f"超出预算：当前已有 {running} 个请求在执行，维护者设定最多同时 "
-                    f"{limits.max_concurrent} 个（budget.max_concurrent）；稍后重试",
+                    f"{limits.max_concurrent} 个（budget.max_concurrent）；最迟约 {wait} 秒后"
+                    "空出一个（通常更早），稍后重试",
                     item="max_concurrent",
                     retryable=True,
                 )

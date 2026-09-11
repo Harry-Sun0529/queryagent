@@ -15,6 +15,7 @@ import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 from queryagent.workflow.errors import NotFound, PermissionDenied, StaleVersion
 from queryagent.workflow.models import (
@@ -91,6 +92,21 @@ _LATER_RUN_COLUMNS = (
     ("expected_through", "TEXT NOT NULL DEFAULT ''"),
     ("mapping_fingerprint", "TEXT NOT NULL DEFAULT ''"),
 )
+
+
+class ConfirmedRun(NamedTuple):
+    """A definition as it was confirmed, and what ran it (T42)."""
+
+    definition: BusinessDefinition
+    confirmed_at: datetime
+    mapping_fingerprint: str
+
+
+class CachedProbe(NamedTuple):
+    """The last freshness probe of one table taken before a confirmation (T41)."""
+
+    latest: str
+    probed_at: datetime
 
 
 class SqliteWorkflowStore:
@@ -317,7 +333,7 @@ class SqliteWorkflowStore:
 
     def last_confirmed(
         self, subject_id: str, workspace_id: str, metric: str, since: datetime
-    ) -> tuple[BusinessDefinition, datetime, str] | None:
+    ) -> ConfirmedRun | None:
         """The newest definition this subject confirmed and ran for ``metric`` (T42).
 
         Derived, not kept in a table of its own: a confirmation and a
@@ -346,12 +362,12 @@ class SqliteWorkflowStore:
                 continue
             definition = _decode_definition(row["definition"])
             if definition.metric == metric:
-                return definition, confirmed_at, row["mapping_fingerprint"]
+                return ConfirmedRun(definition, confirmed_at, row["mapping_fingerprint"])
         return None
 
     # ------------------------------------------------------------- freshness
 
-    def cached_freshness(self, source: str, time_column: str) -> tuple[str, datetime] | None:
+    def cached_freshness(self, source: str, time_column: str) -> CachedProbe | None:
         """The last probe's answer for one table, and when it was read (T41).
 
         Not scoped by subject: the newest record's date in a table is the
@@ -363,7 +379,7 @@ class SqliteWorkflowStore:
         ).fetchone()
         if row is None:
             return None
-        return row["latest"], datetime.fromisoformat(row["probed_at"])
+        return CachedProbe(row["latest"], datetime.fromisoformat(row["probed_at"]))
 
     def cache_freshness(
         self, source: str, time_column: str, latest: str, probed_at: datetime

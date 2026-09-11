@@ -312,7 +312,7 @@ def _compose(
         condition, stored = _filter_condition(entry, value_filter, where, dimensions)
         conditions.append(condition)
         params = (*params, stored)
-    clause =f" WHERE {' AND '.join(conditions)}" if conditions else ""
+    clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
     measure = f"{entry.measure} AS {_quote(entry.label, dialect)}"
     key = _group_key(entry, grouping, dialect, where, dimensions)
     if key is None:
