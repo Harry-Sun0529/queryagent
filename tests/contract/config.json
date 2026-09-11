@@ -1,0 +1,53 @@
+{
+  "budget": {
+    "max_concurrent": null,
+    "max_queries_per_day": null,
+    "max_queries_per_request": null,
+    "max_query_seconds_per_day": null,
+    "max_rows_scanned": null
+  },
+  "database": {
+    "database": null,
+    "host": null,
+    "password": null,
+    "path": null,
+    "port": null,
+    "type": null,
+    "user": null
+  },
+  "knowledge": {
+    "embedding": {
+      "base_url": null,
+      "min_similarity": null,
+      "model": null
+    },
+    "index_path": null,
+    "root": null,
+    "sources": {
+      "path": null,
+      "workspace": null
+    }
+  },
+  "llm": {
+    "backend": null,
+    "base_url": null,
+    "model": null,
+    "temperature": null
+  },
+  "metrics_path": null,
+  "safety": {
+    "max_rows": null,
+    "timeout_s": null
+  },
+  "trace": null,
+  "trace_dir": null,
+  "workflow": {
+    "freshness_before_confirm": null,
+    "freshness_cache_minutes": null,
+    "freshness_probe_timeout_s": null,
+    "history_max_age_days": null,
+    "mappings_path": null,
+    "state_path": null,
+    "timezone": null
+  }
+}

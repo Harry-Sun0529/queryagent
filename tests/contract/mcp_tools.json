@@ -1,0 +1,95 @@
+{
+  "amend_query": {
+    "additionalProperties": false,
+    "properties": {
+      "adopt": {
+        "description": "文档分歧时采用的写法，取 candidates 里形如 counting_basis:0 的 key",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "draft_id": {
+        "description": "prepare_query 返回的完整 draft_id",
+        "type": "string"
+      },
+      "expected_version": {
+        "description": "你看到的确认单版本；草案已被改过时会被拒绝",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "filter": {
+        "description": "只统计一个声明过的取值，如 渠道=广告；none 表示不过滤",
+        "type": "string"
+      },
+      "group_by": {
+        "description": "day / week / month / 维度名 / none",
+        "type": "string"
+      },
+      "period": {
+        "description": "统计区间，如 上个月、2026-08-01..2026-08-31",
+        "type": "string"
+      },
+      "rules": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "description": "维护者要求写明、但还没有来源的规则，键取 missing 里的 key",
+        "type": "object"
+      },
+      "variant": {
+        "description": "选定口径，取 candidates 里的 key",
+        "type": "string"
+      }
+    },
+    "required": [
+      "draft_id",
+      "expected_version"
+    ],
+    "type": "object"
+  },
+  "execute_query": {
+    "additionalProperties": false,
+    "properties": {
+      "draft_id": {
+        "description": "prepare_query 返回的完整 draft_id",
+        "type": "string"
+      }
+    },
+    "required": [
+      "draft_id"
+    ],
+    "type": "object"
+  },
+  "list_metrics": {
+    "additionalProperties": false,
+    "properties": {},
+    "type": "object"
+  },
+  "prepare_query": {
+    "additionalProperties": false,
+    "properties": {
+      "question": {
+        "description": "用户的业务问题，原话即可",
+        "type": "string"
+      }
+    },
+    "required": [
+      "question"
+    ],
+    "type": "object"
+  },
+  "query_status": {
+    "additionalProperties": false,
+    "properties": {
+      "draft_id": {
+        "description": "prepare_query 返回的完整 draft_id",
+        "type": "string"
+      }
+    },
+    "required": [
+      "draft_id"
+    ],
+    "type": "object"
+  }
+}

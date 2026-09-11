@@ -26,3 +26,17 @@ jobs:
         env:
           QUERYAGENT_SCENARIO_DB: ${{ runner.temp }}/demo_shop.db
           QUERYAGENT_REQUIRE_DEMO: "1"
+
+  # H13 on every push: the wheel, installed into a clean virtualenv, is the
+  # whole product, carries nothing else, and runs a confirmed flow.
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip wheel --no-deps -w dist .
+      - run: python -m venv "$RUNNER_TEMP/clean"
+      - run: '"$RUNNER_TEMP/clean/bin/pip" install dist/*.whl'
+      - run: '"$RUNNER_TEMP/clean/bin/python" scripts/smoke_wheel.py dist/*.whl'

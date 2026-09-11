@@ -4,12 +4,34 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "queryagent"
-version = "0.9.0"
-description = "Zero-infrastructure Text-to-SQL agent: schema-injected ReAct loop with YAML-declared business metrics."
+version = "1.0.0"
+description = "Business numbers a person confirms before anything runs: declared metrics, cited documents, and an MCP door where agents prepare and people confirm."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Sun Weizhuo" }]
+keywords = ["text-to-sql", "mcp", "business-metrics", "llm", "agents", "confirmation"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Database :: Front-Ends",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/Harry-Sun0529/queryagent"
+Changelog = "https://github.com/Harry-Sun0529/queryagent/blob/main/CHANGELOG.md"
+Security = "https://github.com/Harry-Sun0529/queryagent/blob/main/SECURITY.md"
+Issues = "https://github.com/Harry-Sun0529/queryagent/issues"
 dependencies = [
     # Bounded on purpose: 1.0 removed Messages.create(temperature=...) and
     # broke CI without a line of our code changing. A major bump needs a look.

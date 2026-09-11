@@ -8,6 +8,83 @@ frozen from v0.1.1 (spec §四).
 
 ## [Unreleased]
 
+## [1.0.0] — 2026-09-11
+
+The first release whose version number is a promise (ADR-014).
+契约摘要：26f385531e97
+
+### Added
+
+- **Agents over MCP** (`queryagent mcp`, ADR-013). A stdio MCP server,
+  written by hand, serving five tools: `list_metrics`, `prepare_query`,
+  `amend_query`, `query_status` and `execute_query`. None of them confirms.
+  - Identity is the `--subject` / `--workspace` the host's configuration
+    starts the server with. A tool argument naming one is refused.
+  - What the agent fills in is marked 「Agent 代填」 (`RuleSource.AGENT`),
+    is hashed, is highlighted for the person, and is named on the result.
+  - `execute_query` runs a draft only on a person's confirmation of its
+    current version. One confirmation authorises one run, and asking again
+    returns that run.
+- **A person's doors.**
+  - `queryagent web` is a local confirmation page, bound to 127.0.0.1 only.
+    - Login is a one-time link printed on the terminal; the session is an
+      `HttpOnly; SameSite=Strict` cookie.
+    - Every request is checked in order: Host (DNS rebinding), session, then
+      for a POST the Origin and an HMAC form token bound to the draft version
+      and hash on screen (CSRF).
+    - Everything is escaped, and the Content-Security-Policy runs no script
+      (XSS).
+  - `queryagent drafts` lists what waits on you.
+  - `queryagent confirm <草案号>` confirms in the terminal and asks for
+    anything still open first.
+  - A confirmation records which door it came through (`cli` / `web`).
+- **Workflow scenarios** (`eval/workflow/scenarios.yaml`,
+  `eval/run_workflow_scenarios.py`, ADR-014 H10). 22 scenarios measure what
+  the product guarantees: whether it asks what it must, and whether numbers
+  agree with a Python recount over raw rows. Three hard gates must read zero:
+  unconfirmed executions, cross-workspace canary leaks, and injection effects
+  on what runs.
+  - The scripted run: 22/22, all gates 0.
+  - Three DeepSeek runs of the six document scenarios: 6/6 each, all gates 0.
+  - The scripted subset runs in CI on a freshly generated demo database.
+- **The library surface.** `from queryagent import QueryWorkflow,
+  ActorContext, build_workflow, …`: the confirmed flow's types, errors and
+  assembly are now in `__all__`.
+- **Frozen surfaces, snapshotted** (`tests/contract/`): the CLI, exit codes,
+  config keys, file keys, `__all__`, and the MCP input schemas. A change
+  fails CI until the snapshot is regenerated *and* this file carries the new
+  digest.
+- **State files from 0.6–0.9**, written by those releases' own code, are
+  kept as fixtures, and 1.0 reads and upgrades each of them.
+- A release workflow: build, `twine check`, and a wheel smoke test in a
+  clean virtualenv. Publishing goes through PyPI trusted publishing (OIDC)
+  behind a `pypi` environment the maintainer approves, and TestPyPI is
+  available as a rehearsal. CI now smoke-tests the wheel on every push.
+
+### Changed
+
+- `metrics.yaml` and `query_mappings.yaml` **refuse unknown keys**, naming
+  the allowed ones. A misspelt `time_colum` used to be read as absent and
+  silently dropped the period. Files that used only documented keys are
+  unaffected.
+- The workflow assembly moved out of the CLI into `workflow/wiring.py`
+  (`build_workflow`), and the reading of typed answers into
+  `workflow/answers.py`. The terminal, the page and the MCP server share
+  one of each.
+- A draft's citations are recorded by the service when it is prepared, not
+  by each door.
+- The confirmation sheet names who adopted a document wording (「本次约定」 or
+  「Agent 代填」) instead of always saying 「本次约定」.
+- `ActorContext` gains `channel` (default `cli`); `Confirmation` gains
+  `channel`.
+
+### Compatibility
+
+- The state file's `confirmations` table gains a `channel` column, added
+  automatically; rows written before 1.0 read as `cli`. **v0.9 cannot open a
+  draft holding an 「Agent 代填」 rule, nor write a confirmation into a 1.0
+  state file.**
+
 ## [0.9.0] — 2026-09-11
 
 ### Added

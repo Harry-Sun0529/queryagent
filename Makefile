@@ -3,7 +3,7 @@
 test: lint typecheck unit
 
 lint:
-	ruff check queryagent tests examples
+	ruff check queryagent tests examples scripts eval/run_workflow_scenarios.py
 
 eval:
 	queryagent eval --config examples/demo_ecommerce/config.sqlite.yaml --cases eval/cases.yaml

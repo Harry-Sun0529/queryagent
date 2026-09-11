@@ -1,0 +1,61 @@
+{
+  "metrics.yaml": {
+    "metric": [
+      "name",
+      "display_name",
+      "aliases",
+      "definition",
+      "caution",
+      "tables",
+      "sql_hint",
+      "variants",
+      "required_rules"
+    ],
+    "required_rules": [
+      "counting_basis",
+      "filters",
+      "time_window",
+      "dedup",
+      "refund_handling",
+      "amount_basis",
+      "period"
+    ],
+    "variant": [
+      "key",
+      "label",
+      "definition"
+    ]
+  },
+  "query_mappings.yaml": {
+    "dimension": [
+      "key",
+      "label",
+      "aliases",
+      "columns",
+      "values"
+    ],
+    "enforces": [
+      "counting_basis",
+      "filters",
+      "time_window",
+      "dedup",
+      "refund_handling",
+      "amount_basis"
+    ],
+    "freshness": [
+      "lag_days"
+    ],
+    "mapping": [
+      "metric",
+      "variant",
+      "sql",
+      "from",
+      "measure",
+      "label",
+      "time_column",
+      "where",
+      "enforces",
+      "freshness"
+    ]
+  }
+}

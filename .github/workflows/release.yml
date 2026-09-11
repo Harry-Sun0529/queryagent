@@ -1,0 +1,96 @@
+name: release
+
+# Publishing is irreversible: a version uploaded to PyPI can never be
+# uploaded again. So:
+#   - a tag v* builds, smoke-tests the wheel in a clean virtualenv, and only
+#     then asks to publish;
+#   - publishing uses PyPI trusted publishing (OIDC). No token lives in this
+#     repository;
+#   - the `pypi` environment should require the maintainer's approval
+#     (Settings -> Environments -> pypi -> Required reviewers), so nothing is
+#     uploaded without a person saying so;
+#   - `workflow_dispatch` with target=testpypi rehearses the whole path
+#     against TestPyPI first.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "testpypi (rehearsal) or pypi"
+        required: true
+        default: testpypi
+        type: choice
+        options: [testpypi, pypi]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install build twine
+      - run: python -m build
+      - run: python -m twine check --strict dist/*
+      - name: The tag names the version being built
+        if: github.ref_type == 'tag'
+        run: test -f "dist/queryagent-${GITHUB_REF_NAME#v}.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  smoke:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - run: python -m venv "$RUNNER_TEMP/clean"
+      - run: '"$RUNNER_TEMP/clean/bin/pip" install dist/*.whl'
+      - run: '"$RUNNER_TEMP/clean/bin/python" scripts/smoke_wheel.py dist/*.whl'
+
+  testpypi:
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
+    needs: smoke
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  pypi:
+    if: github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi')
+    needs: smoke
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

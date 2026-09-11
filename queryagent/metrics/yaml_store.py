@@ -40,6 +40,21 @@ from queryagent.text import tokens
 _PHRASE_HIT_SCORE = 10.0  # one verbatim alias hit outweighs any token overlap
 _MIN_SCORE = 2.0  # a single shared bigram/word is noise, not a match
 
+METRIC_KEYS = (
+    "name",
+    "display_name",
+    "aliases",
+    "definition",
+    "caution",
+    "tables",
+    "sql_hint",
+    "variants",
+    "required_rules",
+)
+"""Every key a metric may carry (the 1.0 file contract, ADR-014). A misspelt
+one is refused: 'required_rule' read as absent would stop asking a question."""
+VARIANT_KEYS = ("key", "label", "definition")
+
 
 class YamlMetricStore:
     """MetricStore over one YAML file: alias hits + keyword-overlap scoring."""
@@ -96,6 +111,7 @@ def _parse_metric(item: Any, index: int) -> Metric:
     where = f"metrics[{index}]"
     if not isinstance(item, dict):
         raise ValueError(f"{where}: each metric must be a mapping")
+    _refuse_unknown(item, METRIC_KEYS, where)
     name = item.get("name")
     if not isinstance(name, str) or not name.strip():
         raise ValueError(f"{where}: 'name' is required and must be a non-empty string")
@@ -131,6 +147,7 @@ def _variants(item: dict[str, Any], where: str) -> tuple[MetricVariant, ...]:
         at = f"{where}.variants[{index}]"
         if not isinstance(entry, dict):
             raise ValueError(f"{at}: each variant must be a mapping")
+        _refuse_unknown(entry, VARIANT_KEYS, at)
         fields = {}
         for key in ("key", "label", "definition"):
             text = entry.get(key)
@@ -142,6 +159,12 @@ def _variants(item: dict[str, Any], where: str) -> tuple[MetricVariant, ...]:
         seen.add(fields["key"])
         parsed.append(MetricVariant(**fields))
     return tuple(parsed)
+
+
+def _refuse_unknown(item: dict[str, Any], allowed: tuple[str, ...], where: str) -> None:
+    unknown = sorted(str(key) for key in item if key not in allowed)
+    if unknown:
+        raise ValueError(f"{where}: unknown keys {unknown}; allowed: {', '.join(allowed)}")
 
 
 def _opt_str(item: dict[str, Any], key: str, where: str) -> str:

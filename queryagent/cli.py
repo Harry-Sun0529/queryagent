@@ -179,8 +179,8 @@ class _OutageGuard:
             )
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    """Entry point for the ``queryagent`` console script."""
+def build_parser() -> argparse.ArgumentParser:
+    """Every command and flag. Part of the 1.0 contract, snapshotted in tests/contract."""
     parser = argparse.ArgumentParser(prog="queryagent")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -336,7 +336,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         "sooner but push harder against provider rate limits.",
     )
 
-    args = parser.parse_args(argv)
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Entry point for the ``queryagent`` console script."""
+    args = build_parser().parse_args(argv)
     handlers = {
         "chat": _cmd_chat,
         "ask": _cmd_ask,
@@ -358,14 +363,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         # Ctrl-C during a slow query is ordinary use, not a crash to report.
         # Resources are released by the commands' own ExitStacks on the way out.
         print("\n[已取消]", file=sys.stderr)
-        return 130
+        return EXIT_INTERRUPTED
     except Exception as exc:  # noqa: BLE001 - top level: explain, never dump a traceback
         return _report_error(exc, verbose=getattr(args, "verbose", False))
 
 
+# Exit codes are part of the 1.0 contract (ADR-006, ADR-014).
+EXIT_OK = 0
 EXIT_USER_ERROR = 2
+EXIT_EVAL_FAILED = 3  # eval ran, and some cases failed or were not measured
 EXIT_INTERNAL_DEFECT = 70  # sysexits EX_SOFTWARE
 EXIT_TEMPORARY_FAILURE = 75  # sysexits EX_TEMPFAIL
+EXIT_INTERRUPTED = 130  # Ctrl-C, by shell convention
 
 
 def _report_error(exc: BaseException, *, verbose: bool) -> int:
@@ -1295,7 +1304,8 @@ def _run_eval(args: argparse.Namespace, config: AppConfig, log: ResultLog) -> in
     output.write_text(report, encoding="utf-8")
     passed = sum(1 for r in results if r.passed)
     print(f"{passed}/{len(results)} cases passed; report -> {args.output}")
-    return 0 if all(r.passed and r.completed is True for r in results) else 3
+    passed_all = all(r.passed and r.completed is True for r in results)
+    return EXIT_OK if passed_all else EXIT_EVAL_FAILED
 
 
 class _WorkerPool:

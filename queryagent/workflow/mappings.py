@@ -24,6 +24,19 @@ from queryagent.workflow.models import ALLOWED_RULE_KEYS
 _TABLE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?")
 _COLUMN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
+STRUCTURED_KEYS = ("from", "measure", "label", "time_column", "where", "enforces", "freshness")
+MAPPING_KEYS = ("metric", "variant", "sql", *STRUCTURED_KEYS)
+"""Every key a mapping entry may carry (the 1.0 file contract, ADR-014)."""
+DIMENSION_KEYS = ("key", "label", "aliases", "columns", "values")
+"""Every key a dimension may carry."""
+
+
+def _refuse_unknown(item: dict[str, Any], allowed: tuple[str, ...], where: str) -> None:
+    """A misspelt key would be read as absent: 'time_colum' silently drops the period."""
+    unknown = sorted(str(key) for key in item if key not in allowed)
+    if unknown:
+        raise ValueError(f"{where}: unknown keys {unknown}; allowed: {', '.join(allowed)}")
+
 
 @dataclass(frozen=True)
 class QueryMapping:
@@ -102,6 +115,7 @@ def mapping_fingerprint(entry: str | QueryMapping) -> str:
 def _parse_entry(item: Any, where: str) -> tuple[tuple[str, str], str | QueryMapping]:
     if not isinstance(item, dict):
         raise ValueError(f"{where}: each mapping must be a mapping")
+    _refuse_unknown(item, MAPPING_KEYS, where)
     metric = item.get("metric")
     if not isinstance(metric, str) or not metric.strip():
         raise ValueError(f"{where}: 'metric' is required and must be a non-empty string")
@@ -109,9 +123,7 @@ def _parse_entry(item: Any, where: str) -> tuple[tuple[str, str], str | QueryMap
     if not isinstance(variant, str):
         raise ValueError(f"{where}: 'variant' must be a string when present")
     key = (metric.strip(), variant.strip())
-    structured = {
-        "from", "measure", "label", "time_column", "where", "enforces", "freshness"
-    } & set(item)  # fmt: skip
+    structured = set(STRUCTURED_KEYS) & set(item)
     if "sql" in item:
         if structured:
             raise ValueError(
@@ -234,6 +246,7 @@ def load_dimensions(path: str | Path) -> tuple[Dimension, ...]:
 def _parse_dimension(item: Any, where: str) -> Dimension:
     if not isinstance(item, dict):
         raise ValueError(f"{where}: each dimension must be a mapping")
+    _refuse_unknown(item, DIMENSION_KEYS, where)
     key = item.get("key")
     if not isinstance(key, str) or not _COLUMN.fullmatch(key):
         raise ValueError(f"{where}: 'key' must be an identifier, got {key!r}")

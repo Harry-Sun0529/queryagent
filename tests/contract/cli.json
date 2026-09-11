@@ -1,0 +1,538 @@
+{
+  "ask": [
+    {
+      "choices": null,
+      "default": null,
+      "dest": "question",
+      "flags": [],
+      "kind": "_StoreAction",
+      "required": true
+    },
+    {
+      "choices": null,
+      "default": "config.yaml",
+      "dest": "config",
+      "flags": [
+        "--config"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": false,
+      "dest": "verbose",
+      "flags": [
+        "--verbose"
+      ],
+      "kind": "_StoreTrueAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": 8,
+      "dest": "max_turns",
+      "flags": [
+        "--max-turns"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": false,
+      "dest": "no_trace",
+      "flags": [
+        "--no-trace"
+      ],
+      "kind": "_StoreTrueAction",
+      "required": false
+    }
+  ],
+  "chat": [
+    {
+      "choices": null,
+      "default": "config.yaml",
+      "dest": "config",
+      "flags": [
+        "--config"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": false,
+      "dest": "verbose",
+      "flags": [
+        "--verbose"
+      ],
+      "kind": "_StoreTrueAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": 8,
+      "dest": "max_turns",
+      "flags": [
+        "--max-turns"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": false,
+      "dest": "no_trace",
+      "flags": [
+        "--no-trace"
+      ],
+      "kind": "_StoreTrueAction",
+      "required": false
+    }
+  ],
+  "confirm": [
+    {
+      "choices": null,
+      "default": null,
+      "dest": "draft_id",
+      "flags": [],
+      "kind": "_StoreAction",
+      "required": true
+    },
+    {
+      "choices": null,
+      "default": "config.yaml",
+      "dest": "config",
+      "flags": [
+        "--config"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": "<the local user>",
+      "dest": "subject",
+      "flags": [
+        "--subject"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": "default",
+      "dest": "workspace",
+      "flags": [
+        "--workspace"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    }
+  ],
+  "drafts": [
+    {
+      "choices": null,
+      "default": "config.yaml",
+      "dest": "config",
+      "flags": [
+        "--config"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": "<the local user>",
+      "dest": "subject",
+      "flags": [
+        "--subject"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": "default",
+      "dest": "workspace",
+      "flags": [
+        "--workspace"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    }
+  ],
+  "eval": [
+    {
+      "choices": null,
+      "default": "config.yaml",
+      "dest": "config",
+      "flags": [
+        "--config"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": "eval/cases.yaml",
+      "dest": "cases",
+      "flags": [
+        "--cases"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": null,
+      "dest": "public",
+      "flags": [
+        "--public"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": null,
+      "dest": "db_dir",
+      "flags": [
+        "--db-dir"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    },
+    {
+      "choices": [
+        "anthropic",
+        "openai_compatible"
+      ],
+      "default": null,
+      "dest": "backend",
+      "flags": [
+        "--backend"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": null,
+      "dest": "model",
+      "flags": [
+        "--model"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": null,
+      "dest": "base_url",
+      "flags": [
+        "--base-url"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": "eval_report.md",
+      "dest": "output",
+      "flags": [
+        "--output"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": null,
+      "dest": "data_version",
+      "flags": [
+        "--data-version"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": false,
+      "dest": "resume",
+      "flags": [
+        "--resume"
+      ],
+      "kind": "_StoreTrueAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": 8,
+      "dest": "max_turns",
+      "flags": [
+        "--max-turns"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": 1,
+      "dest": "concurrency",
+      "flags": [
+        "--concurrency"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    }
+  ],
+  "flow": [
+    {
+      "choices": null,
+      "default": null,
+      "dest": "question",
+      "flags": [],
+      "kind": "_StoreAction",
+      "required": true
+    },
+    {
+      "choices": null,
+      "default": "config.yaml",
+      "dest": "config",
+      "flags": [
+        "--config"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": "<the local user>",
+      "dest": "subject",
+      "flags": [
+        "--subject"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": "default",
+      "dest": "workspace",
+      "flags": [
+        "--workspace"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": null,
+      "dest": "variant",
+      "flags": [
+        "--variant"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": [],
+      "dest": "adopt",
+      "flags": [
+        "--adopt"
+      ],
+      "kind": "_AppendAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": [],
+      "dest": "rule",
+      "flags": [
+        "--rule"
+      ],
+      "kind": "_AppendAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": null,
+      "dest": "period",
+      "flags": [
+        "--period"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": null,
+      "dest": "group_by",
+      "flags": [
+        "--group-by"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": null,
+      "dest": "value_filter",
+      "flags": [
+        "--filter"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": false,
+      "dest": "no_history",
+      "flags": [
+        "--no-history"
+      ],
+      "kind": "_StoreTrueAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": false,
+      "dest": "yes",
+      "flags": [
+        "--yes"
+      ],
+      "kind": "_StoreTrueAction",
+      "required": false
+    }
+  ],
+  "kb": [
+    {
+      "choices": [
+        "import",
+        "list"
+      ],
+      "default": null,
+      "dest": "kb_action",
+      "flags": [],
+      "kind": "_StoreAction",
+      "required": true
+    },
+    {
+      "choices": null,
+      "default": "config.yaml",
+      "dest": "config",
+      "flags": [
+        "--config"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": null,
+      "dest": "workspace",
+      "flags": [
+        "--workspace"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    }
+  ],
+  "mcp": [
+    {
+      "choices": null,
+      "default": "config.yaml",
+      "dest": "config",
+      "flags": [
+        "--config"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": "<the local user>",
+      "dest": "subject",
+      "flags": [
+        "--subject"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": "default",
+      "dest": "workspace",
+      "flags": [
+        "--workspace"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": false,
+      "dest": "no_history",
+      "flags": [
+        "--no-history"
+      ],
+      "kind": "_StoreTrueAction",
+      "required": false
+    }
+  ],
+  "replay": [
+    {
+      "choices": null,
+      "default": null,
+      "dest": "path",
+      "flags": [],
+      "kind": "_StoreAction",
+      "required": true
+    }
+  ],
+  "web": [
+    {
+      "choices": null,
+      "default": "config.yaml",
+      "dest": "config",
+      "flags": [
+        "--config"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": "<the local user>",
+      "dest": "subject",
+      "flags": [
+        "--subject"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": "default",
+      "dest": "workspace",
+      "flags": [
+        "--workspace"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": 8765,
+      "dest": "port",
+      "flags": [
+        "--port"
+      ],
+      "kind": "_StoreAction",
+      "required": false
+    }
+  ]
+}

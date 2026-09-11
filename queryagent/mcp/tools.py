@@ -108,6 +108,51 @@ _SCHEMAS: dict[str, dict[str, Any]] = {
 }
 
 
+_READ_ONLY = {"readOnlyHint": True, "openWorldHint": False}
+_WRITES_DRAFTS = {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False}
+
+_TOOLS: tuple[tuple[str, str, str, dict[str, bool]], ...] = (
+    (
+        "list_metrics",
+        "列出可查询的指标",
+        "列出维护者声明的业务指标、各自可选的口径，以及可用于分组或过滤的维度与取值。",
+        _READ_ONLY,
+    ),
+    (
+        "prepare_query",
+        "生成口径确认单",
+        "把一个业务问题变成待确认的口径草案，返回确认单。不执行任何查询。请把确认单原样给用户看。",
+        _WRITES_DRAFTS,
+    ),
+    (
+        "amend_query",
+        "补充口径",
+        "为草案补上未定项（口径、文档取法、区间、分组、过滤、缺口规则）。"
+        "你补的值标为「Agent 代填」，用户确认时会看到。每次补充产生新版本。",
+        _WRITES_DRAFTS,
+    ),
+    (
+        "query_status",
+        "查看草案状态",
+        "查看草案是否还缺信息、是否已由用户确认、是否已执行。",
+        _READ_ONLY,
+    ),
+    (
+        "execute_query",
+        "执行已确认的口径",
+        "执行用户本人已确认的草案当前版本，返回结果。用户没有确认时不执行任何查询。"
+        "一次确认只执行一次；再次调用返回同一次的结果。",
+        {**_WRITES_DRAFTS, "idempotentHint": True},
+    ),
+)
+"""Name, title, description, annotations: what tools/list says, handlers aside."""
+
+
+def input_schemas() -> dict[str, dict[str, Any]]:
+    """Every tool's name and input schema: the frozen part of the MCP surface (ADR-014)."""
+    return {name: _SCHEMAS[name] for name, _title, _description, _annotations in _TOOLS}
+
+
 def make_server(wiring: WorkflowWiring, actor: ActorContext) -> McpServer:
     """The MCP server for one person's agent."""
     return McpServer(
@@ -132,55 +177,16 @@ class QueryTools:
         self._actor = actor
 
     def table(self) -> tuple[Tool, ...]:
-        return (
-            Tool(
-                "list_metrics",
-                "列出可查询的指标",
-                "列出维护者声明的业务指标、各自可选的口径，以及可用于分组或过滤的维度与取值。",
-                _SCHEMAS["list_metrics"],
-                self.list_metrics,
-                {"readOnlyHint": True, "openWorldHint": False},
-            ),
-            Tool(
-                "prepare_query",
-                "生成口径确认单",
-                "把一个业务问题变成待确认的口径草案，返回确认单。不执行任何查询。"
-                "请把确认单原样给用户看。",
-                _SCHEMAS["prepare_query"],
-                self.prepare_query,
-                {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False},
-            ),
-            Tool(
-                "amend_query",
-                "补充口径",
-                "为草案补上未定项（口径、文档取法、区间、分组、过滤、缺口规则）。"
-                "你补的值标为「Agent 代填」，用户确认时会看到。每次补充产生新版本。",
-                _SCHEMAS["amend_query"],
-                self.amend_query,
-                {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False},
-            ),
-            Tool(
-                "query_status",
-                "查看草案状态",
-                "查看草案是否还缺信息、是否已由用户确认、是否已执行。",
-                _SCHEMAS["query_status"],
-                self.query_status,
-                {"readOnlyHint": True, "openWorldHint": False},
-            ),
-            Tool(
-                "execute_query",
-                "执行已确认的口径",
-                "执行用户本人已确认的草案当前版本，返回结果。用户没有确认时不执行任何查询。"
-                "一次确认只执行一次；再次调用返回同一次的结果。",
-                _SCHEMAS["execute_query"],
-                self.execute_query,
-                {
-                    "readOnlyHint": False,
-                    "destructiveHint": False,
-                    "idempotentHint": True,
-                    "openWorldHint": False,
-                },
-            ),
+        handlers = {
+            "list_metrics": self.list_metrics,
+            "prepare_query": self.prepare_query,
+            "amend_query": self.amend_query,
+            "query_status": self.query_status,
+            "execute_query": self.execute_query,
+        }
+        return tuple(
+            Tool(name, title, description, _SCHEMAS[name], handlers[name], annotations)
+            for name, title, description, annotations in _TOOLS
         )
 
     # ------------------------------------------------------------- handlers
