@@ -23,6 +23,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Protocol
 
+from queryagent.budget import Budget, Lease, Unmetered, metered
 from queryagent.connectors.base import QueryResult
 from queryagent.knowledge.models import EvidenceRef, RefStatus
 from queryagent.knowledge.provider import RetrievalScope, scope_of
@@ -96,6 +97,7 @@ class QueryWorkflow:
         clock: Clock = _now,
         new_id: IdFactory = _uuid,
         ref_checker: RefChecker | None = None,
+        budget: Budget | None = None,
     ) -> None:
         self._store = store
         self._builder = builder
@@ -104,6 +106,9 @@ class QueryWorkflow:
         self._clock = clock
         self._new_id = new_id
         self._ref_checker = ref_checker
+        # Fixed here, from the maintainer's config. No method below takes a
+        # budget, so nothing a caller passes later can raise it (G2).
+        self._budget = budget if budget is not None else Unmetered()
 
     # ------------------------------------------------------------- prepare
 
@@ -300,8 +305,10 @@ class QueryWorkflow:
         """Run the confirmed 口径 once.
 
         Order matters: identity, then confirmation validity against current
-        stored state, then the idempotency claim, and only then SQL. A
-        rejection at any earlier step must leave the database untouched.
+        stored state, then the budget's admission, then the idempotency
+        claim, and only then SQL. A rejection at any earlier step must leave
+        the database untouched — and a budget refusal the idempotency key
+        unspent, so the same request can run once the budget allows (G3).
         """
         try:
             confirmation = self._store.get_confirmation(actor.subject_id, confirmation_id)
@@ -329,7 +336,6 @@ class QueryWorkflow:
         # from burning the caller's idempotency key on a run that never ran.
         query = self._compiler.compile(draft.definition)
         probe = self._compiler.freshness_probe(draft.definition)
-        freshness_sql = probe.sql if probe else ""
 
         run = QueryRun(
             run_id=self._new_id(),
@@ -341,13 +347,35 @@ class QueryWorkflow:
             sql=query.sql,
             params=query.params,
         )
-        existing = self._store.claim_run(run)
-        if existing is not None:
-            return existing  # T13: the same request, not a second query
+        # A replay is the same request, not a new one: it answers from the
+        # stored run whatever today's budget says (T13). Found in testing —
+        # admitting first refused replays once the allowance ran low.
+        earlier = self._store.get_run_by_key(actor.subject_id, idempotency_key)
+        if earlier is not None:
+            return earlier
+        # Admitted after every check that needs no database and before the
+        # idempotency claim. The probe is reserved with the query: it is a
+        # statement too, and a budget that forgot it would be an undercount.
+        with self._budget.admit(actor.subject_id, queries=2 if probe else 1) as lease:
+            try:
+                existing = self._store.claim_run(run)
+            except BaseException:
+                lease.refund()
+                raise
+            if existing is not None:
+                lease.refund()  # a replay runs nothing, so it costs nothing
+                return existing  # T13: the same request, not a second query
+            return self._run(run, query, probe, lease)
 
-        data_through = self._date_the_data(probe)
+    def _run(
+        self, run: QueryRun, query: CompiledQuery, probe: CompiledQuery | None, lease: Lease
+    ) -> QueryRun:
+        """Date the data, run the query, and record the outcome on the claimed run."""
+        freshness_sql = probe.sql if probe else ""
+        data_through = self._date_the_data(probe, lease)
         try:
-            result = self._execute_sql(query)
+            with metered(lease):
+                result = self._execute_sql(query)
         except Exception as exc:
             failed = QueryRun(
                 run_id=run.run_id,
@@ -382,11 +410,11 @@ class QueryWorkflow:
         self._store.finish_run(finished)
         return finished
 
-    def _date_the_data(self, probe: CompiledQuery | None) -> str:
+    def _date_the_data(self, probe: CompiledQuery | None, lease: Lease) -> str:
         """ISO date of the newest record behind this query, or '' if unknown.
 
-        Called only once the confirmation, the evidence and the idempotency
-        claim have all held — the same point the query itself runs — so the
+        Called only once the confirmation, the evidence, the budget and the
+        idempotency claim have all held — the point the query itself runs — so the
         rule that nothing touches the database before confirmation is kept
         (F6). That is also why the sheet cannot warn about a partial month:
         finding out takes a query. A probe that fails costs the note, never
@@ -395,7 +423,8 @@ class QueryWorkflow:
         if probe is None:
             return ""
         try:
-            result = self._execute_sql(probe)
+            with metered(lease):
+                result = self._execute_sql(probe)
         except Exception:  # noqa: BLE001 - reported as "unknown" on the result
             return ""
         first = result.rows[0][0] if result.rows and result.rows[0] else None

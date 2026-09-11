@@ -8,8 +8,12 @@ from queryagent.connectors.mysql import MySQLConnector
 from queryagent.connectors.sqlite import SQLiteConnector
 
 
-def make_connector(config: DatabaseConfig) -> Connector:
-    """Build the connector matching a validated database config."""
+def make_connector(config: DatabaseConfig, *, max_rows_scanned: int | None = None) -> Connector:
+    """Build the connector matching a validated database config.
+
+    ``max_rows_scanned`` (``budget.max_rows_scanned``) reaches ClickHouse
+    only; config loading refuses it for any other database.
+    """
     if config.type == "mysql":
         return MySQLConnector(
             host=config.host,
@@ -31,5 +35,6 @@ def make_connector(config: DatabaseConfig) -> Connector:
             user=config.user,
             password=config.password,
             database=config.database,
+            max_rows_scanned=max_rows_scanned,
         )
     raise ValueError(f"unsupported database type: {config.type}")

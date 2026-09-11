@@ -31,6 +31,13 @@ from typing import Protocol
 from zoneinfo import ZoneInfo
 
 from queryagent.agent import run_agent
+from queryagent.budget import (
+    Budget,
+    BudgetedConnector,
+    BudgetExceeded,
+    SqliteBudgetLedger,
+    Unmetered,
+)
 from queryagent.config import AppConfig, load_config
 from queryagent.connectors import make_connector
 from queryagent.connectors.base import Connector
@@ -351,6 +358,17 @@ def _explain(exc: BaseException) -> tuple[str, str, int]:
     for env_var in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "QUERYAGENT_EMBEDDING_API_KEY"):
         if env_var in text and "not set" in text:
             return (f"{env_var} 未设置。", f"export {env_var}=<你的 key>", EXIT_USER_ERROR)
+    if isinstance(exc, BudgetExceeded):
+        # E06: a full slot frees up in minutes; a spent allowance does not,
+        # and telling a retry loop otherwise makes it hammer until tomorrow.
+        if exc.retryable:
+            return (text, "稍后重试（退出码 75 = 可重试）。", EXIT_TEMPORARY_FAILURE)
+        return (
+            text,
+            "这是维护者在 config.yaml 的 budget 段设定的上限；只有维护者能调整，"
+            "命令行参数与模型都不能提高它。",
+            EXIT_USER_ERROR,
+        )
     if isinstance(exc, WorkflowError):
         # A refusal from the trusted layer is the system working, not failing.
         # Each refusal has a different person who can act on it, so generic
@@ -447,12 +465,18 @@ def _make_run_question(
     config: AppConfig,
     max_turns: int,
     stack: contextlib.ExitStack,
+    *,
+    subject: str | None = None,
 ) -> SessionRunQuestion:
     """Wire backend + context + metrics + tools for one data source.
 
     The backend owns an HTTP client, so its release is registered on the
     caller's stack: a public eval builds one per database, and leaking a
     connection pool per data source is how a long run runs out of sockets.
+
+    With ``subject``, every statement the model runs is admitted by the
+    configured budget under that identity (slice 1E). Eval passes none: it
+    is a maintainer measuring, not someone using the data (E02).
     """
     backend = make_backend(config.llm)
     closer = getattr(backend, "close", None)
@@ -464,8 +488,13 @@ def _make_run_question(
         dialect=connector.dialect,
         metric_store=metric_store,
     )
+    budgeted = (
+        BudgetedConnector(connector, _budget(config, stack), subject)
+        if subject is not None
+        else None
+    )
     tools = make_default_tools(
-        connector,
+        budgeted if budgeted is not None else connector,
         timeout_s=config.safety.timeout_s,
         max_rows=config.safety.max_rows,
     )
@@ -477,6 +506,8 @@ def _make_run_question(
     def run_question(
         question: str, conversation: Sequence[Message] = ()
     ) -> Iterator[AgentEvent]:
+        if budgeted is not None:
+            budgeted.start_request()  # max_queries_per_request counts per question
         return run_agent(
             question,
             backend=backend,
@@ -493,9 +524,11 @@ def _cmd_chat(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     conversation: list[Message] = []
     with contextlib.ExitStack() as stack:
-        connector = make_connector(config.database)
+        connector = make_connector(config.database, max_rows_scanned=_scan_limit(config))
         stack.callback(connector.close)
-        run_question = _make_run_question(connector, config, args.max_turns, stack)
+        run_question = _make_run_question(
+            connector, config, args.max_turns, stack, subject=_local_subject()
+        )
         print(
             f"QueryAgent · {config.database.type} · {config.llm.model} "
             "(输入 exit 或 Ctrl-D 退出)"
@@ -583,9 +616,11 @@ def _cmd_ask(args: argparse.Namespace) -> int:
     exit_code = 0
     with contextlib.ExitStack() as stack:
         stack.callback(_finish_trace, writer)
-        connector = make_connector(config.database)
+        connector = make_connector(config.database, max_rows_scanned=_scan_limit(config))
         stack.callback(connector.close)
-        run_question = _make_run_question(connector, config, args.max_turns, stack)
+        run_question = _make_run_question(
+            connector, config, args.max_turns, stack, subject=_local_subject()
+        )
         for event in run_question(args.question):
             if writer is not None:
                 writer.write(event)
@@ -657,6 +692,33 @@ def _knowledge_provider(index: SqliteKnowledgeIndex, config: AppConfig) -> Local
     return LocalKnowledgeProvider(index, embedder, min_similarity=embedding.min_similarity)
 
 
+def _budget(config: AppConfig, stack: contextlib.ExitStack) -> Budget:
+    """The maintainer's totals, or none when ``budget:`` is absent (slice 1E).
+
+    Kept in the workflow state file, so every process pointed at it — two
+    terminals, a script beside a chat — shares one count.
+    """
+    if config.budget is None:
+        return Unmetered()
+    ledger = SqliteBudgetLedger(
+        config.workflow.state_path,
+        config.budget,
+        statement_timeout_s=config.safety.timeout_s,
+        zone=ZoneInfo(config.workflow.timezone),
+    )
+    stack.callback(ledger.close)
+    return ledger
+
+
+def _scan_limit(config: AppConfig) -> int | None:
+    return config.budget.max_rows_scanned if config.budget else None
+
+
+def _local_subject() -> str:
+    """Who the local CLI user is: the same default ``flow --subject`` takes."""
+    return os.environ.get("USER", "local")
+
+
 def _cmd_flow(args: argparse.Namespace) -> int:
     """Prepare a 口径, require an explicit confirmation, then execute it.
 
@@ -681,7 +743,7 @@ def _cmd_flow(args: argparse.Namespace) -> int:
     mappings = load_mappings(config.workflow.mappings_path)
 
     with contextlib.ExitStack() as stack:
-        connector = make_connector(config.database)
+        connector = make_connector(config.database, max_rows_scanned=_scan_limit(config))
         stack.callback(connector.close)
         store = SqliteWorkflowStore(config.workflow.state_path)
         stack.callback(store.close)
@@ -726,6 +788,7 @@ def _cmd_flow(args: argparse.Namespace) -> int:
                 max_rows=config.safety.max_rows,
             ),
             ref_checker=provider,
+            budget=_budget(config, stack),
         )
         known = {source.workspace for source in config.knowledge.sources}
         if provider is not None and actor.workspace_id not in known:
