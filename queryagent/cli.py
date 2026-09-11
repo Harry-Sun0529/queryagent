@@ -94,11 +94,20 @@ from queryagent.workflow.errors import (
 from queryagent.workflow.evidence_builder import CompositeDraftBuilder, EvidenceDraftBuilder
 from queryagent.workflow.execution import make_connector_executor
 from queryagent.workflow.freshness import PROBE, FreshnessPolicy, describe_lag
-from queryagent.workflow.grouping import Dimension, GroupingError, find_grouping, parse_grouping
+from queryagent.workflow.grouping import (
+    Dimension,
+    FilterError,
+    GroupingError,
+    find_filter,
+    find_grouping,
+    parse_filter,
+    parse_grouping,
+)
 from queryagent.workflow.history import HistoryDraftBuilder
 from queryagent.workflow.mappings import load_dimensions, load_mappings
 from queryagent.workflow.models import (
     CONFLICT_SEPARATOR,
+    FILTER_RULE_KEY,
     GROUP_RULE_KEY,
     PERIOD_RULE_KEY,
     ActorContext,
@@ -225,6 +234,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         dest="group_by",
         help="split the result: day, week, month, a declared dimension (e.g. channel), "
         "or none for one total; recorded as 本次约定",
+    )
+    flow.add_argument(
+        "--filter",
+        dest="value_filter",
+        help="count only one declared value of a dimension (e.g. 渠道=广告, channel=ads), "
+        "or none for every value; recorded as 本次约定",
     )
     flow.add_argument(
         "--no-history",
@@ -877,6 +892,13 @@ def _run_flow(
             expected_version=draft.version,
             rules=(_stated_grouping(args.group_by, dimensions),),
         )
+    if args.value_filter:
+        draft = workflow.amend(
+            actor,
+            draft.draft_id,
+            expected_version=draft.version,
+            rules=(_stated_filter(args.value_filter, dimensions),),
+        )
     documented = draft.definition.rule(VARIANT_RULE_KEY)
     if args.variant and documented is not None and documented.value != args.variant:
         # The handbooks — or the user's own last choice — picked a reading;
@@ -908,6 +930,8 @@ def _run_flow(
         _explain_missing_period(args.question, today)
     if GROUP_RULE_KEY in draft.definition.missing:
         _explain_missing_grouping(args.question, dimensions)
+    if FILTER_RULE_KEY in draft.definition.missing:
+        _explain_missing_filter(args.question, dimensions, draft.definition.display_name)
     citations = _citations(provider, actor, args.question)
     cited = tuple(
         rule.evidence_ref for rule in draft.definition.rules if rule.evidence_ref
@@ -1048,6 +1072,30 @@ def _prompt_grouping() -> str:
         return ""
 
 
+def _stated_filter(text: str, dimensions: tuple[Dimension, ...]) -> Rule:
+    """A filter the user stated on purpose. Raises FilterError (a ValueError) when unreadable."""
+    value = parse_filter(text, dimensions)
+    return Rule(FILTER_RULE_KEY, value, RuleSource.USER, note=f"由「{text}」换算")
+
+
+def _explain_missing_filter(question: str, dimensions: tuple[Dimension, ...], name: str) -> None:
+    """Say why the question's words did not become a filter."""
+    try:
+        find_filter(question, dimensions, ignore=(name,))
+    except FilterError as exc:
+        print(f"[提示] {exc}", file=sys.stderr)
+
+
+def _prompt_filter() -> str:
+    try:
+        return input(
+            "\n「取值过滤」尚未确定。写下只统计哪个取值（如 渠道=广告；要全部数据写 none；"
+            "回车取消）： "
+        ).strip()
+    except EOFError:
+        return ""
+
+
 def _open_choices(
     draft: DefinitionDraft,
     args: argparse.Namespace,
@@ -1132,6 +1180,12 @@ def _open_choices(
             if not text:
                 return None
             rules.append(_stated_period(text, today))
+            continue
+        if key == FILTER_RULE_KEY:
+            text = args.value_filter or supplied.get(key) or _prompt_filter()
+            if not text:
+                return None
+            rules.append(_stated_filter(text, dimensions))
             continue
         # Nothing states this rule and nothing may default it: the user writes
         # it down, and it is marked as theirs (D07).

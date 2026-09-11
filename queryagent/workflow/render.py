@@ -28,10 +28,12 @@ from queryagent.workflow.grouping import (
     WEEK,
     bucket_starts,
     edges_are_partial,
+    filter_text,
     grouping_text,
 )
 from queryagent.workflow.models import (
     COMPILED_RULE_KEYS,
+    FILTER_RULE_KEY,
     GROUP_RULE_KEY,
     PERIOD_RULE_KEY,
     PREVIOUS_CHOICE_KEY,
@@ -59,6 +61,7 @@ _RULE_LABELS = {
     "period": "统计区间",
     "group_by": "分组方式",
     PREVIOUS_CHOICE_KEY: "上次的选择",
+    FILTER_RULE_KEY: "取值过滤",
     # Extracted rule keys. A confirmation sheet whose field names are English
     # identifiers is not something an operator can repeat to a colleague,
     # which is the whole acceptance test for this screen (D04).
@@ -158,6 +161,9 @@ def _rule_text(
         return f"{text}（{rule.note}）" if rule.note else text
     if rule.key == GROUP_RULE_KEY:
         text = grouping_text(rule.value, labels)
+        return f"{text}（{rule.note}）" if rule.note else text
+    if rule.key == FILTER_RULE_KEY:
+        text = filter_text(rule.value, labels)
         return f"{text}（{rule.note}）" if rule.note else text
     if rule.key == VARIANT_RULE_KEY:
         candidate = definition.candidate(rule.value)

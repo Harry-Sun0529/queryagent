@@ -98,11 +98,16 @@ maintainer declared, or explicitly not at all. Like the period, only the
 user sets it; documents cannot, so a handbook cannot turn a number into a
 table or a table into a number."""
 
+FILTER_RULE_KEY = "filter"
+"""One declared value of one dimension the result is restricted to (T43),
+``dim:channel=ads``, or ``none``. Like the period and the grouping, only the
+user sets it; documents cannot restrict what a number counts."""
+
 PREVIOUS_CHOICE_KEY = "previous_choice"
 """A reading this subject confirmed before that differs from the one the
 documents now select (T42). Shown and hashed; never compiled, never reused."""
 
-COMPILED_RULE_KEYS = (VARIANT_RULE_KEY, PERIOD_RULE_KEY, GROUP_RULE_KEY)
+COMPILED_RULE_KEYS = (VARIANT_RULE_KEY, PERIOD_RULE_KEY, GROUP_RULE_KEY, FILTER_RULE_KEY)
 """Rules the compiler turns into SQL. Every other rule explains the 口径."""
 
 REQUIRABLE_RULE_KEYS = (*ALLOWED_RULE_KEYS, PERIOD_RULE_KEY)
