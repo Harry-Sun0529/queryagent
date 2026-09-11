@@ -64,8 +64,9 @@ specs for in-flight work in `docs/specs/`.
 - **Period（统计区间）** — the absolute date range a draft is bounded to,
   resolved from the question's time words (or stated with `--period`) when
   the draft is prepared, and hashed with it. Only the user sets it; documents
-  cannot. With the variant and the grouping, it is one of the three rules the
-  compiler consumes; its dates are bound as parameters (ADR-009).
+  cannot. With the variant, the grouping and the value filter, it is one of
+  the four rules the compiler consumes; its dates are bound as parameters
+  (ADR-009).
 - **Grouping（分组方式）** — whether the answer is one number or a table, and
   split how: by day, week (Monday-start) or month, or by a **Dimension** a
   maintainer declares per table in the mappings file. Read from the
@@ -73,7 +74,23 @@ specs for in-flight work in `docs/specs/`.
   「日均」 is not a grouping and is asked about.
 - **Data reach（数据新鲜度）** — the date of the newest record in a mapping's
   table, probed after confirmation and recorded on the run. It is all the
-  system claims: not that the data is complete up to that day.
+  system claims: not that the data is complete up to that day. Before
+  confirmation the sheet may say it too — from a cadence the maintainer
+  declares (T+N), or, if the maintainer opts in, from the same probe run
+  early, cached and budgeted (ADR-010). Either way it is advice, outside the
+  hash.
+- **Value filter（取值过滤）** — one value of a declared dimension the count
+  is restricted to (「广告渠道」). Values are a closed set in the mappings
+  file and the chosen one is bound. User-only and hashed; a value nobody
+  declared is asked about, because a bound value that matches nothing reads
+  as 0.
+- **Remembered choice（历史选择）** — a choice this subject confirmed on
+  their last successful run of the metric in the workspace, offered again on
+  the sheet, dated and hashed. It fills gaps, overrides nothing, and lapses
+  when its mapping, option or document moves (ADR-012). Not a team standard.
+- **Budget／admission（预算／准入）** — totals a maintainer sets in `budget:`.
+  A request is admitted before its first statement or refused with nothing
+  run; concurrency is a lease with an expiry in the state file (ADR-011).
 - **Trace** — one run's event stream persisted as JSONL, replayable
   (ADR-005). **Checkpoint** — the eval's per-case result log, which
   `--resume` reuses when the effective input/data/code signature matches.
@@ -91,10 +108,11 @@ specs for in-flight work in `docs/specs/`.
 | Agent output | `Iterator[AgentEvent]` from `run_agent` | chat CLI, ask CLI, eval runner, trace writer |
 | Persisted records | `serde.rebuild_dataclass` | trace events, eval checkpoints |
 | Tool dispatch | `ToolRegistry.validate_and_dispatch -> Observation` | get_schema, execute_sql, ask_clarification |
-| Draft building | `DraftBuilder.build(question, actor) -> BusinessDefinition` | maintainer metrics; maintainer + document evidence (`CompositeDraftBuilder`) |
+| Draft building | `DraftBuilder.build(question, actor) -> BusinessDefinition` | maintainer metrics; maintainer + document evidence (`CompositeDraftBuilder`); either wrapped by remembered choices (`HistoryDraftBuilder`) |
 | Document evidence | `KnowledgeProvider.search/read/check_refs(scope, ...)` | local SQLite index, keyword or optional semantic |
-| Plan compiling | `TemplateCompiler.compile(definition) -> CompiledQuery(sql, params)`; `freshness_probe(definition)` | structured maintainer mappings + bound period (ADR-009) + time or declared-dimension grouping; whole-statement `sql:` kept, refuses a period or a grouping and is not probed |
-| Workflow state | `SqliteWorkflowStore` (drafts / confirmations / runs) | local SQLite file, single process |
+| Plan compiling | `TemplateCompiler.compile(definition) -> CompiledQuery(sql, params)`; `freshness_probe` / `freshness_targets` / `fingerprint(definition)` | structured maintainer mappings + bound period (ADR-009) + time or declared-dimension grouping + bound declared-value filter; whole-statement `sql:` kept, refuses a period, a grouping or a filter and is not probed |
+| Workflow state | `SqliteWorkflowStore` (drafts / confirmations / runs, freshness cache) | local SQLite file, single process |
+| Budget | `Budget.admit(subject, queries=…) -> Lease` | SQLite ledger in the workflow state file (flow; ask/chat through `BudgetedConnector`); `Unmetered` when `budget:` is absent |
 | Trusted identity | `ActorContext(subject_id, workspace_id, roles)` | CLI local user (Web session / MCP host reserved) |
 
 Rules that keep the seams honest: agent code never touches provider SDK

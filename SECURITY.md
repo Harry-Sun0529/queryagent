@@ -42,9 +42,18 @@ cap plus one row to detect truncation. A truncated connection is discarded
 rather than draining its remaining rows into memory.
 
 A row cap is **not a scan, CPU or memory budget on the server**. Expensive
-joins and aggregations can still be costly before producing a row. Human
-confirmation now exists (`queryagent flow`); per-source total budgets and
-admission control still do not.
+joins and aggregations can still be costly before producing a row. Since
+v0.9 a maintainer can set totals in `budget:`
+([ADR-011](docs/adr/011-budgets-are-configuration.md)): statements per
+request, statements and client-measured seconds per subject per day,
+requests executing at once, and — on ClickHouse only — the rows one
+statement may read, enforced by the engine. A request is admitted before its
+first statement or refused with nothing run. MySQL and SQLite have no scan
+limit; the per-statement timeout is the only bound there, and configuring
+one is refused at load rather than silently ignored. A per-subject allowance
+is only as strong as the identity it is keyed on: locally, `flow --subject`
+is the trusted user's own choice, so per-person allowances need an identity
+supplied by a host.
 
 ## Prompt injection: honest boundary
 
@@ -79,7 +88,27 @@ Each confirmed run of a structured mapping executes a second statement,
 identifiers, through the same whitelist and executor, and only after the
 confirmation holds. It discloses one fact to whoever runs the query — the
 date of the newest record in that table — which a deployment granting the
-table should already consider readable.
+table should already consider readable. With
+`workflow.freshness_before_confirm: probe` (off by default,
+[ADR-010](docs/adr/010-freshness-before-confirmation.md)) the same statement
+may also run *before* confirmation, to warn on the sheet. It is the only
+statement that can; it runs with its own short timeout, is charged to the
+budget, and is cached per table — not per subject, since the answer is the
+same for everyone who may query the table.
+
+A value filter (「广告渠道」) is bound like the dates, and only a value a
+maintainer declared under `values:` can become one; anything else is asked
+about, so a question cannot choose what is compared.
+
+## Remembered choices
+
+历史选择 reads only the acting subject's own confirmed, successful runs in
+the same workspace; nothing one subject chose is offered to another. Those
+drafts are business data at rest in the workflow state file, like every
+other draft — deleting the file forgets them. A remembered choice that
+adopted a document is re-checked against the subject's current access
+before it is offered, and one that no longer checks out is dropped without
+saying which document it was.
 
 ## Indexed documents
 

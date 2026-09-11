@@ -27,6 +27,18 @@ metrics_path: examples/metrics.yaml
 workflow:
   mappings_path: examples/query_mappings.yaml
   state_path: .queryagent/workflow.db
+  # 确认前的数据新鲜度提醒（ADR-010）：declared = 只用映射上声明的更新节奏，确认前零查询（默认）；
+  # probe = 允许确认前跑一次 MAX(time_column) 探测（按表缓存、计入预算）；off = 只在结果上说。
+  # freshness_before_confirm: declared
+  # history_max_age_days: 90       # 「历史选择」最多沿用多久以前的确认
+
+# 可选：维护者设定的总预算（ADR-011）。不写就没有总量上限；写了，命令行参数与模型都不能提高它。
+# budget:
+#   max_queries_per_request: 3     # 一次确认执行（含新鲜度探测）或一次 ask 的探索
+#   max_queries_per_day: 200       # 每人每天的语句数
+#   max_query_seconds_per_day: 600 # 每人每天累计执行秒数（客户端计时）
+#   max_concurrent: 2              # 同时执行的请求数
+#   # max_rows_scanned 只有 ClickHouse 能由引擎强制；在 SQLite 上配置会在加载时报错
 
 # Document evidence (`queryagent kb import`, then `flow` cites what it finds).
 # `root` confines document import: it reads every file it finds under a
