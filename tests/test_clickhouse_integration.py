@@ -237,3 +237,56 @@ def test_each_time_grain_agrees_with_clickhouses_own_functions(
         assert [int(row[0].strftime("%Y%m%d")) for row in compiled.rows] == [
             row[0] for row in native.rows
         ]
+
+
+def test_a_value_filter_agrees_with_a_literal_where_on_clickhouse(
+    connector: ClickHouseConnector,
+) -> None:
+    """G17 on ClickHouse: the bound channel against a written-out one, alone and by day."""
+    import calendar
+    from datetime import date
+
+    from queryagent.workflow.compiler import TemplateCompiler
+    from queryagent.workflow.grouping import Dimension
+    from queryagent.workflow.mappings import QueryMapping
+    from queryagent.workflow.models import (
+        FILTER_RULE_KEY,
+        GROUP_RULE_KEY,
+        PERIOD_RULE_KEY,
+        BusinessDefinition,
+        Rule,
+        RuleSource,
+    )
+
+    stamp = connector.execute(
+        "SELECT toYYYYMM(max(created_at)) FROM users", timeout_s=10, max_rows=1
+    ).rows[0][0]
+    year, number = divmod(int(stamp), 100)
+    period = f"{date(year, number, 1)}..{date(year, number, calendar.monthrange(year, number)[1])}"
+    compiler = TemplateCompiler(
+        {("new_users", "registered"): QueryMapping("users", "count()", "n", "created_at")},
+        dialect="clickhouse",
+        dimensions=(
+            Dimension("channel", "渠道", columns=(("users", "channel"),), values=(("ads", ()),)),
+        ),
+    )
+    rules = (
+        Rule("variant", "registered", RuleSource.USER),
+        Rule(PERIOD_RULE_KEY, period, RuleSource.USER),
+        Rule(FILTER_RULE_KEY, "dim:channel=ads", RuleSource.USER),
+    )
+    total = compiler.compile(BusinessDefinition("new_users", "新增用户", rules=rules))
+    daily = compiler.compile(
+        BusinessDefinition(
+            "new_users", "新增用户", rules=(*rules, Rule(GROUP_RULE_KEY, "day", RuleSource.USER))
+        )
+    )
+    native = connector.execute(
+        f"SELECT count() FROM users WHERE channel = 'ads' AND toYYYYMM(created_at) = {stamp}",
+        timeout_s=10,
+        max_rows=1,
+    ).rows[0][0]
+    compiled = connector.execute(total.sql, timeout_s=10, max_rows=1, params=total.params)
+    by_day = connector.execute(daily.sql, timeout_s=10, max_rows=100, params=daily.params)
+    assert compiled.rows[0][0] == native > 0
+    assert sum(row[1] for row in by_day.rows) == native

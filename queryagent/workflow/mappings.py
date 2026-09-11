@@ -258,4 +258,34 @@ def _parse_dimension(item: Any, where: str) -> Dimension:
         label=label.strip(),
         aliases=tuple(a.strip() for a in aliases),
         columns=tuple((str(t), str(c)) for t, c in columns.items()),
+        values=_parse_values(item.get("values"), f"{where} ({key})"),
     )
+
+
+def _parse_values(raw: Any, where: str) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """``values: {stored: [words, ...]}`` — the closed set a result may be filtered to (T43).
+
+    The stored value is bound as a parameter, so it may be any string; what is
+    checked is that each word names exactly one value, since a word naming two
+    would make a question's restriction a guess.
+    """
+    if raw is None:
+        return ()
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError(f"{where}: 'values' must map each stored value to a list of words")
+    owner: dict[str, str] = {}
+    parsed = []
+    for stored, words in raw.items():
+        if not isinstance(stored, str) or not stored.strip():
+            raise ValueError(f"{where}: value {stored!r} must be a non-empty string (quote it)")
+        if not isinstance(words, list) or not all(isinstance(w, str) and w.strip() for w in words):
+            raise ValueError(f"{where}: 'values.{stored}' must be a list of non-empty words")
+        cleaned = tuple(w.strip() for w in words)
+        for word in (stored, *cleaned):
+            if owner.setdefault(word, stored) != stored:
+                raise ValueError(
+                    f"{where}: the word {word!r} names two values ({owner[word]}, {stored}); "
+                    "each word must name exactly one"
+                )
+        parsed.append((stored, cleaned))
+    return tuple(parsed)

@@ -19,8 +19,15 @@ from datetime import date
 
 from queryagent.metrics.base import Metric, MetricStore
 from queryagent.workflow.errors import MappingNotFound
-from queryagent.workflow.grouping import Dimension, GroupingError, find_grouping
+from queryagent.workflow.grouping import (
+    Dimension,
+    FilterError,
+    GroupingError,
+    find_filter,
+    find_grouping,
+)
 from queryagent.workflow.models import (
+    FILTER_RULE_KEY,
     GROUP_RULE_KEY,
     PERIOD_RULE_KEY,
     REQUIRABLE_RULE_KEYS,
@@ -68,8 +75,37 @@ class MetricDraftBuilder:
             raise MappingNotFound(
                 f"no declared business metric matches this question: {question!r}"
             )
-        definition = _with_period(_definition_for(matches[0]), question, self._today())
-        return _with_grouping(definition, question, self._dimensions)
+        metric = matches[0]
+        definition = _with_period(_definition_for(metric), question, self._today())
+        definition = _with_grouping(definition, question, self._dimensions)
+        # The metric's own name may stand before a dimension word (「新增用户
+        # 渠道」) without naming a value.
+        names = (metric.display_name, metric.name, *metric.aliases)
+        return _with_filter(definition, question, self._dimensions, names)
+
+
+def _with_filter(
+    definition: BusinessDefinition,
+    question: str,
+    dimensions: tuple[Dimension, ...],
+    ignore: tuple[str, ...],
+) -> BusinessDefinition:
+    """Read 「广告渠道」 into a value filter (T43).
+
+    A value nobody declared, or two values, leave the filter missing: the
+    question restricted the count, so a total over every value would answer
+    something else — and a bound 「抖音」 matching nothing would read as 0.
+    """
+    try:
+        found = find_filter(question, dimensions, ignore=ignore)
+    except FilterError:
+        return dataclasses.replace(definition, missing=(*definition.missing, FILTER_RULE_KEY))
+    if found is None:
+        return definition
+    rule = Rule(
+        FILTER_RULE_KEY, found.value, RuleSource.USER, note=f"由问题中的「{found.phrase}」换算"
+    )
+    return definition.with_rules((rule,))
 
 
 def _with_grouping(

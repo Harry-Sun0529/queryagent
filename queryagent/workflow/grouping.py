@@ -52,9 +52,28 @@ class Dimension:
     label: str
     aliases: tuple[str, ...] = ()
     columns: tuple[tuple[str, str], ...] = ()
+    values: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    """Stored values a result may be restricted to, each with the words a
+    question uses for it (T43). A closed set: without it, no filter."""
 
     def column_for(self, table: str) -> str | None:
         return dict(self.columns).get(table)
+
+    def names(self) -> tuple[str, ...]:
+        """The label and aliases, longest first so a regex prefers 来源渠道 to 渠道."""
+        return tuple(sorted({self.label, *self.aliases}, key=len, reverse=True))
+
+    def value_for(self, word: str) -> str | None:
+        """The stored value a word names — the value itself or one of its words — or None."""
+        for stored, words in self.values:
+            if word == stored or word in words:
+                return stored
+        return None
+
+    def value_words(self) -> tuple[str, ...]:
+        """Every way a question may name one of the values, longest first."""
+        every = {w for stored, words in self.values for w in (stored, *words)}
+        return tuple(sorted(every, key=len, reverse=True))
 
 
 @dataclass(frozen=True)
@@ -121,8 +140,11 @@ _UNDECLARED = re.compile(
 
 
 def _dimension_pattern(dimension: Dimension) -> re.Pattern[str]:
-    names = sorted({dimension.label, *dimension.aliases}, key=len, reverse=True)
-    return re.compile(_SPLIT_WORDS + "(?:" + "|".join(re.escape(n) for n in names) + ")")
+    return re.compile(_SPLIT_WORDS + _alternation(dimension.names()))
+
+
+def _alternation(words: tuple[str, ...]) -> str:
+    return "(?:" + "|".join(re.escape(word) for word in words) + ")"
 
 
 def find_grouping(question: str, dimensions: tuple[Dimension, ...] = ()) -> FoundGrouping | None:
@@ -231,3 +253,166 @@ def edges_are_partial(period: Period, grain: str) -> bool:
         return False
     after = period.end + timedelta(days=1)
     return bucket_start(period.start, grain) != period.start or bucket_start(after, grain) != after
+
+
+# ---------------------------------------------------------- value filters (T43)
+#
+# 「广告渠道的新增用户」 counts one value of a declared dimension. The value is
+# bound, so it cannot inject anything; but a bound value nobody declared —
+# 「抖音」 where the column holds ads / organic / referral — would match no
+# rows and report 0 as if the business had done nothing. So values are a
+# closed set a maintainer declares, and anything else is asked about.
+
+FILTER_NONE = "none"
+"""An explicit 「不过滤」: the rule is settled and nothing is filtered."""
+
+
+class FilterError(ValueError):
+    """A restriction the question asks for that cannot become exactly one filter."""
+
+
+@dataclass(frozen=True)
+class FoundFilter:
+    """A filter and the words in the question it was read from."""
+
+    value: str
+    phrase: str
+
+
+def filter_value(dimension: Dimension, stored: str) -> str:
+    """The canonical rule value: ``dim:channel=ads``."""
+    return f"{DIMENSION_PREFIX}{dimension.key}={stored}"
+
+
+def split_filter(value: str) -> tuple[str, str] | None:
+    """``dim:channel=ads`` → ("channel", "ads"); None for no filter or anything malformed."""
+    if not value.startswith(DIMENSION_PREFIX):
+        return None
+    key, sep, stored = value[len(DIMENSION_PREFIX) :].partition("=")
+    if not sep or not stored or not _IDENTIFIER.fullmatch(key):
+        return None
+    return key, stored
+
+
+def is_filter(value: str) -> bool:
+    """True for a canonical rule value; anything else never reaches SQL."""
+    return value == FILTER_NONE or split_filter(value) is not None
+
+
+def filter_text(value: str, labels: Mapping[str, str] | None = None) -> str:
+    """How a filter reads on the confirmation sheet."""
+    parts = split_filter(value)
+    if parts is None:
+        return "不过滤（全部取值）"
+    key, stored = parts
+    return f"只统计「{(labels or {}).get(key, key)}」为 {stored} 的数据"
+
+
+_JOINERS = r"(?:和|与|及|或|、|/)"
+# A value word nobody declared must be a word of its own to be noticed: it
+# starts after the start, punctuation, the end of a time phrase (「上个月」) or
+# a split word (「各」), and contains none of them — otherwise 「上个月各渠道」
+# reads as a value called 「上个月各」. Found in testing.
+_BREAKS = r"\s，。、,；;：:的月天周年日在从自各按每"
+_WORD_START = rf"(?:^|(?<=[{_BREAKS}]))"
+_LONE_WORD = rf"[^{_BREAKS}]{{2,4}}"
+_SPLIT_START = re.compile(r"^(?:按|分|各|每|不同)")
+# 「渠道分布」「渠道占比」 ask about every value, not one.
+_NOT_ONE_VALUE = r"(?!分布|占比|结构|构成|情况|对比|排名)"
+
+
+def _undeclared_value(dimension: Dimension, word: str) -> FilterError:
+    if not dimension.values:
+        return FilterError(f"维护者没有为「{dimension.label}」声明取值，不能按它过滤。")
+    options = "、".join(
+        f"{words[0] if words else stored}（{stored}）" for stored, words in dimension.values
+    )
+    return FilterError(
+        f"问题像是要只统计「{dimension.label}」为「{word}」的数据，但它不是维护者声明的取值"
+        f"（可选：{options}）。要看每个取值请写「各{dimension.label}」。"
+    )
+
+
+def find_filter(
+    question: str, dimensions: tuple[Dimension, ...] = (), *, ignore: tuple[str, ...] = ()
+) -> FoundFilter | None:
+    """The one declared value a question restricts the result to, or None.
+
+    Two shapes: the value before the dimension's name (「广告渠道」) and after
+    it (「渠道为广告」). ``ignore`` holds words that may stand before a
+    dimension's name without naming a value — the metric's own name, as in
+    「新增用户渠道」.
+
+    Raises:
+        FilterError: a value no maintainer declared (「抖音渠道」), several
+            values (「广告和推荐渠道」), or restrictions on two dimensions.
+    """
+    found: dict[str, FoundFilter] = {}
+    for dimension in dimensions:
+        if not dimension.values:
+            continue
+        names = _alternation(dimension.names())
+        words = _alternation(dimension.value_words())
+        before = rf"({words}(?:{_JOINERS}{words})*){names}{_NOT_ONE_VALUE}"
+        for match in re.finditer(before, question):
+            picked = {dimension.value_for(word) for word in re.split(_JOINERS, match.group(1))}
+            if len(picked) > 1:
+                raise FilterError(
+                    f"「{match.group(0)}」同时选了「{dimension.label}」的多个取值；一次只能按一个"
+                    f"取值过滤，要看每个取值请写「各{dimension.label}」。"
+                )
+            value = filter_value(dimension, str(picked.pop()))
+            found.setdefault(value, FoundFilter(value, match.group(0)))
+        after = rf"{names}\s*(?:为|是|=|：|:)\s*(?:({words})|([^\s，。、,；;的]{{1,6}}))"
+        for match in re.finditer(after, question):
+            if not match.group(1):
+                raise _undeclared_value(dimension, match.group(2))
+            value = filter_value(dimension, str(dimension.value_for(match.group(1))))
+            found.setdefault(value, FoundFilter(value, match.group(0)))
+        unknown = rf"{_WORD_START}({_LONE_WORD}){names}{_NOT_ONE_VALUE}"
+        for match in re.finditer(unknown, question):
+            word, phrase = match.group(1), match.group(0)
+            named = len(phrase) - len(word)
+            if (
+                dimension.value_for(word) is not None
+                or _SPLIT_START.match(word)
+                or any(term and term in word for term in ignore)
+                # 「来源」 + 「渠道」 is the alias 「来源渠道」, not a value.
+                or any(len(n) > named and phrase.endswith(n) for n in dimension.names())
+            ):
+                continue
+            raise _undeclared_value(dimension, word)
+    if len(found) > 1:
+        phrases = "、".join(item.phrase for item in found.values())
+        raise FilterError(
+            f"问题里有多个过滤条件：{phrases}。一次只支持按一个维度的一个取值过滤。"
+        )
+    return next(iter(found.values()), None)
+
+
+def parse_filter(text: str, dimensions: tuple[Dimension, ...] = ()) -> str:
+    """A filter stated on purpose (``--filter`` or at a prompt): 渠道=广告, channel=ads,
+    the same words a question would use, or none.
+
+    Raises:
+        FilterError: Nothing recognisable, an unknown dimension or an undeclared value.
+    """
+    text = text.strip()
+    if text in (FILTER_NONE, "不过滤", "全部"):
+        return FILTER_NONE
+    for separator in ("=", "：", ":"):
+        name, sep, word = text.partition(separator)
+        if sep:
+            name, word = name.strip(), word.strip()
+            dimension = next((d for d in dimensions if name in (d.key, *d.names())), None)
+            if dimension is None:
+                declared = "、".join(d.label for d in dimensions if d.values) or "无"
+                raise FilterError(f"没有名为「{name}」的可过滤维度（已声明取值的：{declared}）。")
+            stored = dimension.value_for(word)
+            if stored is None:
+                raise _undeclared_value(dimension, word)
+            return filter_value(dimension, stored)
+    found = find_filter(text, dimensions)
+    if found is None:
+        raise FilterError(f"无法识别的过滤条件：{text!r}。可以写 渠道=广告；要全部数据写 none。")
+    return found.value

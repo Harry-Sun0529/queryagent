@@ -23,15 +23,30 @@
 # containing those words is shown as applied by (or contradicting) the
 # reading that runs; words shared by several readings mean all of them apply
 # it. Documents never become SQL — this only matches them to SQL written here.
+#
+# `values` (v0.9) on a dimension is the closed set a result may be restricted
+# to — 「广告渠道的新增用户」 — each stored value with the words a question uses
+# for it. A value nobody declared (「抖音渠道」) is asked about rather than bound:
+# it would match no rows and read as 0.
 dimensions:
   - key: channel
     label: 渠道
     aliases: [来源渠道, 获客渠道]
     columns: {users: channel}
+    values:
+      ads: [广告, 付费投放, 投放]
+      organic: [自然流量, 自然]
+      referral: [推荐, 邀请]
   - key: region
     label: 地区
     aliases: [区域, 大区]
     columns: {users: region}
+    values:
+      east: [华东]
+      north: [华北]
+      south: [华南]
+      west: [西部, 华西]
+      overseas: [海外]
 
 mappings:
   - metric: new_users

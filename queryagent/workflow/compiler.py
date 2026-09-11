@@ -23,15 +23,19 @@ from queryagent.workflow.errors import MappingNotFound, WorkflowStateError
 from queryagent.workflow.grouping import (
     DAY,
     DIMENSION_PREFIX,
+    FILTER_NONE,
     MONTH,
     NONE,
     TIME_GRAINS,
     WEEK,
     Dimension,
+    is_filter,
     is_grouping,
+    split_filter,
 )
 from queryagent.workflow.mappings import QueryMapping, mapping_fingerprint
 from queryagent.workflow.models import (
+    FILTER_RULE_KEY,
     GROUP_RULE_KEY,
     PERIOD_RULE_KEY,
     VARIANT_RULE_KEY,
@@ -122,6 +126,7 @@ class TemplateCompiler:
             )
         period = _period_of(definition)
         grouping = _grouping_of(definition)
+        value_filter = _filter_of(definition)
         if isinstance(entry, str):
             if period is not None:
                 raise MappingNotFound(
@@ -134,8 +139,15 @@ class TemplateCompiler:
                     f"{where} 的映射是整条 SQL，无法按已确认的方式分组；"
                     "请维护者改为结构化映射。不会忽略分组去给一个总数。"
                 )
+            if value_filter:
+                raise MappingNotFound(
+                    f"{where} 的映射是整条 SQL，无法按已确认的取值过滤；"
+                    "请维护者改为结构化映射。不会忽略过滤去给全部数据的数字。"
+                )
             return CompiledQuery(entry)
-        return _compose(entry, period, self._dialect, where, grouping, self._dimensions)
+        return _compose(
+            entry, period, self._dialect, where, grouping, self._dimensions, value_filter
+        )
 
     def freshness_probe(self, definition: BusinessDefinition) -> CompiledQuery | None:
         """The statement that dates the data behind this definition, if one exists.
@@ -206,6 +218,47 @@ def _grouping_of(definition: BusinessDefinition) -> str:
     return rule.value
 
 
+def _filter_of(definition: BusinessDefinition) -> str:
+    """The confirmed ``dim:key=value`` filter, or '' for none."""
+    rule = definition.rule(FILTER_RULE_KEY)
+    if rule is None:
+        return ""
+    if not is_filter(rule.value):
+        raise WorkflowStateError(f"过滤条件不是规范值：{rule.value!r}")
+    return "" if rule.value == FILTER_NONE else rule.value
+
+
+def _declared_column(
+    entry: QueryMapping, key: str, where: str, dimensions: tuple[Dimension, ...], action: str
+) -> tuple[Dimension, str]:
+    """The declared dimension and its column in this mapping's table, or refuse.
+
+    Never joins to find one: a dimension the maintainer did not declare for
+    this table is not one this query may split or filter by.
+    """
+    dimension = next((d for d in dimensions if d.key == key), None)
+    column = dimension.column_for(entry.source) if dimension else None
+    if dimension is None or column is None:
+        name = dimension.label if dimension else key
+        raise MappingNotFound(
+            f"{where} 取自表 {entry.source}，维护者没有为它声明维度「{name}」，无法按它{action}"
+        )
+    return dimension, column
+
+
+def _filter_condition(
+    entry: QueryMapping, value_filter: str, where: str, dimensions: tuple[Dimension, ...]
+) -> tuple[str, str]:
+    """``column = ?`` and the value bound to it (T43)."""
+    key, stored = split_filter(value_filter) or ("", "")
+    dimension, column = _declared_column(entry, key, where, dimensions, "过滤")
+    if dimension.value_for(stored) != stored:
+        # The parser only produces declared values; a stored rule that is not
+        # one did not come from it, and must not become a filter matching nothing.
+        raise WorkflowStateError(f"「{dimension.label}」没有声明取值 {stored!r}")
+    return f"{column} = ?", stored
+
+
 def _group_key(
     entry: QueryMapping,
     grouping: str,
@@ -224,13 +277,7 @@ def _group_key(
             raise MappingNotFound(f"方言 {dialect} 尚不支持按时间分组")
         return template.format(col=entry.time_column), _GRAIN_ALIASES[grouping]
     key = grouping[len(DIMENSION_PREFIX) :]
-    dimension = next((d for d in dimensions if d.key == key), None)
-    column = dimension.column_for(entry.source) if dimension else None
-    if dimension is None or column is None:
-        name = dimension.label if dimension else key
-        raise MappingNotFound(
-            f"{where} 取自表 {entry.source}，维护者没有为它声明维度「{name}」，无法按它分组"
-        )
+    dimension, column = _declared_column(entry, key, where, dimensions, "分组")
     return column, dimension.label
 
 
@@ -241,6 +288,7 @@ def _compose(
     where: str,
     grouping: str = "",
     dimensions: tuple[Dimension, ...] = (),
+    value_filter: str = "",
 ) -> CompiledQuery:
     # Maintainer fragments are parenthesised so an OR inside one cannot
     # escape the period condition beside it.
@@ -260,7 +308,11 @@ def _compose(
         # deprecated, and the drivers would render the same text anyway.
         conditions += [f"{entry.time_column} >= ?", f"{entry.time_column} < ?"]
         params = (period.start.isoformat(), period.end_exclusive.isoformat())
-    clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+    if value_filter:
+        condition, stored = _filter_condition(entry, value_filter, where, dimensions)
+        conditions.append(condition)
+        params = (*params, stored)
+    clause =f" WHERE {' AND '.join(conditions)}" if conditions else ""
     measure = f"{entry.measure} AS {_quote(entry.label, dialect)}"
     key = _group_key(entry, grouping, dialect, where, dimensions)
     if key is None:

@@ -28,6 +28,7 @@ from datetime import datetime, timedelta, timezone, tzinfo
 from queryagent.knowledge.models import EvidenceRef, RefStatus
 from queryagent.knowledge.provider import scope_of
 from queryagent.workflow.models import (
+    FILTER_RULE_KEY,
     GROUP_RULE_KEY,
     PERIOD_RULE_KEY,
     PREVIOUS_CHOICE_KEY,
@@ -40,7 +41,7 @@ from queryagent.workflow.models import (
 from queryagent.workflow.service import DraftBuilder, RefChecker
 from queryagent.workflow.store import SqliteWorkflowStore
 
-NOT_REMEMBERED = (PERIOD_RULE_KEY, GROUP_RULE_KEY, PREVIOUS_CHOICE_KEY)
+NOT_REMEMBERED = (PERIOD_RULE_KEY, GROUP_RULE_KEY, FILTER_RULE_KEY, PREVIOUS_CHOICE_KEY)
 """Rules about one question rather than about the metric: never carried over."""
 
 
