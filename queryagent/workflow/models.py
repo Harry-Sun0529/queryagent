@@ -309,3 +309,6 @@ class QueryRun:
     """The statement that dated the data; '' when the mapping had no time column."""
     data_through: str = ""
     """ISO date of the newest record it found; '' when unknown."""
+    expected_through: str = ""
+    """ISO date the maintainer's declared cadence said the data should reach
+    when this ran (T41); '' when no cadence was declared."""

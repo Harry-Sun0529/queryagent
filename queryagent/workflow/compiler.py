@@ -73,6 +73,23 @@ class CompiledQuery:
     params: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class FreshnessTarget:
+    """One table and time column whose newest record dates a definition's data.
+
+    ``lag_days`` is the maintainer's declared cadence for it (T+N), or None.
+    """
+
+    source: str
+    time_column: str
+    lag_days: int | None = None
+
+    @property
+    def probe(self) -> CompiledQuery:
+        """``MAX(time_column)`` over identifiers validated when the mappings loaded."""
+        return CompiledQuery(f"SELECT MAX({self.time_column}) FROM {self.source}")
+
+
 class TemplateCompiler:
     """Compiles a confirmed definition through the maintainer's mapping table."""
 
@@ -132,7 +149,30 @@ class TemplateCompiler:
         entry, _ = self._lookup(definition)
         if not isinstance(entry, QueryMapping) or not entry.time_column:
             return None
-        return CompiledQuery(f"SELECT MAX({entry.time_column}) FROM {entry.source}")
+        return FreshnessTarget(entry.source, entry.time_column).probe
+
+    def freshness_targets(self, definition: BusinessDefinition) -> tuple[FreshnessTarget, ...]:
+        """The tables that date this definition's data, before or after a reading is chosen.
+
+        With a reading chosen, its mapping's table. Before, every reading's —
+        deduplicated, since two readings over one column ask the data one
+        question (T41). Whole-statement mappings and mappings without a time
+        column date nothing and are skipped.
+        """
+        entry, _ = self._lookup(definition)
+        entries = (
+            [entry]
+            if entry is not None
+            else [item for key, item in self._templates.items() if key[0] == definition.metric]
+        )
+        found: dict[tuple[str, str], FreshnessTarget] = {}
+        for item in entries:
+            if isinstance(item, QueryMapping) and item.time_column:
+                found.setdefault(
+                    (item.source, item.time_column),
+                    FreshnessTarget(item.source, item.time_column, item.lag_days),
+                )
+        return tuple(found.values())
 
     def _lookup(self, definition: BusinessDefinition) -> tuple[str | QueryMapping | None, str]:
         """The mapping for this definition's metric and reading, and its name."""

@@ -70,7 +70,15 @@ CREATE TABLE IF NOT EXISTS runs (
     truncated INTEGER NOT NULL DEFAULT 0,
     error TEXT NOT NULL DEFAULT '',
     freshness_sql TEXT NOT NULL DEFAULT '',
-    data_through TEXT NOT NULL DEFAULT ''
+    data_through TEXT NOT NULL DEFAULT '',
+    expected_through TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS freshness_cache (
+    source TEXT NOT NULL,
+    time_column TEXT NOT NULL,
+    latest TEXT NOT NULL,
+    probed_at TEXT NOT NULL,
+    PRIMARY KEY (source, time_column)
 );
 """
 
@@ -79,6 +87,7 @@ _LATER_RUN_COLUMNS = (
     ("params", "TEXT NOT NULL DEFAULT '[]'"),
     ("freshness_sql", "TEXT NOT NULL DEFAULT ''"),
     ("data_through", "TEXT NOT NULL DEFAULT ''"),
+    ("expected_through", "TEXT NOT NULL DEFAULT ''"),
 )
 
 
@@ -265,7 +274,7 @@ class SqliteWorkflowStore:
     def finish_run(self, run: QueryRun) -> None:
         self._conn.execute(
             "UPDATE runs SET status=?, sql=?, params=?, columns=?, rows=?, truncated=?, error=?, "
-            "freshness_sql=?, data_through=? WHERE run_id=?",
+            "freshness_sql=?, data_through=?, expected_through=? WHERE run_id=?",
             (
                 run.status.value,
                 run.sql,
@@ -276,6 +285,7 @@ class SqliteWorkflowStore:
                 run.error,
                 run.freshness_sql,
                 run.data_through,
+                run.expected_through,
                 run.run_id,
             ),
         )
@@ -298,6 +308,31 @@ class SqliteWorkflowStore:
         if row["subject_id"] != subject_id:
             raise PermissionDenied("not permitted")
         return _decode_run(row)
+
+    # ------------------------------------------------------------- freshness
+
+    def cached_freshness(self, source: str, time_column: str) -> tuple[str, datetime] | None:
+        """The last probe's answer for one table, and when it was read (T41).
+
+        Not scoped by subject: the newest record's date in a table is the
+        same answer for everyone who may query it.
+        """
+        row = self._conn.execute(
+            "SELECT latest, probed_at FROM freshness_cache WHERE source = ? AND time_column = ?",
+            (source, time_column),
+        ).fetchone()
+        if row is None:
+            return None
+        return row["latest"], datetime.fromisoformat(row["probed_at"])
+
+    def cache_freshness(
+        self, source: str, time_column: str, latest: str, probed_at: datetime
+    ) -> None:
+        self._conn.execute(
+            "INSERT INTO freshness_cache VALUES (?,?,?,?) ON CONFLICT(source, time_column) "
+            "DO UPDATE SET latest = excluded.latest, probed_at = excluded.probed_at",
+            (source, time_column, latest, probed_at.isoformat()),
+        )
 
 
 def _encode_definition(definition: BusinessDefinition) -> str:
@@ -401,4 +436,5 @@ def _decode_run(row: sqlite3.Row) -> QueryRun:
         error=row["error"],
         freshness_sql=row["freshness_sql"],
         data_through=row["data_through"],
+        expected_through=row["expected_through"],
     )

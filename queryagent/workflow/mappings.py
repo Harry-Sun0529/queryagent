@@ -44,6 +44,9 @@ class QueryMapping:
     """Rule keys this statement applies, each with the words a document
     describing that rule would use (T39). Compared against verified quotes,
     never executed."""
+    lag_days: int | None = None
+    """The maintainer's declared update cadence, T+``lag_days`` (T41), or None
+    when nothing was declared. A promise about loading, not a fact."""
 
 
 Mappings = dict[tuple[str, str], "str | QueryMapping"]
@@ -90,7 +93,9 @@ def _parse_entry(item: Any, where: str) -> tuple[tuple[str, str], str | QueryMap
     if not isinstance(variant, str):
         raise ValueError(f"{where}: 'variant' must be a string when present")
     key = (metric.strip(), variant.strip())
-    structured = {"from", "measure", "label", "time_column", "where", "enforces"} & set(item)
+    structured = {
+        "from", "measure", "label", "time_column", "where", "enforces", "freshness"
+    } & set(item)  # fmt: skip
     if "sql" in item:
         if structured:
             raise ValueError(
@@ -129,7 +134,26 @@ def _parse_structured(item: dict[str, Any], where: str) -> QueryMapping:
         time_column=time_column,
         where=tuple(" ".join(c.split()) for c in raw_where),
         enforces=_parse_enforces(item.get("enforces"), where),
+        lag_days=_parse_freshness(item.get("freshness"), time_column, where),
     )
+
+
+def _parse_freshness(raw: Any, time_column: str, where: str) -> int | None:
+    """``freshness: {lag_days: N}`` — how many days behind today the table is loaded.
+
+    Needs a time column: a cadence is a statement about which dates should
+    exist, and a mapping without one has no dates to speak of.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or set(raw) != {"lag_days"}:
+        raise ValueError(f"{where}: 'freshness' must be {{lag_days: N}}")
+    lag = raw["lag_days"]
+    if isinstance(lag, bool) or not isinstance(lag, int) or lag < 0:
+        raise ValueError(f"{where}: 'freshness.lag_days' must be whole days, 0 or more")
+    if not time_column:
+        raise ValueError(f"{where}: 'freshness' needs a 'time_column' to say which dates it covers")
+    return lag
 
 
 def _parse_enforces(raw: Any, where: str) -> tuple[tuple[str, tuple[str, ...]], ...]:

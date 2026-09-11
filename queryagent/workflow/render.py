@@ -15,7 +15,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from queryagent.workflow.builder import VARIANT_RULE_KEY
-from queryagent.workflow.coverage import describe_coverage, describe_emptiness, latest_date
+from queryagent.workflow.coverage import (
+    confirmed_period,
+    describe_coverage,
+    describe_emptiness,
+    latest_date,
+)
 from queryagent.workflow.enforcement import CONFLICTS, ENFORCED, verdict
 from queryagent.workflow.grouping import (
     MONTH,
@@ -253,20 +258,10 @@ def render_definition_summary(
     return "；".join(parts)
 
 
-def _confirmed_period(definition: BusinessDefinition) -> Period | None:
-    rule = definition.rule(PERIOD_RULE_KEY)
-    if rule is None:
-        return None
-    try:
-        return Period.decode(rule.value)
-    except ValueError:
-        return None
-
-
 def render_coverage(definition: BusinessDefinition, run: QueryRun) -> str:
     """How far the data behind this run reaches, against its period, or ''."""
     return describe_coverage(
-        _confirmed_period(definition),
+        confirmed_period(definition),
         latest_date(run.data_through),
         probed=bool(run.freshness_sql),
     )
@@ -275,7 +270,7 @@ def render_coverage(definition: BusinessDefinition, run: QueryRun) -> str:
 def render_emptiness(definition: BusinessDefinition, run: QueryRun) -> str:
     """Why this run has nothing to report, when it has nothing to report, or ''."""
     return describe_emptiness(
-        run.rows, _confirmed_period(definition), latest_date(run.data_through)
+        run.rows, confirmed_period(definition), latest_date(run.data_through)
     )
 
 
@@ -295,7 +290,7 @@ def render_rows(definition: BusinessDefinition, run: QueryRun) -> list[str]:
     """
     lines = ["  " + " | ".join(run.columns)]
     rule = definition.rule(GROUP_RULE_KEY)
-    period = _confirmed_period(definition)
+    period = confirmed_period(definition)
     grain = rule.value if rule else ""
     fillable = grain in TIME_GRAINS and period is not None and len(run.columns) == 2
     if fillable and period is not None and not run.truncated:
@@ -324,7 +319,7 @@ def render_rows(definition: BusinessDefinition, run: QueryRun) -> list[str]:
 def render_grouping_note(definition: BusinessDefinition) -> str:
     """Say so when the first or last week or month is only partly in the period."""
     rule = definition.rule(GROUP_RULE_KEY)
-    period = _confirmed_period(definition)
+    period = confirmed_period(definition)
     if rule is None or period is None or not edges_are_partial(period, rule.value):
         return ""
     unit = "周" if rule.value == WEEK else "月"

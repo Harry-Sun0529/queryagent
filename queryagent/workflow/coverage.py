@@ -15,7 +15,19 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 
+from queryagent.workflow.models import PERIOD_RULE_KEY, BusinessDefinition
 from queryagent.workflow.periods import Period
+
+
+def confirmed_period(definition: BusinessDefinition) -> Period | None:
+    """The definition's period, or None when it has none or it is malformed."""
+    rule = definition.rule(PERIOD_RULE_KEY)
+    if rule is None:
+        return None
+    try:
+        return Period.decode(rule.value)
+    except ValueError:
+        return None
 
 
 def latest_date(value: object) -> date | None:
