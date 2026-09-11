@@ -19,8 +19,10 @@ from typing import NamedTuple
 
 from queryagent.workflow.errors import NotFound, PermissionDenied, StaleVersion
 from queryagent.workflow.models import (
+    HUMAN_CHANNELS,
     BusinessDefinition,
     Candidate,
+    Channel,
     Confirmation,
     DefinitionDraft,
     DraftStatus,
@@ -55,7 +57,8 @@ CREATE TABLE IF NOT EXISTS confirmations (
     draft_version INTEGER NOT NULL,
     definition_hash TEXT NOT NULL,
     subject_id TEXT NOT NULL,
-    confirmed_at TEXT NOT NULL
+    confirmed_at TEXT NOT NULL,
+    channel TEXT NOT NULL DEFAULT 'cli'
 );
 CREATE TABLE IF NOT EXISTS runs (
     run_id TEXT PRIMARY KEY,
@@ -84,14 +87,19 @@ CREATE TABLE IF NOT EXISTS freshness_cache (
 );
 """
 
-# Columns added to ``runs`` after its first release, with their declarations.
-_LATER_RUN_COLUMNS = (
-    ("params", "TEXT NOT NULL DEFAULT '[]'"),
-    ("freshness_sql", "TEXT NOT NULL DEFAULT ''"),
-    ("data_through", "TEXT NOT NULL DEFAULT ''"),
-    ("expected_through", "TEXT NOT NULL DEFAULT ''"),
-    ("mapping_fingerprint", "TEXT NOT NULL DEFAULT ''"),
-)
+# Columns added to a table after its first release, with their declarations.
+_LATER_COLUMNS = {
+    "runs": (
+        ("params", "TEXT NOT NULL DEFAULT '[]'"),
+        ("freshness_sql", "TEXT NOT NULL DEFAULT ''"),
+        ("data_through", "TEXT NOT NULL DEFAULT ''"),
+        ("expected_through", "TEXT NOT NULL DEFAULT ''"),
+        ("mapping_fingerprint", "TEXT NOT NULL DEFAULT ''"),
+    ),
+    # Every confirmation before 1.0 came from the terminal: the default is
+    # what those rows were, not a guess (H9).
+    "confirmations": (("channel", "TEXT NOT NULL DEFAULT 'cli'"),),
+}
 
 
 class ConfirmedRun(NamedTuple):
@@ -128,10 +136,13 @@ class SqliteWorkflowStore:
         column added later has to be added here — or the first run recorded
         after an upgrade fails on a state file that was working yesterday.
         """
-        present = {row["name"] for row in self._conn.execute("PRAGMA table_info(runs)")}
-        for column, declaration in _LATER_RUN_COLUMNS:
-            if column not in present:
-                self._conn.execute(f"ALTER TABLE runs ADD COLUMN {column} {declaration}")
+        for table, columns in _LATER_COLUMNS.items():
+            present = {
+                row["name"] for row in self._conn.execute(f"PRAGMA table_info({table})")
+            }
+            for column, declaration in columns:
+                if column not in present:
+                    self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
     def close(self) -> None:
         self._conn.close()
@@ -225,11 +236,45 @@ class SqliteWorkflowStore:
         ).fetchall()
         return tuple(row["evidence_ref"] for row in rows)
 
+    def pending_drafts(
+        self, subject_id: str, workspace_id: str, *, limit: int = 50
+    ) -> tuple[DefinitionDraft, ...]:
+        """Drafts still waiting on this person, newest first (T45).
+
+        Waiting means open for input, or complete with no confirmation of its
+        current version and hash. Expired drafts are not waiting on anyone.
+        """
+        rows = self._conn.execute(
+            "SELECT d.* FROM drafts d LEFT JOIN confirmations c ON c.draft_id = d.draft_id "
+            "AND c.draft_version = d.version AND c.definition_hash = d.definition_hash "
+            "WHERE d.subject_id = ? AND d.workspace_id = ? AND d.status IN (?, ?) "
+            "AND c.confirmation_id IS NULL ORDER BY d.updated_at DESC LIMIT ?",
+            (
+                subject_id,
+                workspace_id,
+                DraftStatus.NEEDS_INPUT.value,
+                DraftStatus.AWAITING_CONFIRMATION.value,
+                limit,
+            ),
+        ).fetchall()
+        return tuple(_decode_draft(row) for row in rows)
+
+    def draft_ids_starting(self, subject_id: str, prefix: str) -> tuple[str, ...]:
+        """This subject's draft ids beginning with ``prefix``: the sheet shows eight characters."""
+        escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        rows = self._conn.execute(
+            "SELECT draft_id FROM drafts WHERE subject_id = ? AND draft_id LIKE ? ESCAPE '\\' "
+            "ORDER BY draft_id",
+            (subject_id, escaped + "%"),
+        ).fetchall()
+        return tuple(row["draft_id"] for row in rows)
+
     # --------------------------------------------------------- confirmations
 
     def save_confirmation(self, confirmation: Confirmation) -> None:
         self._conn.execute(
-            "INSERT INTO confirmations VALUES (?,?,?,?,?,?)",
+            "INSERT INTO confirmations (confirmation_id, draft_id, draft_version, "
+            "definition_hash, subject_id, confirmed_at, channel) VALUES (?,?,?,?,?,?,?)",
             (
                 confirmation.confirmation_id,
                 confirmation.draft_id,
@@ -237,6 +282,7 @@ class SqliteWorkflowStore:
                 confirmation.definition_hash,
                 confirmation.subject_id,
                 confirmation.confirmed_at.isoformat(),
+                confirmation.channel.value,
             ),
         )
 
@@ -248,14 +294,32 @@ class SqliteWorkflowStore:
             raise NotFound(f"no such confirmation: {confirmation_id}")
         if row["subject_id"] != subject_id:
             raise PermissionDenied("not permitted")
-        return Confirmation(
-            confirmation_id=row["confirmation_id"],
-            draft_id=row["draft_id"],
-            draft_version=row["draft_version"],
-            definition_hash=row["definition_hash"],
-            subject_id=row["subject_id"],
-            confirmed_at=datetime.fromisoformat(row["confirmed_at"]),
-        )
+        return _decode_confirmation(row)
+
+    def human_confirmation(
+        self, subject_id: str, draft_id: str, version: int, definition_hash: str
+    ) -> Confirmation | None:
+        """The newest confirmation a person gave this exact version, or None (T44).
+
+        Filtered on the channel as well as the version and hash. No code path
+        writes an agent's confirmation, and this read would not accept one if
+        a future one did (ADR-013).
+        """
+        self.get_draft(subject_id, draft_id)  # ownership first
+        row = self._conn.execute(
+            "SELECT * FROM confirmations WHERE draft_id = ? AND subject_id = ? "
+            "AND draft_version = ? AND definition_hash = ? AND channel IN ("
+            + ",".join("?" for _ in HUMAN_CHANNELS)
+            + ") ORDER BY confirmed_at DESC LIMIT 1",
+            (
+                draft_id,
+                subject_id,
+                version,
+                definition_hash,
+                *(channel.value for channel in HUMAN_CHANNELS),
+            ),
+        ).fetchone()
+        return _decode_confirmation(row) if row is not None else None
 
     # ------------------------------------------------------------------ runs
 
@@ -328,6 +392,15 @@ class SqliteWorkflowStore:
         if row["subject_id"] != subject_id:
             raise PermissionDenied("not permitted")
         return _decode_run(row)
+
+    def latest_run_of(self, subject_id: str, confirmation_id: str) -> QueryRun | None:
+        """The newest run against one confirmation, whoever's key it holds, or None."""
+        row = self._conn.execute(
+            "SELECT * FROM runs WHERE confirmation_id = ? AND subject_id = ? "
+            "ORDER BY rowid DESC LIMIT 1",
+            (confirmation_id, subject_id),
+        ).fetchone()
+        return _decode_run(row) if row is not None else None
 
     # --------------------------------------------------------------- history
 
@@ -473,6 +546,18 @@ def _decode_draft(row: sqlite3.Row) -> DefinitionDraft:
         definition=_decode_definition(row["definition"]),
         created_at=datetime.fromisoformat(row["created_at"]),
         updated_at=datetime.fromisoformat(row["updated_at"]),
+    )
+
+
+def _decode_confirmation(row: sqlite3.Row) -> Confirmation:
+    return Confirmation(
+        confirmation_id=row["confirmation_id"],
+        draft_id=row["draft_id"],
+        draft_version=row["draft_version"],
+        definition_hash=row["definition_hash"],
+        subject_id=row["subject_id"],
+        confirmed_at=datetime.fromisoformat(row["confirmed_at"]),
+        channel=Channel(row["channel"]),
     )
 
 

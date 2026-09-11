@@ -24,12 +24,16 @@ class RuleSource(Enum):
     only and must never be rendered as if the document said it (D07).
     ``HISTORY`` is a choice this subject confirmed on an earlier run, offered
     again (T42): theirs, but not made this time, and never a team standard.
+    ``AGENT`` is a value an agent filled in over MCP on the subject's behalf
+    (T44, ADR-013): neither what a document says nor what the person agreed,
+    until the person reads it on the sheet and confirms.
     """
 
     DOC = "doc"
     USER = "user"
     MAINTAINER = "maintainer"
     HISTORY = "history"
+    AGENT = "agent"
 
 
 @dataclass(frozen=True)
@@ -229,6 +233,27 @@ def _implied(implies: tuple[str, ...]) -> list[str]:
     return ["implies=" + ",".join(implies)] if implies else []
 
 
+class Channel(Enum):
+    """Which door a request came through (T44/T45, ADR-013).
+
+    Two of them have a person on the other side: the terminal and the local
+    confirmation page. The third has an agent. Only the first two may
+    confirm, and a confirmation records which one it came through.
+    """
+
+    CLI = "cli"
+    WEB = "web"
+    MCP = "mcp"
+
+    @property
+    def is_human(self) -> bool:
+        """True where a person reads the sheet: the only doors that may confirm."""
+        return self is not Channel.MCP
+
+
+HUMAN_CHANNELS = tuple(channel for channel in Channel if channel.is_human)
+
+
 @dataclass(frozen=True)
 class ActorContext:
     """A trusted caller identity (D11).
@@ -237,17 +262,27 @@ class ActorContext:
     session, an MCP host that authenticated the caller. Never parsed out of
     model output or tool arguments: a ``subject_id`` a model proposed is a
     string, not an authorisation.
+
+    ``channel`` is set by that entry point too. It is what makes a rule an
+    agent wrote read 「Agent 代填」 rather than 「本次约定」, and what keeps an
+    agent from confirming (ADR-013).
     """
 
     subject_id: str
     workspace_id: str
     roles: frozenset[str] = field(default_factory=frozenset)
+    channel: Channel = Channel.CLI
 
     def __post_init__(self) -> None:
         if not self.subject_id:
             raise ValueError("subject_id must not be empty")
         if not self.workspace_id:
             raise ValueError("workspace_id must not be empty")
+
+    @property
+    def authoring_source(self) -> RuleSource:
+        """The provenance of a rule this caller supplies: theirs, or their agent's."""
+        return RuleSource.USER if self.channel.is_human else RuleSource.AGENT
 
 
 class DraftStatus(Enum):
@@ -301,6 +336,23 @@ class Confirmation:
     definition_hash: str
     subject_id: str
     confirmed_at: datetime
+    channel: Channel = Channel.CLI
+    """Where the person confirmed (H9). Never MCP. Confirmations recorded
+    before 1.0 came from the terminal, the only door there was."""
+
+
+class DraftProgress(Enum):
+    """Where one draft stands, as an agent or a page asks after it (T44).
+
+    Derived, not stored: the draft's status, whether a person confirmed its
+    current version, and whether that confirmation has run.
+    """
+
+    NEEDS_INPUT = "needs_input"
+    AWAITING_CONFIRMATION = "awaiting_confirmation"
+    CONFIRMED = "confirmed"
+    EXPIRED = "expired"
+    EXECUTED = "executed"
 
 
 @dataclass(frozen=True)

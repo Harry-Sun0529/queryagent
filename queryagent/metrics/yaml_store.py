@@ -65,6 +65,10 @@ class YamlMetricStore:
         """Exact lookup by unique metric name."""
         return self._metrics.get(name)
 
+    def all(self) -> tuple[Metric, ...]:
+        """Every declared metric, in file order."""
+        return tuple(self._metrics.values())
+
     def match(self, question: str, top_k: int = 3) -> list[Metric]:
         """Score every metric against the question; return top_k with score > 0.
 

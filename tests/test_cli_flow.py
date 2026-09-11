@@ -255,7 +255,7 @@ def _with_disagreeing_handbooks(
         f"  sources:\n    - path: {docs}\n      workspace: ops\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr("queryagent.cli.make_backend", lambda _llm: _CitingLLM())
+    monkeypatch.setattr("queryagent.workflow.wiring.make_backend", lambda _llm: _CitingLLM())
     assert main(["kb", "import", "--config", str(config)]) == 0
 
 

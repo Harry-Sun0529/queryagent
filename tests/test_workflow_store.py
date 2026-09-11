@@ -215,6 +215,52 @@ def test_a_v08_state_file_opens_and_its_runs_carry_no_fingerprint(tmp_path: Path
     )
 
 
+def test_a_v09_state_file_reads_its_confirmations_as_the_terminals(tmp_path: Path) -> None:
+    """H9/H14: 0.9 wrote confirmations without a channel; the terminal was the only door."""
+    import sqlite3
+
+    from queryagent.workflow.models import Channel
+
+    path = tmp_path / "workflow.db"
+    old = sqlite3.connect(path)
+    old.execute(
+        "CREATE TABLE confirmations (confirmation_id TEXT PRIMARY KEY, draft_id TEXT NOT NULL, "
+        "draft_version INTEGER NOT NULL, definition_hash TEXT NOT NULL, "
+        "subject_id TEXT NOT NULL, confirmed_at TEXT NOT NULL)"
+    )
+    old.execute(
+        "INSERT INTO confirmations VALUES ('c0', 'd0', 1, 'h', 'alice', '2026-09-10T00:00:00')"
+    )
+    old.commit()
+    old.close()
+
+    assert SqliteWorkflowStore(path).get_confirmation("alice", "c0").channel is Channel.CLI
+
+
+def test_pending_drafts_are_the_ones_still_waiting_on_this_person(
+    store: SqliteWorkflowStore,
+) -> None:
+    """T45: waiting means no confirmation of the current version; others' drafts never show."""
+    import dataclasses
+
+    store.create_draft(_draft("d1"))
+    store.create_draft(_draft("d2"))
+    store.create_draft(_draft("d3", subject="mallory"))
+    store.save_confirmation(
+        Confirmation("c1", "d1", 1, _draft().definition_hash, "alice", NOW)
+    )
+    store.create_draft(dataclasses.replace(_draft("d4"), status=DraftStatus.EXPIRED))
+    assert [d.draft_id for d in store.pending_drafts("alice", "ops")] == ["d2"]
+    assert store.pending_drafts("alice", "finance") == ()
+
+
+def test_a_draft_id_prefix_finds_only_this_subjects_drafts(store: SqliteWorkflowStore) -> None:
+    store.create_draft(_draft("abc123"))
+    store.create_draft(_draft("abc999", subject="mallory"))
+    assert store.draft_ids_starting("alice", "abc") == ("abc123",)
+    assert store.draft_ids_starting("alice", "%") == ()
+
+
 def test_correspondences_are_written_only_when_present(tmp_path: Path) -> None:
     """A v0.7 reader builds candidates with Candidate(**c); an unknown key breaks it."""
     import dataclasses

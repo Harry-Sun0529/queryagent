@@ -13,6 +13,7 @@ be collapsed into an unattributed paragraph.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 from queryagent.workflow.builder import VARIANT_RULE_KEY
 from queryagent.workflow.coverage import (
@@ -22,6 +23,7 @@ from queryagent.workflow.coverage import (
     latest_date,
 )
 from queryagent.workflow.enforcement import CONFLICTS, ENFORCED, verdict
+from queryagent.workflow.freshness import describe_lag
 from queryagent.workflow.grouping import (
     MONTH,
     TIME_GRAINS,
@@ -51,7 +53,13 @@ _SOURCE_LABELS = {
     RuleSource.USER: "本次约定",
     RuleSource.MAINTAINER: "系统映射",
     RuleSource.HISTORY: "历史选择",
+    RuleSource.AGENT: "Agent 代填",
 }
+
+
+def source_label(source: RuleSource) -> str:
+    """The provenance mark a rule carries on every sheet, in every door."""
+    return _SOURCE_LABELS[source]
 
 _RULE_LABELS = {
     "metric": "统计对象",
@@ -144,7 +152,7 @@ def _correspondence(definition: BusinessDefinition, rule: Rule) -> str:
     return f"→ 对应可执行口径：{names}"
 
 
-def _rule_text(
+def rule_text(
     definition: BusinessDefinition, rule: Rule, labels: Mapping[str, str] | None = None
 ) -> str:
     """Render a rule's value for a human.
@@ -174,6 +182,19 @@ def _noted(text: str, rule: Rule) -> str:
     return f"{text}（{rule.note}）" if rule.note else text
 
 
+@dataclass(frozen=True)
+class SheetLine:
+    """One line of the confirmation sheet, and whether an agent filled it in.
+
+    The terminal prints the text; the confirmation page highlights the lines
+    an agent wrote (P05). Both read the same lines, so the page cannot show
+    a different 口径 from the one the terminal would.
+    """
+
+    text: str
+    agent: bool = False
+
+
 def render_draft(
     draft: DefinitionDraft,
     citations: dict[str, str] | None = None,
@@ -186,26 +207,39 @@ def render_draft(
     evidence: the reader has to be able to open the document and check
     (D01). Omitted for maintainer-only drafts, which cite nothing.
     """
+    return "\n".join(line.text for line in sheet_lines(draft, citations, labels))
+
+
+def sheet_lines(
+    draft: DefinitionDraft,
+    citations: dict[str, str] | None = None,
+    labels: Mapping[str, str] | None = None,
+) -> list[SheetLine]:
+    """The confirmation sheet, line by line; see :func:`render_draft`."""
     definition = draft.definition
-    lines = [
+    head = [
         f"口径确认单  #{draft.draft_id[:8]}  v{draft.version}",
         f"问题：{draft.question}",
         "",
         f"指标：{definition.display_name}",
     ]
+    sheet = [SheetLine(text) for text in head]
     for rule in definition.rules:
         label = _RULE_LABELS.get(rule.key, rule.key)
         mark = _SOURCE_LABELS[rule.source]
-        text = _rule_text(definition, rule, labels)
+        text = rule_text(definition, rule, labels)
         if rule.source is RuleSource.HISTORY and rule.key != PREVIOUS_CHOICE_KEY:
             text = f"{text}（{rule.note}）"  # G12: which earlier day it repeats
-        lines.append(f"  · {label}：{text}    [{mark}]")
+        sheet.append(
+            SheetLine(f"  · {label}：{text}    [{mark}]", agent=rule.source is RuleSource.AGENT)
+        )
         where = _location(citations, rule.evidence_ref)
         if where:
-            lines.append(f"      出处：{where}")
+            sheet.append(SheetLine(f"      出处：{where}"))
         correspondence = _correspondence(definition, rule)
         if correspondence:
-            lines.append(f"      {correspondence}")
+            sheet.append(SheetLine(f"      {correspondence}"))
+    lines: list[str] = []
     variants = [c for c in definition.candidates if c.rule_key == VARIANT_RULE_KEY]
     disagreements: dict[str, list[Candidate]] = {}
     for candidate in definition.candidates:
@@ -235,7 +269,7 @@ def render_draft(
         missing = "、".join(_RULE_LABELS.get(key, key) for key in definition.missing)
         lines.extend(["", f"尚未确定：{missing}（确定前不会执行任何查询）"])
     lines.extend(["", f"内容指纹：{draft.definition_hash[:16]}"])
-    return "\n".join(lines)
+    return sheet + [SheetLine(text) for text in lines]
 
 
 def render_definition_summary(
@@ -253,7 +287,7 @@ def render_definition_summary(
     """
     parts = [definition.display_name]
     parts.extend(
-        f"{rule_label(rule.key)}={_rule_text(definition, rule, labels)}"
+        f"{rule_label(rule.key)}={rule_text(definition, rule, labels)}"
         for rule in definition.rules
         if rule.key in COMPILED_RULE_KEYS
     )
@@ -389,6 +423,55 @@ def render_unenforced(definition: BusinessDefinition) -> str:
     if not labels:
         return ""
     return (
-        f"说明：{'、'.join(labels)} 来自文档、本次约定或历史选择，用于解释口径；本次执行的是"
-        "维护者映射（见下方 SQL），系统不核对两者是否一致。"
+        f"说明：{'、'.join(labels)} 来自文档、本次约定、历史选择或 Agent 代填，用于解释口径；"
+        "本次执行的是维护者映射（见下方 SQL），系统不核对两者是否一致。"
     )
+
+
+def render_agent_filled(definition: BusinessDefinition) -> str:
+    """Name what an agent filled in and the person then confirmed, or '' (P05).
+
+    Said on the result as well as the sheet: the number is the person's
+    to repeat, and part of what it rests on was someone else's guess.
+    """
+    labels = [
+        rule_label(rule.key) for rule in definition.rules if rule.source is RuleSource.AGENT
+    ]
+    if not labels:
+        return ""
+    return f"{'、'.join(labels)} 由 Agent 代填、经你确认。"
+
+
+def render_result(
+    definition: BusinessDefinition, run: QueryRun, labels: Mapping[str, str] | None = None
+) -> list[str]:
+    """Everything said about one run, in order: the number, what bounds it, what ran.
+
+    One rendering for the terminal, the page and an agent. A note left out
+    of one door is a caveat that door's reader never hears.
+    """
+    lines = [f"结果（执行口径：{render_definition_summary(definition, labels)}）"]
+    lines.extend(render_rows(definition, run))
+    if run.truncated:
+        lines.append("  （结果已在行数上限处截断）")
+    notes = (
+        render_emptiness(definition, run),
+        render_coverage(definition, run),
+        describe_lag(run.expected_through, run.data_through),
+        render_grouping_note(definition),
+    )
+    lines.extend(f"  （{note}）" for note in notes if note)
+    conflicts = render_conflicts(definition)
+    if conflicts:
+        lines.append(f"  （注意：{conflicts}）")
+    for note in (render_unenforced(definition), render_agent_filled(definition)):
+        if note:
+            lines.append(f"  （{note}）")
+    lines.extend(["", f"执行的 SQL（维护者映射 {definition.metric}）：", f"  {run.sql}"])
+    if run.params:
+        # The values are bound, not part of the text above; show them apart
+        # so the reader sees both what was sent and what filled it in.
+        lines.append(f"  参数（按 ? 的顺序绑定）：{', '.join(run.params)}")
+    if run.freshness_sql:
+        lines.append(f"  数据新鲜度探测：{run.freshness_sql}")
+    return lines

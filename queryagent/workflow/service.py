@@ -33,6 +33,7 @@ from queryagent.workflow.coverage import confirmed_period, latest_date
 from queryagent.workflow.errors import (
     ConfirmationRequired,
     NotFound,
+    PermissionDenied,
     StaleVersion,
     WorkflowStateError,
 )
@@ -51,6 +52,7 @@ from queryagent.workflow.models import (
     BusinessDefinition,
     Confirmation,
     DefinitionDraft,
+    DraftProgress,
     DraftStatus,
     QueryRun,
     Rule,
@@ -151,6 +153,11 @@ class QueryWorkflow:
             updated_at=now,
         )
         self._store.create_draft(draft)
+        cited = _cited(definition)
+        if cited:
+            # Recorded here, once, rather than by each adapter: a door that
+            # forgot to would produce drafts whose citations nobody re-checks.
+            self._store.set_evidence(actor.subject_id, draft.draft_id, cited)
         return draft
 
     def _build_definition(self, actor: ActorContext, question: str) -> BusinessDefinition:
@@ -288,23 +295,31 @@ class QueryWorkflow:
         expected_version: int,
         rules: tuple[Rule, ...],
     ) -> DefinitionDraft:
-        """Apply the user's own rules and bump the version.
+        """Apply the caller's own rules and bump the version.
 
         Every amendment produces a new version and therefore a new content
         hash, which is what makes an earlier confirmation stop matching
         (§9.2 invariants 4-5). ``expected_version`` makes a second editor
         lose loudly instead of overwriting what the first one confirmed.
 
-        An amendment is, by definition, what this user agreed this time, so
-        every rule it carries is ``USER``-sourced. The service enforces that
-        rather than trusting callers to: ``Rule.__post_init__`` only checks
-        that a DOC rule's ``evidence_ref`` is non-empty, so any string would
-        buy a 「文档依据」 label on the confirmation sheet — the one
-        distinction this product exists to keep honest (D07).
+        An amendment is, by definition, what this caller supplied this time:
+        ``USER``-sourced from a person, ``AGENT``-sourced from an agent over
+        MCP (ADR-013). The service enforces that rather than trusting callers
+        to: ``Rule.__post_init__`` only checks that a DOC rule's
+        ``evidence_ref`` is non-empty, so any string would buy a 「文档依据」
+        label on the confirmation sheet — the one distinction this product
+        exists to keep honest (D07). And an agent's guess must not read as
+        what the person agreed.
         """
-        forged = [rule for rule in rules if rule.source is not RuleSource.USER]
+        authoring = actor.authoring_source
+        forged = [rule for rule in rules if rule.source is not authoring]
         if forged:
             keys = ", ".join(sorted(rule.key for rule in forged))
+            if authoring is RuleSource.AGENT:
+                raise WorkflowStateError(
+                    f"Agent 补充的规则只能标为「Agent 代填」，不能自称文档依据、本次约定或"
+                    f"系统映射：{keys}"
+                )
             raise WorkflowStateError(
                 f"用户补充的规则只能标为「本次约定」，不能自称文档依据或系统映射：{keys}"
             )
@@ -358,7 +373,15 @@ class QueryWorkflow:
         Both ``version`` and ``definition_hash`` must match what the store
         holds: the caller is asserting *which screen they were looking at*,
         and a mismatch means they were looking at a different one.
+
+        Only a person confirms. The MCP adapter offers no way to call this,
+        and the check here holds even for one that tried (H1, ADR-013).
         """
+        if not actor.channel.is_human:
+            raise PermissionDenied(
+                "确认只能由人在终端（queryagent confirm）或本地确认页（queryagent web）完成；"
+                "Agent 通道不能确认"
+            )
         draft = self._store.get_draft(actor.subject_id, draft_id)
         if draft.version != version or draft.definition_hash != definition_hash:
             raise StaleVersion(
@@ -378,9 +401,66 @@ class QueryWorkflow:
             definition_hash=draft.definition_hash,
             subject_id=actor.subject_id,
             confirmed_at=self._clock(),
+            channel=actor.channel,
         )
         self._store.save_confirmation(confirmation)
         return confirmation
+
+    def human_confirmation(self, actor: ActorContext, draft_id: str) -> Confirmation | None:
+        """The confirmation a person gave the draft's current version, if any."""
+        draft = self._store.get_draft(actor.subject_id, draft_id)
+        return self._store.human_confirmation(
+            actor.subject_id, draft_id, draft.version, draft.definition_hash
+        )
+
+    def last_run(self, actor: ActorContext, draft_id: str) -> QueryRun | None:
+        """The newest run of the draft's current, confirmed version, if any."""
+        confirmation = self.human_confirmation(actor, draft_id)
+        if confirmation is None:
+            return None
+        return self._store.latest_run_of(actor.subject_id, confirmation.confirmation_id)
+
+    def progress(self, actor: ActorContext, draft_id: str) -> DraftProgress:
+        """Where the draft stands, for a caller asking after it (T44)."""
+        draft = self._store.get_draft(actor.subject_id, draft_id)
+        if draft.status is DraftStatus.EXPIRED:
+            return DraftProgress.EXPIRED
+        if self.human_confirmation(actor, draft_id) is None:
+            if draft.status is DraftStatus.NEEDS_INPUT:
+                return DraftProgress.NEEDS_INPUT
+            return DraftProgress.AWAITING_CONFIRMATION
+        run = self.last_run(actor, draft_id)
+        if run is not None and run.status is RunStatus.SUCCEEDED:
+            return DraftProgress.EXECUTED
+        return DraftProgress.CONFIRMED
+
+    def execute_confirmed(self, actor: ActorContext, draft_id: str) -> QueryRun:
+        """Run the draft's current version once a person has confirmed it (T44, H3).
+
+        The door for callers that cannot confirm — an agent over MCP. It names
+        a draft, not a confirmation: the service looks up one a person gave
+        this exact version and hash, and without one nothing runs. One
+        confirmation authorises one run: the confirmation is the idempotency
+        key, so asking again answers from the stored run instead of querying
+        twice, and running again takes a person confirming again.
+        """
+        draft = self._store.get_draft(actor.subject_id, draft_id)
+        if draft.status is DraftStatus.EXPIRED:
+            raise ConfirmationRequired(f"draft {draft_id} has expired; prepare it again")
+        confirmation = self._store.human_confirmation(
+            actor.subject_id, draft_id, draft.version, draft.definition_hash
+        )
+        if confirmation is None:
+            raise ConfirmationRequired(
+                f"草案 #{draft_id[:8]} 的当前版本（v{draft.version}）还没有人确认。请用户在本地"
+                f"确认页（queryagent web）或终端（queryagent confirm {draft_id[:8]}）确认后再"
+                "执行；确认前不会执行任何查询。"
+            )
+        return self.execute(
+            actor,
+            confirmation.confirmation_id,
+            idempotency_key=f"confirmation:{confirmation.confirmation_id}",
+        )
 
     # ------------------------------------------------------------- execute
 
@@ -506,6 +586,14 @@ class QueryWorkflow:
             return ""
         latest = _latest_in(result)
         return latest.isoformat() if latest else ""
+
+
+def _cited(definition: BusinessDefinition) -> tuple[str, ...]:
+    """Every citation on the sheet: the rules' and the competing readings'."""
+    refs = [rule.evidence_ref for rule in definition.rules] + [
+        candidate.evidence_ref for candidate in definition.candidates
+    ]
+    return tuple(dict.fromkeys(ref for ref in refs if ref))
 
 
 def _latest_in(result: QueryResult) -> date | None:

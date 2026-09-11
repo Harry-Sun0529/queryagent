@@ -25,18 +25,14 @@ import traceback
 import uuid
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 from typing import Protocol
-from zoneinfo import ZoneInfo
 
 from queryagent.agent import run_agent
 from queryagent.budget import (
-    Budget,
     BudgetedConnector,
     BudgetExceeded,
-    SqliteBudgetLedger,
-    Unmetered,
 )
 from queryagent.config import AppConfig, load_config
 from queryagent.connectors import make_connector
@@ -65,11 +61,10 @@ from queryagent.events import (
     ToolCallEvent,
     UsageEvent,
 )
-from queryagent.knowledge.embedding import EmbeddingClient
 from queryagent.knowledge.index import SqliteKnowledgeIndex
-from queryagent.knowledge.provider import LocalKnowledgeProvider, scope_of
 from queryagent.llm import make_backend
 from queryagent.llm.base import Message
+from queryagent.mcp.tools import make_server
 from queryagent.metrics.yaml_store import YamlMetricStore
 from queryagent.schema import render_schema
 from queryagent.tools import ToolRegistry, make_clarify_tool, make_default_tools
@@ -81,9 +76,15 @@ from queryagent.trace import (
     prune_traces,
     read_trace,
 )
-from queryagent.workflow.builder import VARIANT_RULE_KEY, MetricDraftBuilder
-from queryagent.workflow.compiler import TemplateCompiler
-from queryagent.workflow.enforcement import consistent_variant, enforcement_table
+from queryagent.workflow.answers import (
+    adopted_rule,
+    implied_variant_rule,
+    stated_filter,
+    stated_grouping,
+    stated_period,
+    variant_rule,
+)
+from queryagent.workflow.builder import VARIANT_RULE_KEY
 from queryagent.workflow.errors import (
     ConfirmationRequired,
     MappingNotFound,
@@ -91,20 +92,13 @@ from queryagent.workflow.errors import (
     StaleVersion,
     WorkflowError,
 )
-from queryagent.workflow.evidence_builder import CompositeDraftBuilder, EvidenceDraftBuilder
-from queryagent.workflow.execution import make_connector_executor
-from queryagent.workflow.freshness import PROBE, FreshnessPolicy, describe_lag
 from queryagent.workflow.grouping import (
     Dimension,
     FilterError,
     GroupingError,
     find_filter,
     find_grouping,
-    parse_filter,
-    parse_grouping,
 )
-from queryagent.workflow.history import HistoryDraftBuilder
-from queryagent.workflow.mappings import load_dimensions, load_mappings
 from queryagent.workflow.models import (
     CONFLICT_SEPARATOR,
     FILTER_RULE_KEY,
@@ -112,25 +106,27 @@ from queryagent.workflow.models import (
     PERIOD_RULE_KEY,
     ActorContext,
     Candidate,
+    Channel,
     DefinitionDraft,
     DraftStatus,
     Rule,
     RuleSource,
 )
-from queryagent.workflow.periods import PeriodError, find_period, parse_period
+from queryagent.workflow.periods import PeriodError, find_period
 from queryagent.workflow.render import (
-    render_conflicts,
-    render_coverage,
-    render_definition_summary,
     render_draft,
-    render_emptiness,
-    render_grouping_note,
-    render_rows,
-    render_unenforced,
+    render_result,
     rule_label,
 )
-from queryagent.workflow.service import DraftBuilder, QueryWorkflow
-from queryagent.workflow.store import SqliteWorkflowStore
+from queryagent.workflow.service import QueryWorkflow
+from queryagent.workflow.wiring import (
+    WorkflowWiring,
+    build_workflow,
+    business_today,
+    make_budget,
+    make_embedder,
+    scan_limit,
+)
 
 _trace_notice_shown = False
 
@@ -256,6 +252,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         "the human, it does not bypass the gate.",
     )
 
+    mcp = subparsers.add_parser(
+        "mcp",
+        help="serve the confirmation-gated flow to an agent over MCP (stdio). The agent can "
+        "prepare, amend and execute; only a person confirms, in the terminal or the page",
+    )
+    mcp.add_argument("--config", default="config.yaml", help="path to config.yaml")
+    mcp.add_argument(
+        "--subject",
+        default=_local_subject(),
+        help="the person the agent acts for; no tool argument can change it",
+    )
+    mcp.add_argument("--workspace", default="default", help="business workspace id")
+    mcp.add_argument(
+        "--no-history",
+        dest="no_history",
+        action="store_true",
+        help="do not offer the choices this person confirmed last time",
+    )
+
     kb = subparsers.add_parser("kb", help="build and inspect the document evidence index")
     kb.add_argument("kb_action", choices=["import", "list"], help="what to do")
     kb.add_argument("--config", default="config.yaml", help="path to config.yaml")
@@ -295,6 +310,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "chat": _cmd_chat,
         "ask": _cmd_ask,
         "flow": _cmd_flow,
+        "mcp": _cmd_mcp,
         "kb": _cmd_kb,
         "replay": _cmd_replay,
         "eval": _cmd_eval,
@@ -513,7 +529,7 @@ def _make_run_question(
         metric_store=metric_store,
     )
     budgeted = (
-        BudgetedConnector(connector, _budget(config, stack), subject)
+        BudgetedConnector(connector, make_budget(config, stack), subject)
         if subject is not None
         else None
     )
@@ -548,7 +564,7 @@ def _cmd_chat(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     conversation: list[Message] = []
     with contextlib.ExitStack() as stack:
-        connector = make_connector(config.database, max_rows_scanned=_scan_limit(config))
+        connector = make_connector(config.database, max_rows_scanned=scan_limit(config))
         stack.callback(connector.close)
         run_question = _make_run_question(
             connector, config, args.max_turns, stack, subject=_local_subject()
@@ -640,7 +656,7 @@ def _cmd_ask(args: argparse.Namespace) -> int:
     exit_code = 0
     with contextlib.ExitStack() as stack:
         stack.callback(_finish_trace, writer)
-        connector = make_connector(config.database, max_rows_scanned=_scan_limit(config))
+        connector = make_connector(config.database, max_rows_scanned=scan_limit(config))
         stack.callback(connector.close)
         run_question = _make_run_question(
             connector, config, args.max_turns, stack, subject=_local_subject()
@@ -673,7 +689,7 @@ def _cmd_kb(args: argparse.Namespace) -> int:
         if args.kb_action == "import":
             # Built before importing anything, so a missing key fails before
             # work is done rather than after half the sources are indexed.
-            embedder = _make_embedder(config)
+            embedder = make_embedder(config)
             for source in config.knowledge.sources:
                 print(f"[{source.workspace}] {source.path}")
                 print(index.import_directory(source.path, workspace_id=source.workspace).render())
@@ -700,59 +716,6 @@ def _cmd_kb(args: argparse.Namespace) -> int:
         return 0
 
 
-def _make_embedder(config: AppConfig) -> EmbeddingClient | None:
-    embedding = config.knowledge.embedding
-    if embedding is None:
-        return None
-    return EmbeddingClient(model=embedding.model, base_url=embedding.base_url)
-
-
-def _knowledge_provider(index: SqliteKnowledgeIndex, config: AppConfig) -> LocalKnowledgeProvider:
-    """Keyword unless ``knowledge.embedding`` is configured."""
-    embedder = _make_embedder(config)
-    embedding = config.knowledge.embedding
-    if embedder is None or embedding is None or embedding.min_similarity is None:
-        return LocalKnowledgeProvider(index, embedder)
-    return LocalKnowledgeProvider(index, embedder, min_similarity=embedding.min_similarity)
-
-
-def _budget(config: AppConfig, stack: contextlib.ExitStack) -> Budget:
-    """The maintainer's totals, or none when ``budget:`` is absent (slice 1E).
-
-    Kept in the workflow state file, so every process pointed at it — two
-    terminals, a script beside a chat — shares one count.
-    """
-    if config.budget is None:
-        return Unmetered()
-    ledger = SqliteBudgetLedger(
-        config.workflow.state_path,
-        config.budget,
-        statement_timeout_s=config.safety.timeout_s,
-        zone=ZoneInfo(config.workflow.timezone),
-    )
-    stack.callback(ledger.close)
-    return ledger
-
-
-def _freshness_policy(config: AppConfig, connector: Connector, today: date) -> FreshnessPolicy:
-    """ADR-010: the declared cadence by default; the probe only if the maintainer opted in."""
-    workflow = config.workflow
-    probe = (
-        make_connector_executor(
-            connector, timeout_s=workflow.freshness_probe_timeout_s, max_rows=1
-        )
-        if workflow.freshness_before_confirm == PROBE
-        else None
-    )
-    return FreshnessPolicy(
-        mode=workflow.freshness_before_confirm,
-        today=lambda: today,
-        probe=probe,
-        cache_minutes=workflow.freshness_cache_minutes,
-        zone=ZoneInfo(workflow.timezone),
-    )
-
-
 def _print_freshness(workflow: QueryWorkflow, actor: ActorContext, draft: DefinitionDraft) -> None:
     """Below the sheet, apart from it: advice about the data, not part of the 口径."""
     notes = workflow.freshness_advisory(actor, draft.draft_id)
@@ -760,10 +723,6 @@ def _print_freshness(workflow: QueryWorkflow, actor: ActorContext, draft: Defini
         print("\n数据新鲜度（确认前的参考，不属于口径）：")
         for note in notes:
             print(f"  · {note}")
-
-
-def _scan_limit(config: AppConfig) -> int | None:
-    return config.budget.max_rows_scanned if config.budget else None
 
 
 def _local_subject() -> str:
@@ -780,102 +739,30 @@ def _cmd_flow(args: argparse.Namespace) -> int:
     report a number nobody approved.
     """
     config = load_config(args.config)
-    if not config.metrics_path:
-        raise ValueError(
-            "flow needs declared business metrics; set metrics_path in the config file"
-        )
-    if not config.workflow.mappings_path:
-        raise ValueError(
-            "flow needs a maintainer mapping file; set workflow.mappings_path in the config "
-            "file (see examples/query_mappings.yaml)"
-        )
     actor = ActorContext(subject_id=args.subject, workspace_id=args.workspace)
-    today = _today(config)
-    dimensions = load_dimensions(config.workflow.mappings_path)
-    mappings = load_mappings(config.workflow.mappings_path)
-
+    today = business_today(config)
     with contextlib.ExitStack() as stack:
-        connector = make_connector(config.database, max_rows_scanned=_scan_limit(config))
-        stack.callback(connector.close)
-        store = SqliteWorkflowStore(config.workflow.state_path)
-        stack.callback(store.close)
-        provider = None
-        evidence = None
-        if config.knowledge.enabled:
-            index = SqliteKnowledgeIndex(config.knowledge.index_path)
-            stack.callback(index.close)
-            provider = _knowledge_provider(index, config)
-            if provider.is_semantic and not index.vectors_in(actor.workspace_id):
-                # K10: the provider falls back to keyword on an un-embedded
-                # corpus. Legitimate — but not silently.
-                print(
-                    "[提示] 已配置语义检索，但该业务空间尚无向量；本次按关键词检索。"
-                    "运行 queryagent kb import 生成向量。",
-                    file=sys.stderr,
-                )
-            evidence = EvidenceDraftBuilder(
-                provider,
-                make_backend(config.llm),
-                required_keys=(),  # gaps come from the maintainer metric, not extraction
-            )
-        compiler = TemplateCompiler(mappings, dialect=connector.dialect, dimensions=dimensions)
-        builder: DraftBuilder = CompositeDraftBuilder(
-            MetricDraftBuilder(
-                YamlMetricStore(config.metrics_path),
-                today=lambda: today,
-                dimensions=dimensions,
-            ),
-            evidence,
-            enforcement=enforcement_table(mappings),
-        )
-        if not (args.yes or args.no_history):
+        wiring = build_workflow(
+            config,
+            actor,
+            stack,
             # E14: remembered choices are offered only where a person reads
             # the sheet before anything runs.
-            builder = HistoryDraftBuilder(
-                builder,
-                store,
-                fingerprint=compiler.fingerprint,
-                ref_checker=provider,
-                zone=ZoneInfo(config.workflow.timezone),
-                max_age_days=config.workflow.history_max_age_days,
-            )
-        workflow = QueryWorkflow(
-            store=store,
-            builder=builder,
-            compiler=compiler,
-            executor=make_connector_executor(
-                connector,
-                timeout_s=config.safety.timeout_s,
-                max_rows=config.safety.max_rows,
-            ),
-            ref_checker=provider,
-            budget=_budget(config, stack),
-            freshness=_freshness_policy(config, connector, today),
+            offer_history=not (args.yes or args.no_history),
+            today=lambda: today,
         )
-        known = {source.workspace for source in config.knowledge.sources}
-        if provider is not None and actor.workspace_id not in known:
-            # Retrieving nothing because the workspace does not exist looks
-            # exactly like the documents being silent, and the second is a
-            # claim about the business. Say which it is.
-            print(
-                f"[提示] 业务空间 '{actor.workspace_id}' 没有配置任何文档来源"
-                f"（已配置：{', '.join(sorted(known))}）；本次不会有文档依据。",
-                file=sys.stderr,
-            )
-        return _run_flow(workflow, actor, args, provider, today, dimensions)
+        for notice in wiring.notices:
+            print(notice, file=sys.stderr)
+        return _run_flow(wiring, actor, args, today)
 
 
 def _run_flow(
-    workflow: QueryWorkflow,
-    actor: ActorContext,
-    args: argparse.Namespace,
-    provider: LocalKnowledgeProvider | None = None,
-    today: date | None = None,
-    dimensions: tuple[Dimension, ...] = (),
+    wiring: WorkflowWiring, actor: ActorContext, args: argparse.Namespace, today: date
 ) -> int:
+    workflow = wiring.workflow
+    dimensions = wiring.dimensions
+    labels = wiring.labels
     request_id = uuid.uuid4().hex
-    today = today or date.today()
-    labels = {dimension.key: dimension.label for dimension in dimensions}
     draft = workflow.prepare(actor, args.question, request_id=request_id)
     if args.period:
         # Stated on purpose, it replaces whatever the question's words gave.
@@ -883,48 +770,32 @@ def _run_flow(
             actor,
             draft.draft_id,
             expected_version=draft.version,
-            rules=(_stated_period(args.period, today),),
+            rules=(stated_period(args.period, today, RuleSource.USER),),
         )
     if args.group_by:
         draft = workflow.amend(
             actor,
             draft.draft_id,
             expected_version=draft.version,
-            rules=(_stated_grouping(args.group_by, dimensions),),
+            rules=(stated_grouping(args.group_by, dimensions, RuleSource.USER),),
         )
     if args.value_filter:
         draft = workflow.amend(
             actor,
             draft.draft_id,
             expected_version=draft.version,
-            rules=(_stated_filter(args.value_filter, dimensions),),
+            rules=(stated_filter(args.value_filter, dimensions, RuleSource.USER),),
         )
     documented = draft.definition.rule(VARIANT_RULE_KEY)
     if args.variant and documented is not None and documented.value != args.variant:
         # The handbooks — or the user's own last choice — picked a reading;
         # the user named another on purpose. Theirs runs, and the sheet says
         # what it disagrees with (E12).
-        known = sorted(
-            c.key for c in draft.definition.candidates if c.rule_key == VARIANT_RULE_KEY
-        )
-        if args.variant not in known:
-            raise ValueError(f"未知口径 '{args.variant}'；可选：{', '.join(known)}")
         draft = workflow.amend(
             actor,
             draft.draft_id,
             expected_version=draft.version,
-            rules=(
-                Rule(
-                    VARIANT_RULE_KEY,
-                    args.variant,
-                    RuleSource.USER,
-                    note=(
-                        "覆盖历史选择"
-                        if documented.source is RuleSource.HISTORY
-                        else "覆盖文档依据"
-                    ),
-                ),
-            ),
+            rules=(variant_rule(draft.definition, args.variant, RuleSource.USER),),
         )
     if PERIOD_RULE_KEY in draft.definition.missing:
         _explain_missing_period(args.question, today)
@@ -932,15 +803,10 @@ def _run_flow(
         _explain_missing_grouping(args.question, dimensions)
     if FILTER_RULE_KEY in draft.definition.missing:
         _explain_missing_filter(args.question, dimensions, draft.definition.display_name)
-    citations = _citations(provider, actor, args.question)
-    cited = tuple(
-        rule.evidence_ref for rule in draft.definition.rules if rule.evidence_ref
-    ) + tuple(c.evidence_ref for c in draft.definition.candidates if c.evidence_ref)
-    if cited:
-        workflow.attach_evidence(actor, draft.draft_id, cited)
+    citations = wiring.citations(actor, args.question)
     print(render_draft(draft, citations, labels))
     _print_freshness(workflow, actor, draft)
-    if provider is not None and not citations:
+    if wiring.provider is not None and not citations:
         print("\n（未检索到该身份可见的相关文档；以下口径仅来自系统映射）")
 
     if draft.status is DraftStatus.NEEDS_INPUT:
@@ -965,66 +831,32 @@ def _run_flow(
     )
     run = workflow.execute(actor, confirmation.confirmation_id, idempotency_key=request_id)
     print()
-    print(f"结果（执行口径：{render_definition_summary(draft.definition, labels)}）")
-    for line in render_rows(draft.definition, run):
+    for line in render_result(draft.definition, run, labels):
         print(line)
-    if run.truncated:
-        print("  （结果已在行数上限处截断）")
-    emptiness = render_emptiness(draft.definition, run)
-    if emptiness:
-        print(f"  （{emptiness}）")
-    coverage = render_coverage(draft.definition, run)
-    if coverage:
-        print(f"  （{coverage}）")
-    lag = describe_lag(run.expected_through, run.data_through)
-    if lag:
-        print(f"  （{lag}）")
-    grouping_note = render_grouping_note(draft.definition)
-    if grouping_note:
-        print(f"  （{grouping_note}）")
-    conflicts = render_conflicts(draft.definition)
-    if conflicts:
-        print(f"  （注意：{conflicts}）")
-    unenforced = render_unenforced(draft.definition)
-    if unenforced:
-        print(f"  （{unenforced}）")
-    print(f"\n执行的 SQL（维护者映射 {draft.definition.metric}）：\n  {run.sql}")
-    if run.params:
-        # The values are bound, not part of the text above; show them apart
-        # so the reader sees both what was sent and what filled it in.
-        print(f"  参数（按 ? 的顺序绑定）：{', '.join(run.params)}")
-    if run.freshness_sql:
-        print(f"  数据新鲜度探测：{run.freshness_sql}")
     return 0
 
 
-def _citations(
-    provider: LocalKnowledgeProvider | None, actor: ActorContext, question: str
-) -> dict[str, str]:
-    """Human-readable locations for whatever this identity can actually see.
+def _cmd_mcp(args: argparse.Namespace) -> int:
+    """Serve the workflow to an agent over MCP on stdin/stdout (T44, ADR-013).
 
-    Retrieval is scoped, so a document in another workspace simply is not in
-    the result — there is nothing to redact afterwards.
+    The identity is the person who launched the server — from the host's
+    configuration, never from a tool argument (P02). stdout carries
+    protocol frames and nothing else; everything for a person goes to stderr.
     """
-    if provider is None:
-        return {}
-    hits = provider.search(scope_of(actor), question, limit=8)
-    return {f"{hit.ref.doc_id}#{hit.ref.chunk_id}": hit.chunk.citation() for hit in hits}
-
-
-def _today(config: AppConfig) -> date:
-    """Today in the configured business time zone — what 「上个月」 is relative to."""
-    return datetime.now(ZoneInfo(config.workflow.timezone)).date()
-
-
-def _stated_period(text: str, today: date) -> Rule:
-    """A period the user stated on purpose, parsed exactly as a question's would be.
-
-    Raises PeriodError (a ValueError) when it cannot be read: a period that
-    was typed but not understood must not quietly become no period at all.
-    """
-    period = parse_period(text, today)
-    return Rule(PERIOD_RULE_KEY, period.encode(), RuleSource.USER, note=f"由「{text}」换算")
+    config = load_config(args.config)
+    actor = ActorContext(
+        subject_id=args.subject, workspace_id=args.workspace, channel=Channel.MCP
+    )
+    with contextlib.ExitStack() as stack:
+        wiring = build_workflow(config, actor, stack, offer_history=not args.no_history)
+        for notice in wiring.notices:
+            print(notice, file=sys.stderr)
+        print(
+            f"[mcp] 以 {actor.subject_id}@{actor.workspace_id} 的身份提供工具；"
+            "Agent 能准备和执行，确认只能由人在终端或确认页完成。",
+            file=sys.stderr,
+        )
+        return make_server(wiring, actor).serve(sys.stdin.buffer, sys.stdout.buffer)
 
 
 def _explain_missing_period(question: str, today: date) -> None:
@@ -1045,15 +877,6 @@ def _prompt_period() -> str:
         return ""
 
 
-def _stated_grouping(text: str, dimensions: tuple[Dimension, ...]) -> Rule:
-    """A grouping the user stated on purpose, read exactly as a question's would be.
-
-    Raises GroupingError (a ValueError) when it cannot be read.
-    """
-    value = parse_grouping(text, dimensions)
-    return Rule(GROUP_RULE_KEY, value, RuleSource.USER, note=f"由「{text}」换算")
-
-
 def _explain_missing_grouping(question: str, dimensions: tuple[Dimension, ...]) -> None:
     """Say why the question's own words did not become a grouping."""
     try:
@@ -1070,12 +893,6 @@ def _prompt_grouping() -> str:
         ).strip()
     except EOFError:
         return ""
-
-
-def _stated_filter(text: str, dimensions: tuple[Dimension, ...]) -> Rule:
-    """A filter the user stated on purpose. Raises FilterError (a ValueError) when unreadable."""
-    value = parse_filter(text, dimensions)
-    return Rule(FILTER_RULE_KEY, value, RuleSource.USER, note=f"由「{text}」换算")
 
 
 def _explain_missing_filter(question: str, dimensions: tuple[Dimension, ...], name: str) -> None:
@@ -1158,34 +975,25 @@ def _open_choices(
             )
         # The words are the handbook's, the decision is the user's (D07): a
         # 本次约定 rule that keeps the adopted document's citation.
-        rules.append(
-            Rule(
-                rule_key,
-                chosen.summary,
-                RuleSource.USER,
-                evidence_ref=chosen.evidence_ref,
-                note="采用文档写法",
-                implies=chosen.implies,
-            )
-        )
+        rules.append(adopted_rule(definition, chosen.key, RuleSource.USER))
     for key in gaps:
         if key == GROUP_RULE_KEY:
             text = args.group_by or supplied.get(key) or _prompt_grouping()
             if not text:
                 return None
-            rules.append(_stated_grouping(text, dimensions))
+            rules.append(stated_grouping(text, dimensions, RuleSource.USER))
             continue
         if key == PERIOD_RULE_KEY:
             text = args.period or supplied.get(key) or _prompt_period()
             if not text:
                 return None
-            rules.append(_stated_period(text, today))
+            rules.append(stated_period(text, today, RuleSource.USER))
             continue
         if key == FILTER_RULE_KEY:
             text = args.value_filter or supplied.get(key) or _prompt_filter()
             if not text:
                 return None
-            rules.append(_stated_filter(text, dimensions))
+            rules.append(stated_filter(text, dimensions, RuleSource.USER))
             continue
         # Nothing states this rule and nothing may default it: the user writes
         # it down, and it is marked as theirs (D07).
@@ -1194,33 +1002,22 @@ def _open_choices(
             return None
         rules.append(Rule(key, value, RuleSource.USER))
     if VARIANT_RULE_KEY in definition.missing:
-        variants = {c.key for c in definition.candidates if c.rule_key == VARIANT_RULE_KEY}
-        implied = consistent_variant([*definition.rules, *rules], variants)
+        implied = implied_variant_rule(definition, rules, RuleSource.USER)
         if implied is not None and not args.variant:
             # The wording the user adopted names one executable reading; asking
             # them to pick again invites picking the other one (E13).
-            reading, anchor = implied
-            rules.append(
-                Rule(
-                    VARIANT_RULE_KEY,
-                    reading,
-                    RuleSource.USER,
-                    evidence_ref=anchor.evidence_ref,
-                    note="由采用的文档写法对应",
-                )
-            )
+            rules.append(implied)
             return tuple(rules)
         choice = args.variant or _prompt_variant(draft)
         if not choice:
             return None
-        if choice not in variants:
-            raise ValueError(f"未知口径 '{choice}'；可选：{', '.join(sorted(variants))}")
-        if implied is not None and choice != implied[0]:
+        chosen_rule = variant_rule(definition, choice, RuleSource.USER)
+        if implied is not None and choice != implied.value:
             raise ValueError(
-                f"采用的文档写法对应口径 {implied[0]}，--variant 却选了 {choice}；"
+                f"采用的文档写法对应口径 {implied.value}，--variant 却选了 {choice}；"
                 "同一条命令里两者矛盾，请只保留一个"
             )
-        rules.append(Rule(VARIANT_RULE_KEY, choice, RuleSource.USER))
+        rules.append(chosen_rule)
     return tuple(rules)
 
 
