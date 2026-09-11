@@ -34,6 +34,7 @@ from queryagent.workflow.models import (
     COMPILED_RULE_KEYS,
     GROUP_RULE_KEY,
     PERIOD_RULE_KEY,
+    PREVIOUS_CHOICE_KEY,
     BusinessDefinition,
     Candidate,
     DefinitionDraft,
@@ -47,6 +48,7 @@ _SOURCE_LABELS = {
     RuleSource.DOC: "文档依据",
     RuleSource.USER: "本次约定",
     RuleSource.MAINTAINER: "系统映射",
+    RuleSource.HISTORY: "历史选择",
 }
 
 _RULE_LABELS = {
@@ -56,6 +58,7 @@ _RULE_LABELS = {
     "variant": "选定口径",
     "period": "统计区间",
     "group_by": "分组方式",
+    PREVIOUS_CHOICE_KEY: "上次的选择",
     # Extracted rule keys. A confirmation sheet whose field names are English
     # identifiers is not something an operator can repeat to a colleague,
     # which is the whole acceptance test for this screen (D04).
@@ -185,7 +188,10 @@ def render_draft(
     for rule in definition.rules:
         label = _RULE_LABELS.get(rule.key, rule.key)
         mark = _SOURCE_LABELS[rule.source]
-        lines.append(f"  · {label}：{_rule_text(definition, rule, labels)}    [{mark}]")
+        text = _rule_text(definition, rule, labels)
+        if rule.source is RuleSource.HISTORY and rule.key != PREVIOUS_CHOICE_KEY:
+            text = f"{text}（{rule.note}）"  # G12: which earlier day it repeats
+        lines.append(f"  · {label}：{text}    [{mark}]")
         where = _location(citations, rule.evidence_ref)
         if where:
             lines.append(f"      出处：{where}")
@@ -367,6 +373,7 @@ def render_unenforced(definition: BusinessDefinition) -> str:
         for rule in definition.rules
         if rule.source is not RuleSource.MAINTAINER
         and rule.key not in COMPILED_RULE_KEYS
+        and rule.key != PREVIOUS_CHOICE_KEY
         # Checked ones are said elsewhere: in the result line when the SQL
         # applies them, in render_conflicts when it applies something else.
         and verdict(rule.implies, chosen) not in (ENFORCED, CONFLICTS)
@@ -374,6 +381,6 @@ def render_unenforced(definition: BusinessDefinition) -> str:
     if not labels:
         return ""
     return (
-        f"说明：{'、'.join(labels)} 来自文档或本次约定，用于解释口径；本次执行的是"
+        f"说明：{'、'.join(labels)} 来自文档、本次约定或历史选择，用于解释口径；本次执行的是"
         "维护者映射（见下方 SQL），系统不核对两者是否一致。"
     )

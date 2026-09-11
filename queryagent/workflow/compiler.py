@@ -30,7 +30,7 @@ from queryagent.workflow.grouping import (
     Dimension,
     is_grouping,
 )
-from queryagent.workflow.mappings import QueryMapping
+from queryagent.workflow.mappings import QueryMapping, mapping_fingerprint
 from queryagent.workflow.models import (
     GROUP_RULE_KEY,
     PERIOD_RULE_KEY,
@@ -173,6 +173,11 @@ class TemplateCompiler:
                     FreshnessTarget(item.source, item.time_column, item.lag_days),
                 )
         return tuple(found.values())
+
+    def fingerprint(self, definition: BusinessDefinition) -> str:
+        """The digest of the mapping this definition would run, or '' if none (T42)."""
+        entry, _ = self._lookup(definition)
+        return mapping_fingerprint(entry) if entry is not None else ""
 
     def _lookup(self, definition: BusinessDefinition) -> tuple[str | QueryMapping | None, str]:
         """The mapping for this definition's metric and reading, and its name."""
