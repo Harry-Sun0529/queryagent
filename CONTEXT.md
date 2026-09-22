@@ -1,7 +1,6 @@
 # CONTEXT — domain language & seam map
 
-For humans and agents working on this repo. ADRs live in `docs/adr/`;
-specs for in-flight work in `docs/specs/`.
+For humans and agents working on this repo. ADRs live in `docs/adr/`.
 
 ## Domain language
 

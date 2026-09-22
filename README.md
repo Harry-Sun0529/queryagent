@@ -257,8 +257,7 @@ to that endpoint** — a data-boundary decision for whoever deploys it. See
 [ADR-007](docs/adr/007-document-evidence-retrieval.md).
 
 Measured on a fixed paraphrase set (13 questions) and on questions the
-corpus cannot answer (8), k=3
-([evidence](eval/results/retrieval-2026-09-10-floor-0.50/README.md)):
+corpus cannot answer (8), k=3:
 
 | mode | Recall@3 | false evidence on unrelated questions |
 |---|---:|---:|
@@ -407,7 +406,7 @@ Concurrency 4 took about 9 minutes versus 24–26 minutes at concurrency 1
 (2.73× ratio of mean wall times). This supports optional `--concurrency 4`
 for this local offline eval; the default stays 1. Repeated runs changed
 individual outcomes, so this is not evidence of statistical equivalence or
-natural-language answer correctness. [Full measurements and limitations](eval/results/reliability-2026-09-09-rerun/README.md).
+natural-language answer correctness.
 
 ### v1.0.0 benchmark rerun (2026-09-12, scoring v2)
 
@@ -426,10 +425,9 @@ model as `deepseek-flash`; the requested model was `deepseek-chat`.
 
 The BIRD dev report contains one case where the reference SQL itself was
 interrupted by the local SQLite engine; it is retained as a data/reference
-issue in the report. Full reports, append-only checkpoints, signatures, input
-hashes and database snapshot hashes are in
-[`eval/results/v1.0.0-benchmarks-2026-09-12/`](eval/results/v1.0.0-benchmarks-2026-09-12/).
-These results are measurements, not a reason to tune the frozen system.
+issue in the report. Every run kept append-only checkpoints, signatures,
+input hashes and database snapshot hashes. These results are measurements,
+not a reason to tune the frozen system.
 
 ### Historical results (through v0.5.0, `deepseek-v4-flash`, temperature 0)
 
@@ -457,8 +455,7 @@ quadrupling it left the result standing.
 
 An earlier strong/weak comparison used a smaller case set. It observed similar
 query-trajectory hit rates at different costs, but does not establish equal
-final-answer accuracy or isolate the causal contribution of the architecture
-([historical analysis](eval/results/dual-model-analysis.md)).
+final-answer accuracy or isolate the causal contribution of the architecture.
 
 **Public benchmark** (BIRD mini-dev, dev/test split — [ADR-004](docs/adr/004-public-subset-external-anchor.md)):
 
@@ -485,14 +482,12 @@ Honest notes, in the order they matter:
   size, still the operative picture): half were shape rather than substance —
   the right value returned with extra columns — and one general prompt rule
   fixed that class; a quarter are gold-SQL ambiguities that should not be
-  fixed; a quarter are genuine capability gaps
-  ([dev-failure-analysis.md](eval/results/dev-failure-analysis.md)).
-- A [historical three-cell comparison](eval/results/version-decomposition.md)
-  observed changes associated with code and thinking mode on a small sample.
-  It does not establish that the entire historical difference was caused by
-  one variable, or reproduce an old provider model snapshot.
-- Costs are peak-rate upper bounds (off-peak is half). Raw reports:
-  [eval/results/](eval/results/).
+  fixed; a quarter are genuine capability gaps.
+- A historical three-cell comparison observed changes associated with code
+  and thinking mode on a small sample. It does not establish that the entire
+  historical difference was caused by one variable, or reproduce an old
+  provider model snapshot.
+- Costs are peak-rate upper bounds (off-peak is half).
 
 ## Architecture
 
@@ -520,9 +515,7 @@ question ──▶ ReAct loop (agent.py) ──▶ Iterator[AgentEvent] ──�
 
 Every module is small enough to read in one sitting; there is deliberately
 no framework between you and the control flow. Design rationale for the big
-decisions lives in commit messages and [prompt-log.md](prompt-log.md) — this
-project was built with heavy AI assistance under a documented protocol, and
-the log is the honest record of who decided what.
+decisions lives in the commit messages and the ADRs under `docs/adr/`.
 
 ## Development
 

@@ -5,7 +5,7 @@ plus ``flow``, which is not.
 ``flow`` drives the trusted workflow layer instead: it prepares a 口径, shows
 it, requires an explicit confirmation, and only then executes a
 maintainer-declared query. It shares no execution path with ``ask``/``chat``;
-that is the point of it (docs/specs/workflow-slice-1a-2026-09.md).
+that is the point of it (see CONTEXT.md, "Two paths, deliberately separate").
 
 ``--verbose`` renders the full THINK/ACT/OBSERVE trace; the default shows
 answers only. In chat, a ClarifyEvent renders the agent's question, folds

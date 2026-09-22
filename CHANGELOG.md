@@ -275,9 +275,7 @@ The first release whose version number is a promise (ADR-014).
 
 Scope, stated plainly. Document ACLs are per business workspace, not per
 subject. There is no query budget. Workflow and index state are local SQLite
-files for a single process. No OCR, no incremental sync, no reranker. See
-`docs/specs/workflow-slice-1a-2026-09.md` and
-`docs/specs/workflow-slice-1b-2026-09.md` for what is and is not claimed.
+files for a single process. No OCR, no incremental sync, no reranker.
 
 ## [0.5.1] — 2026-09-09
 
@@ -405,7 +403,7 @@ within 1pp, so that gap is best explained as noise — which is precisely what
 the power analysis predicted (±25pp for a difference at n=30) and precisely
 why the samples were expanded.
 
-A controlled decomposition ([eval/results/version-decomposition.md](eval/results/version-decomposition.md))
+A controlled decomposition
 established that the drop from v0.2.0's 83% first-execution rate to
 v0.3.0's 61–72% is **not a code regression**: with cases and configuration
 held constant the v0.3.0 code scores +5pp higher, and the entire drop comes
@@ -454,7 +452,7 @@ without lowering final accuracy.
   errors, HTTP 429 and 5xx retried twice with linear backoff; plain 4xx
   fails immediately.
 - Decision records `docs/adr/001–004`, repo-level `CONTEXT.md` (domain
-  language + seam map), `docs/specs/` for in-flight work.
+  language + seam map).
 
 ### Changed
 
