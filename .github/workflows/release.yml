@@ -1,16 +1,13 @@
 name: release
 
-# Publishing is irreversible: a version uploaded to PyPI can never be
-# uploaded again. So:
-#   - a tag v* builds, smoke-tests the wheel in a clean virtualenv, and only
-#     then asks to publish;
-#   - publishing uses PyPI trusted publishing (OIDC). No token lives in this
-#     repository;
-#   - the `pypi` environment should require the maintainer's approval
-#     (Settings -> Environments -> pypi -> Required reviewers), so nothing is
-#     uploaded without a person saying so;
-#   - `workflow_dispatch` with target=testpypi rehearses the whole path
-#     against TestPyPI first.
+# A tag v* builds, smoke-tests the wheel in a clean virtualenv, and then
+# publishes a GitHub Release with the wheel and sdist attached — no PyPI
+# account needed. PyPI is deliberately opt-in and never automatic:
+#   - `workflow_dispatch` with target=testpypi rehearses against TestPyPI;
+#   - `workflow_dispatch` with target=pypi uploads to PyPI, gated by the
+#     `pypi` environment's required reviewers, using trusted publishing
+#     (OIDC) so no token lives in this repository.
+# PyPI upload is irreversible: a version uploaded can never be re-uploaded.
 
 on:
   push:
@@ -81,8 +78,30 @@ jobs:
         with:
           repository-url: https://test.pypi.org/legacy/
 
+  # Tag push publishes a GitHub Release with the built wheel and sdist
+  # attached — no PyPI account or trusted publisher needed. PyPI upload is
+  # kept as a manual, opt-in path only (workflow_dispatch below).
+  github-release:
+    if: github.ref_type == 'tag'
+    needs: smoke
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Publish the GitHub Release with the built artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
   pypi:
-    if: github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi')
+    # PyPI is opt-in only: never on a tag push, only a deliberate manual run.
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'pypi'
     needs: smoke
     runs-on: ubuntu-latest
     environment: pypi
