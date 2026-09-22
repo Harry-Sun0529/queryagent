@@ -27,11 +27,6 @@ classifiers = [
     "Typing :: Typed",
 ]
 
-[project.urls]
-Homepage = "https://github.com/Harry-Sun0529/queryagent"
-Changelog = "https://github.com/Harry-Sun0529/queryagent/blob/main/CHANGELOG.md"
-Security = "https://github.com/Harry-Sun0529/queryagent/blob/main/SECURITY.md"
-Issues = "https://github.com/Harry-Sun0529/queryagent/issues"
 dependencies = [
     # Bounded on purpose: 1.0 removed Messages.create(temperature=...) and
     # broke CI without a line of our code changing. A major bump needs a look.
@@ -46,6 +41,13 @@ dependencies = [
     "PyMySQL>=1.1,<2",
     "PyYAML>=6.0,<7",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Harry-Sun0529/queryagent"
+Changelog = "https://github.com/Harry-Sun0529/queryagent/blob/main/CHANGELOG.md"
+Security = "https://github.com/Harry-Sun0529/queryagent/blob/main/SECURITY.md"
+Issues = "https://github.com/Harry-Sun0529/queryagent/issues"
+
 
 [project.scripts]
 queryagent = "queryagent.cli:main"
