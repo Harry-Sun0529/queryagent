@@ -22,11 +22,16 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, timedelta
 
+from queryagent.errors import AnswerError
 from queryagent.workflow.periods import Period
 
 
-class GroupingError(ValueError):
+class GroupingError(AnswerError):
     """A split the question asks for that cannot become exactly one grouping."""
+
+    def __init__(self, message: str, *, undeclared: bool = False) -> None:
+        super().__init__(message)
+        self.undeclared = undeclared
 
 
 DAY = "day"
@@ -179,7 +184,8 @@ def find_grouping(question: str, dimensions: tuple[Dimension, ...] = ()) -> Foun
         declared = "、".join(d.label for d in dimensions) or "无"
         raise GroupingError(
             f"问题像是要按「{noun}」分组，但维护者没有声明这个维度（已声明：{declared}）。"
-            "可以按天 / 周 / 月或已声明的维度分组；要一个总数请写不分组。"
+            "可以按天 / 周 / 月或已声明的维度分组；要一个总数请写不分组。",
+            undeclared=True,
         )
     if not found:
         return None
@@ -202,10 +208,14 @@ def parse_grouping(text: str, dimensions: tuple[Dimension, ...] = ()) -> str:
         GroupingError: Nothing recognisable, or more than one grouping.
     """
     text = text.strip()
-    if text in (NONE, "不分组", "总数"):
+    if text in (NONE, "不分组", "一个总数", "总数", "全部"):
         return NONE
-    if text in TIME_GRAINS:
-        return text
+    if text in (DAY, "天", "日", "每天", "每日", "按天", "按日"):
+        return DAY
+    if text in (WEEK, "周", "每周", "按周"):
+        return WEEK
+    if text in (MONTH, "月", "每月", "按月"):
+        return MONTH
     for dimension in dimensions:
         if text in (dimension.key, dimension.label, *dimension.aliases):
             return f"{DIMENSION_PREFIX}{dimension.key}"
@@ -267,7 +277,7 @@ FILTER_NONE = "none"
 """An explicit 「不过滤」: the rule is settled and nothing is filtered."""
 
 
-class FilterError(ValueError):
+class FilterError(AnswerError):
     """A restriction the question asks for that cannot become exactly one filter."""
 
 
@@ -412,6 +422,23 @@ def parse_filter(text: str, dimensions: tuple[Dimension, ...] = ()) -> str:
             if stored is None:
                 raise _undeclared_value(dimension, word)
             return filter_value(dimension, stored)
+
+    direct = []
+    for dimension in dimensions:
+        stored = dimension.value_for(text)
+        if stored is not None:
+            direct.append(filter_value(dimension, stored))
+        for name in dimension.names():
+            if text.endswith(name):
+                prefix = text[: -len(name)].strip()
+                for marker in ("只统计", "只看", "仅统计", "仅看"):
+                    if prefix.startswith(marker):
+                        prefix = prefix[len(marker) :].strip()
+                stored = dimension.value_for(prefix)
+                if stored is not None:
+                    direct.append(filter_value(dimension, stored))
+    if len(set(direct)) == 1:
+        return direct[0]
     found = find_filter(text, dimensions)
     if found is None:
         raise FilterError(f"无法识别的过滤条件：{text!r}。可以写 渠道=广告；要全部数据写 none。")

@@ -289,11 +289,14 @@ public surface is what `queryagent` exports — everything else may move.
 
 ```python
 from queryagent import AnswerEvent, ContextBuilder, ToolRegistry, run_agent
+from queryagent.config import load_config
 from queryagent.connectors.sqlite import SQLiteConnector
 from queryagent.llm import make_backend
 from queryagent.schema import render_schema
 from queryagent.tools import make_default_tools
 
+config = load_config("examples/demo_ecommerce/config.sqlite.yaml")
+backend = make_backend(config.llm)
 connector = SQLiteConnector(path="examples/demo_ecommerce/demo_shop.db")
 builder = ContextBuilder(
     schema_text=render_schema(connector.get_schema()), dialect=connector.dialect
@@ -306,8 +309,10 @@ for event in run_agent("有多少用户？", backend=backend, registry=registry,
         print(event.text)
 ```
 
-This snippet is executed by `tests/test_public_api.py` — documented code
-that was never run is how a library's first impression breaks.
+The event-loop portion of this example is covered by
+`tests/test_public_api.py`; provider construction is left to your environment
+because it reads the API key from the configured provider's environment
+variable. Keep credentials out of the config file.
 
 ### Your own database
 
@@ -358,6 +363,42 @@ float tolerance; six metrics including **clarify-behaviour accuracy**
 public benchmark serves as an external anchor, with a hard rule that prompts
 are never tuned against it ([eval/README.md](eval/README.md)).
 
+### MCP and human confirmation
+
+QueryAgent exposes a stdio MCP adapter for hosts such as Claude Code and Claude Desktop. The host supplies the identity when it starts the server; MCP tools can prepare and execute a query, but there is deliberately no MCP confirmation tool.
+
+```json
+{
+  "mcpServers": {
+    "queryagent": {
+      "command": "queryagent",
+      "args": [
+        "mcp",
+        "--config", "/abs/config.yaml",
+        "--subject", "alice",
+        "--workspace", "ops"
+      ]
+    }
+  }
+}
+```
+
+The available tools are `list_metrics`, `prepare_query`, `amend_query`,
+`query_status`, and `execute_query`. If execution needs confirmation, open the
+local confirmation page in a separate terminal:
+
+```bash
+queryagent web --config examples/demo_ecommerce/config.sqlite.yaml --subject alice --workspace ops
+```
+
+The command prints a one-time local URL and listens only on `127.0.0.1`. As a
+terminal fallback, use `queryagent drafts` and then `queryagent confirm <draft_id>`.
+A person confirms the exact draft version and content hash; confirmation is
+never accepted from the MCP channel. An agent with MCP access can therefore
+prepare a query, but cannot confirm one on a person's behalf. This local gate
+does not claim to defend against an agent that already controls the same OS
+user's shell; remote MCP and multi-user web authentication are out of scope.
+
 ### Reliability repair measurements (2026-09-09, scoring v2)
 
 Four complete dev100 runs (serial/parallel/parallel/serial) measured SQL
@@ -367,6 +408,28 @@ Concurrency 4 took about 9 minutes versus 24–26 minutes at concurrency 1
 for this local offline eval; the default stays 1. Repeated runs changed
 individual outcomes, so this is not evidence of statistical equivalence or
 natural-language answer correctness. [Full measurements and limitations](eval/results/reliability-2026-09-09-rerun/README.md).
+
+### v1.0.0 benchmark rerun (2026-09-12, scoring v2)
+
+These measurements were run against the frozen v1.0.0 code at commit
+`73ffdaffeed21b4bf3d6789f46fea332b1aa15fa`, using the OpenAI-compatible
+DeepSeek endpoint. DeepSeek exposes no sampling seed, so the self-built set
+was run three times. The provider's per-case metadata identifies the served
+model as `deepseek-flash`; the requested model was `deepseek-chat`.
+
+| set | first-execution pass | completed with SQL hit | metric hit | clarify accuracy |
+|---|---:|---:|---:|---:|
+| self-built, run 1 | 25/28 (89%) | 27/28 (96%) | 7/8 (88%) | 16/16 (100%) |
+| self-built, run 2 | 25/28 (89%) | 27/28 (96%) | 7/8 (88%) | 16/16 (100%) |
+| self-built, run 3 | 26/28 (93%) | 27/28 (96%) | 7/8 (88%) | 16/16 (100%) |
+| BIRD dev100 | 44/100 (44%) | 59/100 (59%) | n/a | n/a |
+
+The BIRD dev report contains one case where the reference SQL itself was
+interrupted by the local SQLite engine; it is retained as a data/reference
+issue in the report. Full reports, append-only checkpoints, signatures, input
+hashes and database snapshot hashes are in
+[`eval/results/v1.0.0-benchmarks-2026-09-12/`](eval/results/v1.0.0-benchmarks-2026-09-12/).
+These results are measurements, not a reason to tune the frozen system.
 
 ### Historical results (through v0.5.0, `deepseek-v4-flash`, temperature 0)
 

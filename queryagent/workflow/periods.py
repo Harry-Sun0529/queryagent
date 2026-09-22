@@ -22,9 +22,17 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, timedelta
 
+from queryagent.errors import AnswerError
 
-class PeriodError(ValueError):
+
+class PeriodError(AnswerError):
     """A time expression that cannot become exactly one range."""
+
+    def __init__(
+        self, message: str, *, alternatives: tuple[PeriodAlternative, ...] = ()
+    ) -> None:
+        super().__init__(message)
+        self.alternatives = alternatives
 
 
 _CANONICAL = re.compile(r"(\d{4}-\d{2}-\d{2})\.\.(\d{4}-\d{2}-\d{2})")
@@ -68,6 +76,14 @@ class Period:
 
 
 @dataclass(frozen=True)
+class PeriodAlternative:
+    """One explicit interpretation of an ambiguous relative period."""
+
+    label: str
+    period: Period
+
+
+@dataclass(frozen=True)
 class FoundPeriod:
     """A period and the words in the question it was read from."""
 
@@ -107,6 +123,13 @@ def _month(year: int, month: int) -> Period:
     return Period(start, following - timedelta(days=1))
 
 
+def _month_offset(first: date, offset: int) -> Period:
+    """Return the calendar month ``offset`` months from ``first``."""
+    index = first.year * 12 + first.month - 1 + offset
+    year, month_index = divmod(index, 12)
+    return _month(year, month_index + 1)
+
+
 def _monday(day: date) -> date:
     return day - timedelta(days=day.weekday())
 
@@ -116,6 +139,7 @@ def _monday(day: date) -> date:
 Handler = Callable[[re.Match[str], date], "Period | None"]
 
 _NUM = r"(\d{1,3}|[一二两三四五六七八九十]{1,3})"
+_LAST_N_MONTHS = re.compile(r"(?:最近|近|过去)" + _NUM + r"\s*个?月")
 
 
 def _explicit_range(m: re.Match[str], today: date) -> Period:
@@ -139,6 +163,32 @@ def _last_n_days(m: re.Match[str], today: date) -> Period | None:
     if not count:
         return None
     return Period(today - timedelta(days=count - 1), today)
+
+
+def _last_n_months(m: re.Match[str], today: date) -> Period | None:
+    """A legacy parser fallback; ambiguous month ranges are handled explicitly."""
+    count = _number(m.group(1))
+    if not count:
+        return None
+    first = today.replace(day=1)
+    return Period(_month_offset(first, -(count - 1)).start, today)
+
+
+def period_alternatives(text: str, today: date) -> tuple[PeriodAlternative, ...]:
+    """Return explicit choices for a relative month expression, if any."""
+    match = _LAST_N_MONTHS.search(text)
+    if match is None:
+        return ()
+    count = _number(match.group(1))
+    if not count:
+        return ()
+    first = today.replace(day=1)
+    rolling = Period(_month_offset(first, -(count - 1)).start, today)
+    complete = Period(_month_offset(first, -count).start, first - timedelta(days=1))
+    return (
+        PeriodAlternative(f"滚动到今天：{rolling.render()}", rolling),
+        PeriodAlternative(f"最近{count}个完整自然月：{complete.render()}", complete),
+    )
 
 
 def _bare_month(m: re.Match[str], today: date) -> Period | None:
@@ -195,6 +245,7 @@ _PATTERNS: tuple[tuple[re.Pattern[str], Handler], ...] = (
     (re.compile(r"(\d{4})\s*年\s*(\d{1,2})\s*月"), _year_month),
     (re.compile(r"(?<!\d)(\d{4})-(\d{1,2})(?![\d-])"), _year_month),
     (re.compile(r"(?:最近|近|过去)" + _NUM + r"\s*天"), _last_n_days),
+    (_LAST_N_MONTHS, _last_n_months),
     (re.compile(r"上个?月|上一个月"), _previous_month),
     (re.compile(r"本月|这个月|当月"), _this_month),
     (re.compile(r"上周|上一周|上个星期"), _previous_week),
@@ -220,6 +271,18 @@ def find_period(question: str, today: date) -> FoundPeriod | None:
     Raises:
         PeriodError: Two different periods, or an impossible date.
     """
+    month_expression = _LAST_N_MONTHS.search(question)
+    if month_expression is not None:
+        alternatives = period_alternatives(month_expression.group(0), today)
+        if alternatives:
+            rendered = "；".join(
+                f"{index}. {choice.label}" for index, choice in enumerate(alternatives, 1)
+            )
+            raise PeriodError(
+                f"「{month_expression.group(0)}」有多种统计区间解释，请选择：{rendered}",
+                alternatives=alternatives,
+            )
+
     taken: list[tuple[int, int]] = []
     found: list[tuple[int, FoundPeriod]] = []
     for pattern, handler in _PATTERNS:

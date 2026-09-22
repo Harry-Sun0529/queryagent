@@ -27,7 +27,7 @@ from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import date
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, TypeVar
 
 from queryagent.agent import run_agent
 from queryagent.budget import (
@@ -39,7 +39,7 @@ from queryagent.connectors import make_connector
 from queryagent.connectors.base import Connector
 from queryagent.connectors.sqlite import SQLiteConnector
 from queryagent.context import ContextBuilder
-from queryagent.errors import ConnectorError, QueryAgentError, is_transient
+from queryagent.errors import AnswerError, ConnectorError, QueryAgentError, is_transient
 from queryagent.evals.cases import EvalCase, load_cases
 from queryagent.evals.checkpoint import ResultLog, ResumeMismatch
 from queryagent.evals.identity import run_signature
@@ -115,7 +115,12 @@ from queryagent.workflow.models import (
     Rule,
     RuleSource,
 )
-from queryagent.workflow.periods import PeriodError, find_period
+from queryagent.workflow.periods import (
+    PeriodAlternative,
+    PeriodError,
+    find_period,
+    period_alternatives,
+)
 from queryagent.workflow.render import (
     render_draft,
     render_result,
@@ -377,6 +382,9 @@ EXIT_TEMPORARY_FAILURE = 75  # sysexits EX_TEMPFAIL
 EXIT_INTERRUPTED = 130  # Ctrl-C, by shell convention
 
 
+_AnswerT = TypeVar("_AnswerT")
+
+
 def _report_error(exc: BaseException, *, verbose: bool) -> int:
     """Print one line of problem, one line of fix, and classify the exit code.
 
@@ -477,6 +485,8 @@ def _explain(exc: BaseException) -> tuple[str, str, int]:
             "（退出码 75 = 可重试，脚本可据此自动重跑）",
             EXIT_TEMPORARY_FAILURE,
         )
+    if isinstance(exc, AnswerError):
+        return (f"输入无法识别：{text}", "按提示重新输入，或直接回车取消。", EXIT_USER_ERROR)
     if isinstance(exc, ValueError):
         return (f"配置有问题：{text}", "修正 config.yaml 后重试。", EXIT_USER_ERROR)
     if isinstance(exc, QueryAgentError):
@@ -807,6 +817,42 @@ def _run_flow(
     labels = wiring.labels
     request_id = uuid.uuid4().hex
     draft = workflow.prepare(actor, args.question, request_id=request_id)
+    if not args.group_by:
+        try:
+            find_grouping(args.question, dimensions)
+        except GroupingError as exc:
+            if exc.undeclared:
+                print(f"[错误] {exc}", file=sys.stderr)
+                return EXIT_USER_ERROR
+    if args.variant:
+        documented = draft.definition.rule(VARIANT_RULE_KEY)
+        if documented is None or documented.value != args.variant:
+            # Consume an explicit executable choice before asking about any
+            # unrelated gap. The rule remains user-authored even when it
+            # overrides a document or remembered choice.
+            draft = workflow.amend(
+                actor,
+                draft.draft_id,
+                expected_version=draft.version,
+                rules=(variant_rule(draft.definition, args.variant, RuleSource.USER),),
+            )
+        # F13: a document wording adopted on the same command line that names
+        # a different reading is a contradiction. The adopted rule does not
+        # exist yet, so the check is against the candidate being adopted.
+        for adopt_key in args.adopt:
+            candidate = draft.definition.candidate(adopt_key)
+            if (
+                candidate is not None
+                and candidate.implies
+                and args.variant not in candidate.implies
+            ):
+                print(
+                    f"[错误] 采用的文档写法对应口径 {'/'.join(candidate.implies)}，"
+                    f"--variant 却选了 {args.variant}；"
+                    "同一条命令里两者矛盾，请只保留一个",
+                    file=sys.stderr,
+                )
+                return EXIT_USER_ERROR
     if args.period:
         # Stated on purpose, it replaces whatever the question's words gave.
         draft = workflow.amend(
@@ -828,17 +874,6 @@ def _run_flow(
             draft.draft_id,
             expected_version=draft.version,
             rules=(stated_filter(args.value_filter, dimensions, RuleSource.USER),),
-        )
-    documented = draft.definition.rule(VARIANT_RULE_KEY)
-    if args.variant and documented is not None and documented.value != args.variant:
-        # The handbooks — or the user's own last choice — picked a reading;
-        # the user named another on purpose. Theirs runs, and the sheet says
-        # what it disagrees with (E12).
-        draft = workflow.amend(
-            actor,
-            draft.draft_id,
-            expected_version=draft.version,
-            rules=(variant_rule(draft.definition, args.variant, RuleSource.USER),),
         )
     if PERIOD_RULE_KEY in draft.definition.missing:
         _explain_missing_period(args.question, today)
@@ -1021,14 +1056,60 @@ def _explain_missing_period(question: str, today: date) -> None:
         print(f"[提示] {exc}", file=sys.stderr)
 
 
-def _prompt_period() -> str:
-    try:
-        return input(
+def _ask_until_valid(
+    prompt: Callable[[], str],
+    parse: Callable[[str], _AnswerT],
+    *,
+    max_attempts: int = 3,
+) -> _AnswerT | None:
+    """Read an answer, retrying parseable user mistakes without executing."""
+    for _ in range(max_attempts):
+        try:
+            text = prompt()
+        except EOFError:
+            return None
+        if not text:
+            return None
+        try:
+            return parse(text)
+        except AnswerError as exc:
+            print(f"[无效] {exc}", file=sys.stderr)
+    print("[已取消] 多次输入无法识别，没有执行任何查询。", file=sys.stderr)
+    return None
+
+
+def _prompt_period(question: str, today: date) -> str:
+    choices = period_alternatives(question, today)
+    if choices:
+        print("\n这个时间表达有多种解释，请选择：")
+        for index, choice in enumerate(choices, 1):
+            print(f"  {index}) {choice.label}")
+        prompt = "请输入编号，或写明确日期范围（回车取消）： "
+    else:
+        prompt = (
             "\n「统计区间」尚未确定。写下要统计的时间"
             "（如 上个月、2026-08-01..2026-08-31；回车取消）： "
-        ).strip()
+        )
+    try:
+        return input(prompt).strip()
     except EOFError:
         return ""
+
+
+def _period_answer(text: str, question: str, today: date) -> Rule:
+    choices = period_alternatives(question, today)
+    if text.isdigit() and choices:
+        index = int(text)
+        if not 1 <= index <= len(choices):
+            raise PeriodError(f"编号超出范围：请写 1 到 {len(choices)}")
+        choice: PeriodAlternative = choices[index - 1]
+        return Rule(
+            PERIOD_RULE_KEY,
+            choice.period.encode(),
+            RuleSource.USER,
+            note=f"由「{question}」选择：{choice.label}",
+        )
+    return stated_period(text, today, RuleSource.USER)
 
 
 def _explain_missing_grouping(question: str, dimensions: tuple[Dimension, ...]) -> None:
@@ -1042,8 +1123,8 @@ def _explain_missing_grouping(question: str, dimensions: tuple[Dimension, ...]) 
 def _prompt_grouping() -> str:
     try:
         return input(
-            "\n「分组方式」尚未确定。写下怎样分组（day / week / month / 维度名，"
-            "要一个总数写 none；回车取消）： "
+            "\n「分组方式」尚未确定。可写每天/每周/每月、day / week / month、维度名，"
+            "要一个总数写不分组；回车取消）： "
         ).strip()
     except EOFError:
         return ""
@@ -1060,7 +1141,7 @@ def _explain_missing_filter(question: str, dimensions: tuple[Dimension, ...], na
 def _prompt_filter() -> str:
     try:
         return input(
-            "\n「取值过滤」尚未确定。写下只统计哪个取值（如 渠道=广告；要全部数据写 none；"
+            "\n「取值过滤」尚未确定。可写 渠道=广告、广告渠道或 none；"
             "回车取消）： "
         ).strip()
     except EOFError:
@@ -1121,33 +1202,56 @@ def _open_choices(
         ) or _prompt_adopt(rule_label(rule_key), options)
         if not chosen_key:
             return None
-        chosen = next((c for c in options if c.key == chosen_key), None)
+        chosen = _resolve_adopt(rule_key, chosen_key, options)
         if chosen is None:
-            raise ValueError(
-                f"「{rule_label(rule_key)}」没有取法 '{chosen_key}'；"
-                f"可选：{', '.join(c.key for c in options)}"
-            )
+            return None
         # The words are the handbook's, the decision is the user's (D07): a
         # 本次约定 rule that keeps the adopted document's citation.
         rules.append(adopted_rule(definition, chosen.key, RuleSource.USER))
     for key in gaps:
         if key == GROUP_RULE_KEY:
-            text = args.group_by or supplied.get(key) or _prompt_grouping()
-            if not text:
-                return None
-            rules.append(stated_grouping(text, dimensions, RuleSource.USER))
+            if args.group_by or supplied.get(key):
+                rules.append(
+                    stated_grouping(
+                        args.group_by or supplied[key], dimensions, RuleSource.USER
+                    )
+                )
+            else:
+                rule = _ask_until_valid(
+                    _prompt_grouping,
+                    lambda text: stated_grouping(text, dimensions, RuleSource.USER),
+                )
+                if rule is None:
+                    return None
+                rules.append(rule)
             continue
         if key == PERIOD_RULE_KEY:
-            text = args.period or supplied.get(key) or _prompt_period()
-            if not text:
-                return None
-            rules.append(stated_period(text, today, RuleSource.USER))
+            if args.period or supplied.get(key):
+                rules.append(
+                    _period_answer(args.period or supplied[key], args.question, today)
+                )
+            else:
+                rule = _ask_until_valid(
+                    lambda: _prompt_period(args.question, today),
+                    lambda text: _period_answer(text, args.question, today),
+                )
+                if rule is None:
+                    return None
+                rules.append(rule)
             continue
         if key == FILTER_RULE_KEY:
-            text = args.value_filter or supplied.get(key) or _prompt_filter()
-            if not text:
-                return None
-            rules.append(stated_filter(text, dimensions, RuleSource.USER))
+            if args.value_filter or supplied.get(key):
+                rules.append(
+                    stated_filter(args.value_filter or supplied[key], dimensions, RuleSource.USER)
+                )
+            else:
+                rule = _ask_until_valid(
+                    _prompt_filter,
+                    lambda text: stated_filter(text, dimensions, RuleSource.USER),
+                )
+                if rule is None:
+                    return None
+                rules.append(rule)
             continue
         # Nothing states this rule and nothing may default it: the user writes
         # it down, and it is marked as theirs (D07).
@@ -1162,17 +1266,74 @@ def _open_choices(
             # them to pick again invites picking the other one (E13).
             rules.append(implied)
             return tuple(rules)
-        choice = args.variant or _prompt_variant(draft)
-        if not choice:
+        rule = _ask_until_valid(
+            lambda: _prompt_variant(draft),
+            lambda text: _variant_answer(draft, text),
+        )
+        if rule is None:
             return None
-        chosen_rule = variant_rule(definition, choice, RuleSource.USER)
-        if implied is not None and choice != implied.value:
+        if implied is not None and rule.value != implied.value:
             raise ValueError(
-                f"采用的文档写法对应口径 {implied.value}，--variant 却选了 {choice}；"
+                f"采用的文档写法对应口径 {implied.value}，--variant 却选了 {rule.value}；"
                 "同一条命令里两者矛盾，请只保留一个"
             )
-        rules.append(chosen_rule)
+        rules.append(rule)
     return tuple(rules)
+
+
+def _resolve_adopt(
+    rule_key: str, chosen_key: str, options: list[Candidate]
+) -> Candidate | None:
+    """An adopted document reading, by internal key, by number, or by its words."""
+    direct = next((c for c in options if c.key == chosen_key), None)
+    if direct is not None:
+        return direct
+    stripped = chosen_key.strip()
+    if stripped.isdigit():
+        index = int(stripped)
+        if 1 <= index <= len(options):
+            return options[index - 1]
+        print(f"[无效] 编号超出范围：请写 1 到 {len(options)}，或候选键。", file=sys.stderr)
+        return None
+    by_words = [
+        c
+        for c in options
+        if chosen_key in (c.label, c.summary) or chosen_key == c.key
+    ]
+    if len(by_words) == 1:
+        return by_words[0]
+    print(
+        f"[无效] 「{rule_label(rule_key)}」没有取法 '{chosen_key}'；"
+        f"可选：{', '.join(c.key for c in options)} 或对应编号。",
+        file=sys.stderr,
+    )
+    return None
+
+
+def _variant_answer(draft: DefinitionDraft, choice: str) -> Rule:
+    """A reading chosen at a prompt: canonical key, number, or its label."""
+    definition = draft.definition
+    options = [c for c in definition.candidates if c.rule_key == VARIANT_RULE_KEY]
+    direct = next((c for c in options if c.key == choice.strip()), None)
+    if direct is not None:
+        return variant_rule(definition, direct.key, RuleSource.USER)
+    stripped = choice.strip()
+    if stripped.isdigit():
+        index = int(stripped)
+        if not 1 <= index <= len(options):
+            from queryagent.errors import AnswerError as _AnswerError
+
+            raise _AnswerError(f"编号超出范围：请写 1 到 {len(options)}")
+        return variant_rule(definition, options[index - 1].key, RuleSource.USER)
+    by_label = [c for c in options if stripped in (c.label, c.summary)]
+    if len(by_label) == 1:
+        return variant_rule(definition, by_label[0].key, RuleSource.USER)
+    from queryagent.errors import AnswerError as _AnswerError
+
+    raise _AnswerError(
+        f"未听懂口径 '{choice}'；可选："
+        f"{', '.join(c.key for c in options)} 或其编号。"
+    )
 
 
 def _prompt_rule(label: str) -> str:
@@ -1183,19 +1344,31 @@ def _prompt_rule(label: str) -> str:
 
 
 def _prompt_adopt(label: str, options: list[Candidate]) -> str:
+    numbered = "，".join(
+        f"{index}) {option.label or option.key}" for index, option in enumerate(options, 1)
+    )
     keys = ", ".join(c.key for c in options)
     try:
-        return input(f"\n「{label}」文档之间有分歧，采用哪一种写法 [{keys}]（回车取消）： ").strip()
+        return input(
+            f"\n「{label}」文档之间有分歧，采用哪一种写法（可输入编号、原文或 [{keys}]；"
+            f"回车取消）：\n  {numbered}\n你的选择： "
+        ).strip()
     except EOFError:
         return ""
 
 
 def _prompt_variant(draft: DefinitionDraft) -> str:
-    keys = ", ".join(
-        c.key for c in draft.definition.candidates if c.rule_key == VARIANT_RULE_KEY
+    options = [
+        c for c in draft.definition.candidates if c.rule_key == VARIANT_RULE_KEY
+    ]
+    numbered = "，".join(
+        f"{index}) {option.label or option.key}" for index, option in enumerate(options, 1)
     )
+    keys = ", ".join(c.key for c in options)
     try:
-        return input(f"\n选择口径 [{keys}]（回车取消）： ").strip()
+        return input(
+            f"\n选择口径（可输入编号、名称或 [{keys}]；回车取消）：\n  {numbered}\n你的选择： "
+        ).strip()
     except EOFError:
         return ""
 

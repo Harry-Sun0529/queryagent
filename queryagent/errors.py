@@ -7,6 +7,10 @@ class QueryAgentError(Exception):
     """Base class for all QueryAgent errors."""
 
 
+class AnswerError(ValueError):
+    """A human answer cannot be parsed into a safe, exact rule."""
+
+
 class SafetyViolation(QueryAgentError):
     """The safety layer rejected a SQL statement.
 

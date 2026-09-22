@@ -1,5 +1,7 @@
 .PHONY: test lint typecheck unit eval demo-data demo-up demo-down
 
+PYTHON ?= $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
+
 test: lint typecheck unit
 
 lint:
@@ -15,7 +17,7 @@ unit:
 	pytest -q
 
 demo-data:
-	python examples/demo_ecommerce/generate_data.py
+	$(PYTHON) examples/demo_ecommerce/generate_data.py
 
 demo-up: demo-data
 	docker compose -f examples/demo_ecommerce/docker-compose.yml up -d

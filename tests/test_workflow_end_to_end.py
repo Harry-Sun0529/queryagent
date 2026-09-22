@@ -40,7 +40,22 @@ from queryagent.workflow.store import SqliteWorkflowStore
 DEMO_DB = Path("examples/demo_ecommerce/demo_shop.db")
 DIMENSIONS = load_dimensions("examples/query_mappings.yaml")
 ALICE = ActorContext(subject_id="alice", workspace_id="ops")
-TODAY = date(2026, 9, 10)
+
+
+def _demo_today() -> date:
+    """The generation anchor: the demo data ends on the day it was generated.
+
+    The dataset is rebuilt relative to the real current date (see
+    generate_data.py), so 「上个月」 must resolve against that same anchor —
+    a fixed date would drift the moment anyone reruns make demo-data.
+    """
+    connection = sqlite3.connect(DEMO_DB)
+    newest = connection.execute("SELECT date(MAX(created_at)) FROM users").fetchone()[0]
+    connection.close()
+    return date.fromisoformat(str(newest))
+
+
+TODAY = _demo_today()
 
 REFERENCE = {
     "registered": "SELECT COUNT(*) FROM users WHERE channel <> 'internal_test' "
@@ -144,7 +159,12 @@ def test_last_month_by_day_is_each_days_real_number_and_every_day_is_listed(
     lines = render_rows(workflow.get_draft(ALICE, run.draft_id).definition, run)
     assert len(lines) == 1 + 31  # header, then every day of August
     no_data = [line for line in lines if line.endswith("（无数据）")]
-    assert len(no_data) == 31 - int(newest[-2:])
+    # Days after the newest record are the ones without data; a newest
+    # record past August (the dataset regenerates to end "today") means
+    # every August day is covered and none say 无数据.
+    period_end = TODAY.replace(day=1) - __import__("datetime").timedelta(days=1)
+    uncovered = 0 if newest >= period_end.isoformat() else period_end.day - int(newest[-2:])
+    assert len(no_data) == uncovered
     assert all(line[2:12] > newest for line in no_data)
 
 
