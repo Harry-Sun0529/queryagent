@@ -387,3 +387,6 @@ class QueryRun:
     mapping_fingerprint: str = ""
     """Digest of the mapping that ran (T42), so a remembered choice can tell
     whether what it chose has changed since; '' for runs before 0.9."""
+    started_at: str = ""
+    """ISO time the run was claimed, so one nobody finished can be told from
+    one still running; '' for runs before 1.0.2."""

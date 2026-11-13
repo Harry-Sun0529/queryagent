@@ -76,7 +76,8 @@ CREATE TABLE IF NOT EXISTS runs (
     freshness_sql TEXT NOT NULL DEFAULT '',
     data_through TEXT NOT NULL DEFAULT '',
     expected_through TEXT NOT NULL DEFAULT '',
-    mapping_fingerprint TEXT NOT NULL DEFAULT ''
+    mapping_fingerprint TEXT NOT NULL DEFAULT '',
+    started_at TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS freshness_cache (
     source TEXT NOT NULL,
@@ -95,6 +96,7 @@ _LATER_COLUMNS = {
         ("data_through", "TEXT NOT NULL DEFAULT ''"),
         ("expected_through", "TEXT NOT NULL DEFAULT ''"),
         ("mapping_fingerprint", "TEXT NOT NULL DEFAULT ''"),
+        ("started_at", "TEXT NOT NULL DEFAULT ''"),
     ),
     # Every confirmation before 1.0 came from the terminal: the default is
     # what those rows were, not a guess (H9).
@@ -340,7 +342,7 @@ class SqliteWorkflowStore:
         try:
             cursor = self._conn.execute(
                 "INSERT INTO runs (run_id, draft_id, confirmation_id, subject_id, "
-                "idempotency_key, status) SELECT ?,?,?,?,?,? WHERE NOT EXISTS "
+                "idempotency_key, status, started_at) SELECT ?,?,?,?,?,?,? WHERE NOT EXISTS "
                 "(SELECT 1 FROM runs WHERE confirmation_id = ?)",
                 (
                     run.run_id,
@@ -349,6 +351,7 @@ class SqliteWorkflowStore:
                     run.subject_id,
                     run.idempotency_key,
                     run.status.value,
+                    run.started_at,
                     run.confirmation_id,
                 ),
             )
@@ -369,11 +372,36 @@ class SqliteWorkflowStore:
             raise PermissionDenied("not permitted") from None
         return _decode_run(row)
 
-    def finish_run(self, run: QueryRun) -> None:
-        self._conn.execute(
+    def abandon_runs(self, *, started_before: datetime, error: str) -> int:
+        """Fail every run still 'executing' that was claimed before ``started_before``.
+
+        For runs whose process ended without recording an outcome. One
+        statement, conditional on the status, so it and a late ``finish_run``
+        cannot both win. A run from before 1.0.2 has no start time and sorts
+        before any cutoff: whatever was running it is long gone.
+        """
+        cursor = self._conn.execute(
+            "UPDATE runs SET status = ?, error = ? WHERE status = ? AND started_at < ?",
+            (
+                RunStatus.FAILED.value,
+                error,
+                RunStatus.EXECUTING.value,
+                started_before.isoformat(),
+            ),
+        )
+        return cursor.rowcount
+
+    def finish_run(self, run: QueryRun) -> bool:
+        """Record the outcome on a run still executing; False if it no longer is.
+
+        A run failed as abandoned stays failed: its confirmation is spent and
+        a person may already have confirmed again, so a result arriving late
+        must not turn up as the answer to a confirmation that moved on.
+        """
+        cursor = self._conn.execute(
             "UPDATE runs SET status=?, sql=?, params=?, columns=?, rows=?, truncated=?, error=?, "
             "freshness_sql=?, data_through=?, expected_through=?, mapping_fingerprint=? "
-            "WHERE run_id=?",
+            "WHERE run_id=? AND status=?",
             (
                 run.status.value,
                 run.sql,
@@ -387,8 +415,10 @@ class SqliteWorkflowStore:
                 run.expected_through,
                 run.mapping_fingerprint,
                 run.run_id,
+                RunStatus.EXECUTING.value,
             ),
         )
+        return cursor.rowcount == 1
 
     def get_run_by_key(self, subject_id: str, idempotency_key: str) -> QueryRun | None:
         """The run holding this key, or None when it was never claimed."""
@@ -595,4 +625,5 @@ def _decode_run(row: sqlite3.Row) -> QueryRun:
         data_through=row["data_through"],
         expected_through=row["expected_through"],
         mapping_fingerprint=row["mapping_fingerprint"],
+        started_at=row["started_at"],
     )

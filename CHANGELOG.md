@@ -8,6 +8,36 @@ frozen from v0.1.1 (spec §四).
 
 ## [Unreleased]
 
+## [1.0.2] — 2026-11-13
+
+No frozen surface moved (ADR-014).
+契约摘要：26f385531e97
+
+### Fixed
+
+- **A run whose process was killed mid-query no longer stays `executing`
+  for good.** Nothing recorded an outcome, so the draft read `confirmed`
+  and `execute_query` answered "still running" indefinitely (the *Known*
+  entry of 1.0.1).
+  - A run is at most two statements, each under `safety.timeout_s`. Once a
+    run has been `executing` for longer than `2 × timeout_s + 60s`, no
+    process can still be running it, and it is failed as interrupted — on
+    the next read of it, by whichever process reads; there is no background
+    job.
+  - From there it is a failed run like any other (1.0.1): the confirmation
+    is spent, the draft reads `failed` and waits on the person again, and
+    they may confirm the same version and run it.
+  - A result that arrives after its run was failed does not replace the
+    failure: the confirmation may already have moved on.
+  - Runs record when they started (`runs.started_at`, added to an existing
+    state file on open). A run still `executing` from before this release
+    has no start time and is treated as past its deadline.
+  - `QueryWorkflow(run_deadline_s=...)` for embedders; without it nothing
+    is ever presumed dead, as before. `build_workflow` sets it.
+- `scripts/acceptance_check.py`: a thirteenth check kills a real MCP server
+  with SIGKILL in the middle of a query and takes the draft through to a
+  successful second run.
+
 ## [1.0.1] — 2026-11-13
 
 What the pre-release review of 1.0.0 found and 1.0.0 shipped with. No frozen
@@ -72,7 +102,7 @@ surface moved (ADR-014): the CLI, exit codes, config and file keys,
 
 - A run interrupted mid-query (the process killed) stays `executing`; its
   draft reads `confirmed` and `execute_query` answers that it is still
-  running. Prepare the question again.
+  running. Prepare the question again. *(Fixed in 1.0.2.)*
 
 ## [1.0.0] — 2026-09-11
 

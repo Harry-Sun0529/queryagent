@@ -174,6 +174,7 @@ def build_workflow(
         ref_checker=provider,
         budget=make_budget(config, stack),
         freshness=freshness_policy(config, connector, resolve_today),
+        run_deadline_s=run_deadline_s(config),
     )
     known = {source.workspace for source in config.knowledge.sources}
     if provider is not None and actor.workspace_id not in known:
@@ -193,6 +194,19 @@ def build_workflow(
         notices=tuple(notices),
         zone=ZoneInfo(config.workflow.timezone),
     )
+
+
+RUN_DEADLINE_MARGIN_S = 60
+
+
+def run_deadline_s(config: AppConfig) -> float:
+    """How long a run may stay 'executing' before it is failed as abandoned.
+
+    A run is at most two statements, the freshness probe and the query, each
+    under ``safety.timeout_s``. The margin covers what surrounds them:
+    connecting, fetching rows, writing the result down.
+    """
+    return 2 * config.safety.timeout_s + RUN_DEADLINE_MARGIN_S
 
 
 def make_budget(config: AppConfig, stack: contextlib.ExitStack) -> Budget:

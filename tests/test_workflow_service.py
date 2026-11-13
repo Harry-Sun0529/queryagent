@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -19,7 +19,14 @@ from queryagent.workflow.errors import (
     WorkflowStateError,
 )
 from queryagent.workflow.mappings import QueryMapping
-from queryagent.workflow.models import ActorContext, DraftStatus, Rule, RuleSource, RunStatus
+from queryagent.workflow.models import (
+    ActorContext,
+    DraftProgress,
+    DraftStatus,
+    Rule,
+    RuleSource,
+    RunStatus,
+)
 from queryagent.workflow.service import QueryWorkflow
 from queryagent.workflow.store import SqliteWorkflowStore
 
@@ -773,3 +780,90 @@ def test_adopting_one_reading_and_choosing_another_in_one_amendment_is_refused(
         )
     assert workflow.get_draft(ALICE, draft.draft_id).version == draft.version
     assert executor.executed == []
+
+
+# ------------------------------------------------- a run nobody finished
+
+
+class Dying:
+    """An executor whose process is killed mid-query the first time, then behaves."""
+
+    def __init__(self) -> None:
+        self.executed: list[str] = []
+        self.die = True
+
+    def run(self, query: CompiledQuery) -> QueryResult:
+        self.executed.append(query.sql)
+        if self.die:
+            raise KeyboardInterrupt  # not an Exception: nothing records the run as failed
+        return QueryResult(columns=("n",), rows=((42,),), elapsed_ms=1, truncated=False)
+
+
+def _interrupted(tmp_path: Path) -> tuple[QueryWorkflow, Dying, list[datetime], str]:
+    """A confirmed GMV draft whose run was cut off, with a clock the test moves."""
+    executor = Dying()
+    now = [datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc)]
+    workflow = QueryWorkflow(
+        store=SqliteWorkflowStore(tmp_path / "wf.db"),
+        builder=MetricDraftBuilder(StubMetricStore((GMV,))),
+        compiler=TemplateCompiler({("gmv", ""): "SELECT SUM(amount) AS n FROM orders"}),
+        executor=executor.run,
+        clock=lambda: now[0],
+        run_deadline_s=30,
+    )
+    draft = workflow.prepare(ALICE, "成交额是多少？", request_id="r1")
+    confirmation = workflow.confirm(
+        ALICE, draft.draft_id, version=draft.version, definition_hash=draft.definition_hash
+    )
+    with pytest.raises(KeyboardInterrupt):
+        workflow.execute(ALICE, confirmation.confirmation_id, idempotency_key="k1")
+    return workflow, executor, now, draft.draft_id
+
+
+def test_a_run_still_inside_its_deadline_is_left_alone(tmp_path: Path) -> None:
+    """It may be running in another process: nothing is assumed until it cannot be."""
+    workflow, executor, now, draft_id = _interrupted(tmp_path)
+    now[0] += timedelta(seconds=29)
+    assert workflow.progress(ALICE, draft_id) is DraftProgress.CONFIRMED
+    run = workflow.execute_confirmed(ALICE, draft_id)
+    assert run.status is RunStatus.EXECUTING
+    assert len(executor.executed) == 1
+
+
+def test_a_run_nobody_finished_is_failed_once_it_cannot_still_be_running(
+    tmp_path: Path,
+) -> None:
+    """Killed mid-query, the run stayed 'executing' and its draft 'confirmed', for good.
+
+    Every statement has a timeout, so past the deadline no process can still
+    be running it. It then reads as failed, like any spent confirmation, and
+    the person can confirm again.
+    """
+    workflow, executor, now, draft_id = _interrupted(tmp_path)
+    now[0] += timedelta(seconds=31)
+    assert workflow.progress(ALICE, draft_id) is DraftProgress.FAILED
+    failed = workflow.last_run(ALICE, draft_id)
+    assert failed is not None and failed.status is RunStatus.FAILED
+    assert "中断" in failed.error
+    assert [d.draft_id for d in workflow.pending_drafts(ALICE)] == [draft_id]
+    # Asking again answers with that failure and runs nothing.
+    assert workflow.execute_confirmed(ALICE, draft_id).run_id == failed.run_id
+    assert len(executor.executed) == 1
+
+    executor.die = False
+    draft = workflow.get_draft(ALICE, draft_id)
+    workflow.confirm(
+        ALICE, draft_id, version=draft.version, definition_hash=draft.definition_hash
+    )
+    again = workflow.execute_confirmed(ALICE, draft_id)
+    assert again.status is RunStatus.SUCCEEDED and again.rows == ((42,),)
+    assert len(executor.executed) == 2
+    assert workflow.progress(ALICE, draft_id) is DraftProgress.EXECUTED
+
+
+def test_without_a_deadline_an_unfinished_run_is_never_presumed_dead(
+    parts: tuple[QueryWorkflow, CountingExecutor],
+) -> None:
+    """An embedder who passes no deadline keeps the old behaviour: nothing is reaped."""
+    workflow, _executor = parts
+    assert workflow._reap() == 0  # noqa: SLF001

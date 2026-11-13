@@ -478,6 +478,68 @@ def _() -> None:
             proc.kill()
 
 
+_SLOW = (
+    "COUNT(*) + (SELECT COUNT(*) FROM (WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL "
+    "SELECT x + 1 FROM c WHERE x < 40000000) SELECT x FROM c)) * 0"
+)
+
+
+@check("mcp-a-run-whose-process-was-killed-fails-and-can-be-confirmed-again")
+def _() -> None:
+    with _temp_env() as root:
+        # The registered reading takes a few seconds, so there is a query to be killed in.
+        mappings = root / "mappings.yaml"
+        text = mappings.read_text(encoding="utf-8")
+        mappings.write_text(text.replace("measure: COUNT(*)", f"measure: \"{_SLOW}\"", 1), "utf-8")
+        proc = _mcp(root)
+        try:
+            draft_id = _agent_prepares(proc)
+            named = {"draft_id": draft_id}
+            code, out = _person(root, "confirm", draft_id[:8], stdin="y\n")
+            assert code == 0, out
+            assert proc.stdin is not None
+            call = {"name": "execute_query", "arguments": named}
+            frame = {"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": call}
+            proc.stdin.write((json.dumps(frame) + "\n").encode())
+            proc.stdin.flush()
+            deadline = time.time() + 10
+            while time.time() < deadline and _state(root, "SELECT status FROM runs") == []:
+                time.sleep(0.05)
+            assert _state(root, "SELECT status FROM runs") == [("executing",)]
+        finally:
+            proc.kill()  # SIGKILL, mid-query: nothing gets to record an outcome
+            proc.wait()
+        assert _state(root, "SELECT status FROM runs") == [("executing",)]
+
+        proc = _mcp(root)
+        try:
+            # Inside the deadline it may still be running somewhere: left alone.
+            status = _tool(proc, "query_status", named)["structuredContent"]
+            assert status["status"] == "confirmed", status
+            # Past the deadline (the clock is moved by ageing the row, not by waiting).
+            import sqlite3
+
+            with contextlib.closing(sqlite3.connect(root / "wf.db")) as conn:
+                conn.execute("UPDATE runs SET started_at = '2020-01-01T00:00:00+00:00'")
+                conn.commit()
+            status = _tool(proc, "query_status", named)["structuredContent"]
+            assert status["status"] == "failed", status
+            again = _tool(proc, "execute_query", named)
+            assert again["isError"] is True and "中断" in again["content"][0]["text"], again
+            code, out = _person(root, "drafts")
+            assert code == 0 and draft_id[:8] in out, out
+            code, out = _person(root, "confirm", draft_id[:8], stdin="y\n")
+            assert code == 0 and "已在终端确认" in out, out
+            done = _tool(proc, "execute_query", named)
+            assert done["isError"] is False and done["structuredContent"]["rows"] == [[2]], done
+            assert _state(root, "SELECT status FROM runs ORDER BY rowid") == [
+                ("failed",),
+                ("succeeded",),
+            ]
+        finally:
+            proc.kill()
+
+
 # --------------------------------------------------------------- Web checks
 
 

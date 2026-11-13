@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -144,6 +144,30 @@ def test_a_confirmation_that_has_a_run_cannot_be_claimed_under_another_key(
             dataclasses.replace(first, run_id="r3", idempotency_key="key-3", subject_id="mallory")
         )
     assert store.get_run_by_key("mallory", "key-3") is None
+
+
+def test_an_abandoned_run_is_failed_and_a_late_finish_does_not_revive_it(
+    store: SqliteWorkflowStore,
+) -> None:
+    """The reaper and a slow process may both reach the row; whoever is first decides."""
+    store.create_draft(_draft())
+    run = QueryRun(
+        run_id="r1",
+        draft_id="d1",
+        confirmation_id="c1",
+        subject_id="alice",
+        idempotency_key="key-1",
+        status=RunStatus.EXECUTING,
+        started_at=NOW.isoformat(),
+    )
+    store.claim_run(run)
+    assert store.abandon_runs(started_before=NOW, error="中断") == 0  # not older than the cutoff
+    assert store.abandon_runs(started_before=NOW + timedelta(seconds=1), error="中断") == 1
+    assert store.abandon_runs(started_before=NOW + timedelta(seconds=1), error="中断") == 0
+    late = dataclasses.replace(run, status=RunStatus.SUCCEEDED, columns=("n",), rows=((7,),))
+    assert store.finish_run(late) is False
+    kept = store.get_run("alice", "r1")
+    assert (kept.status, kept.error, kept.rows) == (RunStatus.FAILED, "中断", ())
 
 
 def test_finished_run_is_persisted_with_its_result(store: SqliteWorkflowStore) -> None:

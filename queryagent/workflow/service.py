@@ -112,6 +112,7 @@ class QueryWorkflow:
         ref_checker: RefChecker | None = None,
         budget: Budget | None = None,
         freshness: FreshnessPolicy | None = None,
+        run_deadline_s: float | None = None,
     ) -> None:
         self._store = store
         self._builder = builder
@@ -124,6 +125,9 @@ class QueryWorkflow:
         # budget, so nothing a caller passes later can raise it (G2).
         self._budget = budget if budget is not None else Unmetered()
         self._freshness = freshness if freshness is not None else FreshnessPolicy()
+        # How long a run may stay 'executing' before no process can still be
+        # running it. None: never presumed dead (the behaviour before 1.0.2).
+        self._run_deadline_s = run_deadline_s
 
     # ------------------------------------------------------------- prepare
 
@@ -172,6 +176,28 @@ class QueryWorkflow:
         except TypeError:
             return self._builder.build(question)
 
+    def _reap(self) -> int:
+        """Fail the runs no process can still be running; how many there were.
+
+        A process killed mid-query records nothing, so its run stayed
+        'executing' and its draft 'confirmed' for good, with no way forward.
+        Every statement has a timeout, so a run older than the deadline is
+        not slow, it is gone. It becomes a failed run like any other: the
+        confirmation is spent, and the person may confirm again. Called
+        wherever a run's status is about to be read or decided on, so no
+        background job is needed and every process sharing the state file
+        reaches the same answer.
+        """
+        if self._run_deadline_s is None:
+            return 0
+        return self._store.abandon_runs(
+            started_before=self._clock() - timedelta(seconds=self._run_deadline_s),
+            error=(
+                "中断：执行它的进程在记录结果之前结束了"
+                f"（超过 {self._run_deadline_s:g} 秒没有结果）"
+            ),
+        )
+
     def get_draft(self, actor: ActorContext, draft_id: str) -> DefinitionDraft:
         """Read one draft the actor owns, in the workspace they are acting in."""
         return self._draft_of(actor, draft_id)
@@ -193,6 +219,7 @@ class QueryWorkflow:
 
     def pending_drafts(self, actor: ActorContext) -> tuple[DefinitionDraft, ...]:
         """The actor's drafts in their workspace still waiting on them, newest first (T45)."""
+        self._reap()
         return self._store.pending_drafts(actor.subject_id, actor.workspace_id)
 
     def find_draft(self, actor: ActorContext, prefix: str) -> DefinitionDraft:
@@ -211,12 +238,14 @@ class QueryWorkflow:
 
     def get_run(self, actor: ActorContext, run_id: str) -> QueryRun:
         """Read one run the actor owns, of a draft in their workspace."""
+        self._reap()
         run = self._store.get_run(actor.subject_id, run_id)
         self._draft_of(actor, run.draft_id)
         return run
 
     def get_run_by_key(self, actor: ActorContext, idempotency_key: str) -> QueryRun | None:
         """The run holding this idempotency key, if any."""
+        self._reap()
         run = self._store.get_run_by_key(actor.subject_id, idempotency_key)
         if run is not None:
             self._draft_of(actor, run.draft_id)
@@ -457,6 +486,7 @@ class QueryWorkflow:
         confirmation = self.human_confirmation(actor, draft_id)
         if confirmation is None:
             return None
+        self._reap()
         return self._store.latest_run_of(actor.subject_id, confirmation.confirmation_id)
 
     def progress(self, actor: ActorContext, draft_id: str) -> DraftProgress:
@@ -558,7 +588,9 @@ class QueryWorkflow:
             params=query.params,
             expected_through=self._expected_through(draft.definition),
             mapping_fingerprint=self._compiler.fingerprint(draft.definition),
+            started_at=self._clock().isoformat(),
         )
+        self._reap()
         # A replay is the same request, not a new one: it answers from the
         # stored run whatever today's budget says (T13). Found in testing —
         # admitting first refused replays once the allowance ran low.
@@ -602,7 +634,7 @@ class QueryWorkflow:
                 freshness_sql=freshness_sql,
                 data_through=data_through,
             )
-            self._store.finish_run(failed)
+            self._store.finish_run(failed)  # a no-op if the run was failed as abandoned
             raise
         # Replaced, not rebuilt field by field: a field added to the claimed
         # run later is carried to the record without anyone remembering to.
@@ -615,7 +647,11 @@ class QueryWorkflow:
             freshness_sql=freshness_sql,
             data_through=data_through,
         )
-        self._store.finish_run(finished)
+        if not self._store.finish_run(finished):
+            # Finished after its deadline: the run was already failed as
+            # abandoned and its confirmation is spent. What is stored is the
+            # answer, not a result nobody is waiting for any more.
+            return self._store.get_run(run.subject_id, run.run_id)
         return finished
 
     def _date_the_data(self, probe: CompiledQuery | None, lease: Lease) -> str:
