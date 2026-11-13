@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -118,6 +119,31 @@ def test_idempotency_key_claims_are_unique(store: SqliteWorkflowStore) -> None:
     )
     assert existing is not None
     assert existing.run_id == "r1"
+
+
+def test_a_confirmation_that_has_a_run_cannot_be_claimed_under_another_key(
+    store: SqliteWorkflowStore,
+) -> None:
+    """ADR-013: the claim itself refuses, so two racing callers cannot both run."""
+    store.create_draft(_draft())
+    first = QueryRun(
+        run_id="r1",
+        draft_id="d1",
+        confirmation_id="c1",
+        subject_id="alice",
+        idempotency_key="key-1",
+        status=RunStatus.EXECUTING,
+    )
+    assert store.claim_run(first) is None
+    existing = store.claim_run(dataclasses.replace(first, run_id="r2", idempotency_key="key-2"))
+    assert existing is not None
+    assert existing.run_id == "r1"
+    assert store.get_run_by_key("alice", "key-2") is None
+    with pytest.raises(PermissionDenied, match="not permitted"):
+        store.claim_run(
+            dataclasses.replace(first, run_id="r3", idempotency_key="key-3", subject_id="mallory")
+        )
+    assert store.get_run_by_key("mallory", "key-3") is None
 
 
 def test_finished_run_is_persisted_with_its_result(store: SqliteWorkflowStore) -> None:

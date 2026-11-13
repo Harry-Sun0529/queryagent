@@ -324,15 +324,19 @@ class SqliteWorkflowStore:
     # ------------------------------------------------------------------ runs
 
     def claim_run(self, run: QueryRun) -> QueryRun | None:
-        """Take the idempotency key, or return the run that already holds it.
+        """Take the confirmation and the idempotency key, or return the run that holds them.
 
-        The UNIQUE constraint is the arbiter, so a duplicate request cannot
-        start a second database query even if two callers race (T13).
+        One statement decides both. The insert applies only while the
+        confirmation has no run, so one confirmation cannot start a second
+        database query under a different key (ADR-013); the UNIQUE constraint
+        on the key is the arbiter for a duplicate request (T13). Neither can be
+        lost to a race between two callers.
         """
         try:
-            self._conn.execute(
+            cursor = self._conn.execute(
                 "INSERT INTO runs (run_id, draft_id, confirmation_id, subject_id, "
-                "idempotency_key, status) VALUES (?,?,?,?,?,?)",
+                "idempotency_key, status) SELECT ?,?,?,?,?,? WHERE NOT EXISTS "
+                "(SELECT 1 FROM runs WHERE confirmation_id = ?)",
                 (
                     run.run_id,
                     run.draft_id,
@@ -340,6 +344,7 @@ class SqliteWorkflowStore:
                     run.subject_id,
                     run.idempotency_key,
                     run.status.value,
+                    run.confirmation_id,
                 ),
             )
         except sqlite3.IntegrityError:
@@ -348,10 +353,16 @@ class SqliteWorkflowStore:
             ).fetchone()
             if row is None:  # pragma: no cover - integrity error from another column
                 raise
-            if row["subject_id"] != run.subject_id:
-                raise PermissionDenied("not permitted") from None
-            return _decode_run(row)
-        return None
+        else:
+            if cursor.rowcount == 1:
+                return None
+            row = self._conn.execute(
+                "SELECT * FROM runs WHERE confirmation_id = ? ORDER BY rowid LIMIT 1",
+                (run.confirmation_id,),
+            ).fetchone()
+        if row["subject_id"] != run.subject_id:
+            raise PermissionDenied("not permitted") from None
+        return _decode_run(row)
 
     def finish_run(self, run: QueryRun) -> None:
         self._conn.execute(

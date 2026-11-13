@@ -297,9 +297,8 @@ def test_a_run_is_charged_for_its_probe_and_its_query_and_a_replay_for_nothing(
 def test_without_a_budget_every_run_is_admitted(tmp_path: Path) -> None:
     """G1: no totals means the v0.8 behaviour, run after run."""
     workflow, executor = _workflow(tmp_path, Unmetered())
-    confirmation_id = _confirmed(workflow)
     for key in ("k1", "k2", "k3"):
-        workflow.execute(ALICE, confirmation_id, idempotency_key=key)
+        workflow.execute(ALICE, _confirmed(workflow), idempotency_key=key)
     assert len(executor.executed) == 6
 
 

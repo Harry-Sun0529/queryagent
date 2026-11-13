@@ -482,6 +482,10 @@ class QueryWorkflow:
     ) -> QueryRun:
         """Run the confirmed 口径 once.
 
+        A confirmation is spent by its first run. Asking again — with the same
+        key or another — returns that run and queries nothing; running again
+        takes a person confirming again.
+
         Order matters: identity, then confirmation validity against current
         stored state, then the budget's admission, then the idempotency
         claim, and only then SQL. A rejection at any earlier step must leave
@@ -533,6 +537,12 @@ class QueryWorkflow:
         earlier = self._store.get_run_by_key(actor.subject_id, idempotency_key)
         if earlier is not None:
             return earlier
+        # One confirmation authorises one run, whichever door asks and under
+        # whatever key (ADR-013). Found in review: a run made under one key
+        # could be made again through ``execute_confirmed``, which uses another.
+        spent = self._store.latest_run_of(actor.subject_id, confirmation.confirmation_id)
+        if spent is not None:
+            return spent
         # Admitted after every check that needs no database and before the
         # idempotency claim. The probe is reserved with the query: it is a
         # statement too, and a budget that forgot it would be an undercount.

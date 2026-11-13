@@ -268,6 +268,52 @@ def test_a_repeated_request_returns_the_first_run_without_re_executing(
     assert executor.executed == ["SELECT MAX(created_at) FROM users", first.sql]
 
 
+def test_one_confirmation_runs_once_whichever_door_and_key_ask_for_it(
+    parts: tuple[QueryWorkflow, CountingExecutor],
+) -> None:
+    """ADR-013: a run made under one key is not made again under another."""
+    workflow, executor = parts
+    draft = workflow.prepare(ALICE, "上个月新增用户多少？", request_id="r1")
+    amended = _pick_registered(workflow, draft.draft_id)
+    confirmation = workflow.confirm(
+        ALICE,
+        draft.draft_id,
+        version=amended.version,  # type: ignore[union-attr]
+        definition_hash=amended.definition_hash,  # type: ignore[union-attr]
+    )
+    first = workflow.execute(ALICE, confirmation.confirmation_id, idempotency_key="k1")
+    by_another_key = workflow.execute(ALICE, confirmation.confirmation_id, idempotency_key="k2")
+    by_the_agent_door = workflow.execute_confirmed(ALICE, draft.draft_id)
+    assert by_another_key.run_id == first.run_id
+    assert by_the_agent_door.run_id == first.run_id
+    # One run's statements, and no run recorded under the keys that came later.
+    assert executor.executed == ["SELECT MAX(created_at) FROM users", first.sql]
+    assert workflow.get_run_by_key(ALICE, "k2") is None
+    assert (
+        workflow.get_run_by_key(ALICE, f"confirmation:{confirmation.confirmation_id}") is None
+    )
+
+
+def test_a_run_through_the_agent_door_spends_the_confirmation_for_every_other_key(
+    parts: tuple[QueryWorkflow, CountingExecutor],
+) -> None:
+    """ADR-013, the other order: the agent's run first, a caller's own key second."""
+    workflow, executor = parts
+    draft = workflow.prepare(ALICE, "上个月新增用户多少？", request_id="r1")
+    amended = _pick_registered(workflow, draft.draft_id)
+    confirmation = workflow.confirm(
+        ALICE,
+        draft.draft_id,
+        version=amended.version,  # type: ignore[union-attr]
+        definition_hash=amended.definition_hash,  # type: ignore[union-attr]
+    )
+    first = workflow.execute_confirmed(ALICE, draft.draft_id)
+    again = workflow.execute(ALICE, confirmation.confirmation_id, idempotency_key="k9")
+    assert again.run_id == first.run_id
+    assert executor.executed == ["SELECT MAX(created_at) FROM users", first.sql]
+    assert workflow.get_run_by_key(ALICE, "k9") is None
+
+
 def test_another_subject_cannot_use_someone_elses_confirmation(
     parts: tuple[QueryWorkflow, CountingExecutor],
 ) -> None:
