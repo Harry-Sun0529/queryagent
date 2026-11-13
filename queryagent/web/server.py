@@ -34,7 +34,7 @@ from queryagent.web.page import draft_page, message_page, pending_page
 from queryagent.web.session import Gate
 from queryagent.workflow.answers import Answers, answer_rules
 from queryagent.workflow.errors import NotFound, PermissionDenied, StaleVersion, WorkflowError
-from queryagent.workflow.models import ActorContext, Channel, DefinitionDraft, DraftProgress
+from queryagent.workflow.models import ActorContext, Channel, DraftProgress
 from queryagent.workflow.render import render_result, sheet_lines
 from queryagent.workflow.wiring import WorkflowWiring
 
@@ -129,15 +129,9 @@ class ConfirmationPage:
             )
         return Response(303, "", (("Location", "/"), ("Set-Cookie", self._gate.cookie(session))))
 
-    def _own_draft(self, draft_id: str) -> DefinitionDraft:
-        draft = self._workflow.get_draft(self._actor, draft_id)
-        if draft.workspace_id != self._actor.workspace_id:
-            raise PermissionDenied("not permitted")
-        return draft
-
     def _show(self, draft_id: str, session: str) -> Response:
         try:
-            draft = self._own_draft(draft_id)
+            draft = self._workflow.get_draft(self._actor, draft_id)
         except (NotFound, PermissionDenied):
             return _refused(404, "没有这份草案。")
         progress = self._workflow.progress(self._actor, draft_id)
@@ -174,7 +168,7 @@ class ConfirmationPage:
             return _refused(403, "表单令牌无效或已过期：请回到草案页重新提交（防跨站请求伪造）。")
         back = f"/drafts/{draft_id}"
         try:
-            draft = self._own_draft(draft_id)
+            draft = self._workflow.get_draft(self._actor, draft_id)
             if action == "confirm":
                 self._workflow.confirm(
                     self._actor, draft_id, version=version, definition_hash=definition_hash

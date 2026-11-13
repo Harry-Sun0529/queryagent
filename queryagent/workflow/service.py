@@ -173,15 +173,35 @@ class QueryWorkflow:
             return self._builder.build(question)
 
     def get_draft(self, actor: ActorContext, draft_id: str) -> DefinitionDraft:
-        """Read one draft the actor owns."""
-        return self._store.get_draft(actor.subject_id, draft_id)
+        """Read one draft the actor owns, in the workspace they are acting in."""
+        return self._draft_of(actor, draft_id)
+
+    def _draft_of(self, actor: ActorContext, draft_id: str) -> DefinitionDraft:
+        """The draft, if it is this subject's *and* was prepared in this workspace.
+
+        Every method that takes a draft id reads it through here. A sheet's
+        rule values come from its workspace's documents, so the same person
+        acting in another workspace is, for this draft, somebody else (P10).
+        Found in review: the confirmation page checked this and the MCP door
+        did not. Checked once here, no door can forget it. The refusal is the
+        one a stranger gets, so it does not say the draft exists elsewhere.
+        """
+        draft = self._store.get_draft(actor.subject_id, draft_id)
+        if draft.workspace_id != actor.workspace_id:
+            raise PermissionDenied("not permitted")
+        return draft
 
     def pending_drafts(self, actor: ActorContext) -> tuple[DefinitionDraft, ...]:
         """The actor's drafts in their workspace still waiting on them, newest first (T45)."""
         return self._store.pending_drafts(actor.subject_id, actor.workspace_id)
 
     def find_draft(self, actor: ActorContext, prefix: str) -> DefinitionDraft:
-        """The actor's draft whose id starts with ``prefix``; the sheet shows eight characters."""
+        """The actor's draft whose id starts with ``prefix``; the sheet shows eight characters.
+
+        Looked up across the person's workspaces, so the terminal can say
+        which ``--workspace`` a draft belongs to. Acting on it still goes
+        through the methods that check the workspace.
+        """
         ids = self._store.draft_ids_starting(actor.subject_id, prefix)
         if not ids:
             raise NotFound(f"no such draft: {prefix}")
@@ -190,15 +210,21 @@ class QueryWorkflow:
         return self._store.get_draft(actor.subject_id, ids[0])
 
     def get_run(self, actor: ActorContext, run_id: str) -> QueryRun:
-        """Read one run the actor owns."""
-        return self._store.get_run(actor.subject_id, run_id)
+        """Read one run the actor owns, of a draft in their workspace."""
+        run = self._store.get_run(actor.subject_id, run_id)
+        self._draft_of(actor, run.draft_id)
+        return run
 
     def get_run_by_key(self, actor: ActorContext, idempotency_key: str) -> QueryRun | None:
         """The run holding this idempotency key, if any."""
-        return self._store.get_run_by_key(actor.subject_id, idempotency_key)
+        run = self._store.get_run_by_key(actor.subject_id, idempotency_key)
+        if run is not None:
+            self._draft_of(actor, run.draft_id)
+        return run
 
     def attach_evidence(self, actor: ActorContext, draft_id: str, refs: tuple[str, ...]) -> None:
         """Record the citations this draft rests on, for later re-checking."""
+        self._draft_of(actor, draft_id)
         self._store.set_evidence(actor.subject_id, draft_id, refs)
 
     def _evidence_still_stands(self, actor: ActorContext, draft_id: str) -> None:
@@ -238,7 +264,7 @@ class QueryWorkflow:
         ``MAX()`` probes, cached and charged to the budget (G9, ADR-010).
         Nothing is said without a period: there is no range to fall short of.
         """
-        draft = self._store.get_draft(actor.subject_id, draft_id)
+        draft = self._draft_of(actor, draft_id)
         period = confirmed_period(draft.definition)
         if self._freshness.mode == OFF or period is None:
             return ()
@@ -355,7 +381,7 @@ class QueryWorkflow:
                     f"同一次补充里，采用的文档写法（{', '.join(contradicted)}）对应的口径与"
                     f"选定口径 {chosen.value} 矛盾；请只保留一个"
                 )
-        current = self._store.get_draft(actor.subject_id, draft_id)
+        current = self._draft_of(actor, draft_id)
         definition = current.definition.with_rules(rules)
         updated = DefinitionDraft(
             draft_id=current.draft_id,
@@ -395,7 +421,7 @@ class QueryWorkflow:
                 "确认只能由人在终端（queryagent confirm）或本地确认页（queryagent web）完成；"
                 "Agent 通道不能确认"
             )
-        draft = self._store.get_draft(actor.subject_id, draft_id)
+        draft = self._draft_of(actor, draft_id)
         if draft.version != version or draft.definition_hash != definition_hash:
             raise StaleVersion(
                 f"draft {draft_id} is at version {draft.version}; "
@@ -421,7 +447,7 @@ class QueryWorkflow:
 
     def human_confirmation(self, actor: ActorContext, draft_id: str) -> Confirmation | None:
         """The confirmation a person gave the draft's current version, if any."""
-        draft = self._store.get_draft(actor.subject_id, draft_id)
+        draft = self._draft_of(actor, draft_id)
         return self._store.human_confirmation(
             actor.subject_id, draft_id, draft.version, draft.definition_hash
         )
@@ -435,7 +461,7 @@ class QueryWorkflow:
 
     def progress(self, actor: ActorContext, draft_id: str) -> DraftProgress:
         """Where the draft stands, for a caller asking after it (T44)."""
-        draft = self._store.get_draft(actor.subject_id, draft_id)
+        draft = self._draft_of(actor, draft_id)
         if draft.status is DraftStatus.EXPIRED:
             return DraftProgress.EXPIRED
         if self.human_confirmation(actor, draft_id) is None:
@@ -457,7 +483,7 @@ class QueryWorkflow:
         key, so asking again answers from the stored run instead of querying
         twice, and running again takes a person confirming again.
         """
-        draft = self._store.get_draft(actor.subject_id, draft_id)
+        draft = self._draft_of(actor, draft_id)
         if draft.status is DraftStatus.EXPIRED:
             raise ConfirmationRequired(f"draft {draft_id} has expired; prepare it again")
         confirmation = self._store.human_confirmation(
@@ -499,7 +525,7 @@ class QueryWorkflow:
             # execute path there is only one question worth answering, and
             # callers should not have to catch two errors to hear "no".
             raise ConfirmationRequired(f"no confirmation to execute: {confirmation_id}") from exc
-        draft = self._store.get_draft(actor.subject_id, confirmation.draft_id)
+        draft = self._draft_of(actor, confirmation.draft_id)
         if (
             draft.version != confirmation.draft_version
             or draft.definition_hash != confirmation.definition_hash

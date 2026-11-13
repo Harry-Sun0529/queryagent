@@ -157,8 +157,50 @@ def test_drafts_belong_to_the_person_who_started_the_server(parts: Parts) -> Non
     prepared = _prepared(parts)
     assert parts.workflow.get_draft(ALICE, prepared["draft_id"]).subject_id == "alice"
     mallory = ActorContext(subject_id="mallory", workspace_id="ops")
-    with pytest.raises(PermissionDenied):
+    with pytest.raises(PermissionDenied, match="not permitted"):
         parts.workflow.get_draft(mallory, prepared["draft_id"])
+
+
+def test_the_agent_cannot_read_change_or_run_its_persons_draft_from_another_workspace(
+    parts: Parts,
+) -> None:
+    """P10: alice@ops's server is, for a draft alice prepared in finance, a stranger's.
+
+    The finance sheet is built from finance's documents. Every tool that
+    names a draft refuses it, says nothing of what is on it, and leaves the
+    draft, the confirmation and the run count as they were.
+    """
+    finance = ActorContext(subject_id="alice", workspace_id="finance", channel=Channel.WEB)
+    draft = parts.workflow.prepare(finance, "新增用户有多少？", request_id="r")
+    draft = parts.workflow.amend(
+        finance,
+        draft.draft_id,
+        expected_version=draft.version,
+        rules=(Rule("variant", "first_order", RuleSource.USER),),
+    )
+    parts.workflow.confirm(
+        finance, draft.draft_id, version=draft.version, definition_hash=draft.definition_hash
+    )
+    named = {"draft_id": draft.draft_id}
+    calls: list[tuple[str, dict[str, Any]]] = [
+        ("query_status", named),
+        ("amend_query", {**named, "expected_version": draft.version, "variant": "registered"}),
+        ("execute_query", named),
+    ]
+    for tool, arguments in calls:
+        reply = _result(parts.call(tool, arguments))
+        assert reply["isError"] is True, tool
+        shown = json.dumps(reply, ensure_ascii=False)
+        assert "首单" not in shown and "first_order" not in shown, tool
+        assert "finance" not in shown, tool
+    after = parts.workflow.get_draft(finance, draft.draft_id)
+    assert (after.version, after.definition_hash) == (draft.version, draft.definition_hash)
+    assert parts.executed == []
+    assert parts.workflow.last_run(finance, draft.draft_id) is None
+    for tool in ("get_draft", "progress", "last_run", "execute_confirmed", "freshness_advisory"):
+        with pytest.raises(PermissionDenied, match="not permitted"):
+            getattr(parts.workflow, tool)(ALICE, draft.draft_id)
+    assert parts.executed == []
 
 
 # ----------------------------------------------------- H3: execute needs a person
