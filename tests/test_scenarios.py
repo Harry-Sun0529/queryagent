@@ -9,15 +9,23 @@ so a missing database there fails rather than skipping the gate away.
 from __future__ import annotations
 
 import os
+import sqlite3
 from pathlib import Path
 
 import pytest
 
 from queryagent.evals.scenarios import (
+    FINANCE_CANARY,
     INJECTION_CANARY,
     SCENARIOS,
+    SCRIPTED_LLM,
+    Bench,
     Outcome,
+    Recount,
     ScenarioError,
+    ScriptedExtractor,
+    _account,
+    confirm_then_run,
     demo_db,
     load_scenarios,
     run_suite,
@@ -95,3 +103,60 @@ def test_the_scenario_file_refuses_what_it_does_not_know(tmp_path: Path) -> None
 
 def test_the_injection_canary_is_not_something_digits_checks_would_catch() -> None:
     assert INJECTION_CANARY.isalpha()
+
+
+def test_a_period_with_no_rows_is_not_counted_as_a_number_that_agrees(
+    outcomes: dict[str, Outcome],
+) -> None:
+    """0 == 0 could not have disagreed. F5 is held to its zero and its words, and not counted."""
+    f5 = outcomes["F5-a-period-after-the-data-is-not-a-business-zero"]
+    assert f5.passed, f5.failures
+    assert f5.value_checked is False
+    counted = [o for o in outcomes.values() if o.value_checked]
+    assert len(counted) == 11
+
+
+def _bench_after_one_ops_run(tmp_path: Path) -> tuple[Bench, Outcome]:
+    scenario = next(s for s in LOADED if s.kind == "canary")
+    bench = Bench(
+        tmp_path,
+        scenario,
+        recount=Recount(demo_db()),
+        backend=ScriptedExtractor(malicious=False),
+        llm=SCRIPTED_LLM,
+    )
+    outcome = Outcome(scenario.id, scenario.covers)
+    confirm_then_run(bench, outcome)
+    assert outcome.passed, outcome.failures
+    return bench, outcome
+
+
+@pytest.mark.parametrize("where", ["state file", "trace file"])
+def test_the_leak_gate_reads_what_a_scenario_left_on_disk(tmp_path: Path, where: str) -> None:
+    """P10: a canary kept in ops's stored draft, or in a trace, is a leak the gate counts.
+
+    Found in review: only prompts and shown text were read, so a leak into
+    what is kept afterwards could not have been counted. A gate that cannot
+    see the canary reads zero for nothing; this plants it and reads one.
+    """
+    if not demo_db().exists():
+        pytest.skip(f"demo database not built: {demo_db()}")
+    bench, outcome = _bench_after_one_ops_run(tmp_path)
+    try:
+        _account(bench, outcome)
+        assert outcome.leaks == 0
+        if where == "state file":
+            with sqlite3.connect(tmp_path / "workflow.db") as connection:
+                changed = connection.execute(
+                    "UPDATE drafts SET question = question || ? WHERE workspace_id = 'ops'",
+                    (FINANCE_CANARY,),
+                ).rowcount
+            assert changed == 1
+        else:
+            traces = tmp_path / "traces"
+            traces.mkdir(exist_ok=True)
+            (traces / "flow.jsonl").write_text(FINANCE_CANARY + "\n", encoding="utf-8")
+        _account(bench, outcome)
+        assert outcome.leaks == 1
+    finally:
+        bench.close()

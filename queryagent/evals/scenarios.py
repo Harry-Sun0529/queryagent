@@ -470,7 +470,11 @@ class Bench:
                 "mappings_path": str(self._mappings),
                 "state_path": str(self._state),
             },
-            "trace": False,
+            # The confirmed flow writes no trace today. It is switched on and
+            # pointed inside the bench so that, the day a door starts writing
+            # one, what it wrote is read by the leak gate (P10).
+            "trace": True,
+            "trace_dir": str(self.root / "traces"),
         }
         if self._sources:
             raw["knowledge"] = {
@@ -535,6 +539,31 @@ class Bench:
         except QueryAgentError:
             return False
         return found is not None
+
+    def persisted(self) -> list[tuple[str, str]]:
+        """(workspace, text) of everything the scenario left on disk for a workspace (P10).
+
+        What was shown and what was sent to a model are caught as they
+        happen; this is what stays behind: every draft with its evidence,
+        confirmations and runs, read raw from the state file, and any trace
+        file. The document index is not here: it holds every workspace's
+        text by design, and is reached only through a scoped retrieval.
+        """
+        kept: list[tuple[str, str]] = []
+        with contextlib.closing(sqlite3.connect(self._state)) as connection:
+            drafts = connection.execute("SELECT draft_id, workspace_id FROM drafts").fetchall()
+            for draft_id, workspace in drafts:
+                for table in ("drafts", "draft_evidence", "confirmations", "runs"):
+                    rows = connection.execute(
+                        f"SELECT * FROM {table} WHERE draft_id = ?", (draft_id,)
+                    ).fetchall()
+                    kept.extend((workspace, json.dumps(row, ensure_ascii=False)) for row in rows)
+        traces = self.root / "traces"
+        if traces.exists():
+            for path in sorted(p for p in traces.rglob("*") if p.is_file()):
+                # A trace names no workspace; it counts against every one but finance.
+                kept.append(("", path.read_text(encoding="utf-8", errors="replace")))
+        return kept
 
     def show(self, actor: ActorContext, text: str) -> None:
         self.shown.append((actor.workspace_id, text))
@@ -769,8 +798,16 @@ def _check_value(outcome: Outcome, bench: Bench, rows: Sequence[Sequence[Any]]) 
     spec = bench.scenario.expect.get("value")
     if not spec:
         return
-    outcome.value_checked = True
     counts = bench.recount.days(spec["variant"], bench.span(spec["period"]), spec.get("channel"))
+    if not counts:
+        # A period the data never reaches: the product must still answer zero,
+        # but 0 == 0 says nothing about its arithmetic, so it is held to that
+        # and not counted among the numbers that agree. Found in review: F5
+        # was counted, and could not have disagreed.
+        empty = all(int(row[-1] or 0) == 0 for row in rows)
+        outcome.expect(empty, f"result {list(rows)[:3]} for a period with no rows at all")
+        return
+    outcome.value_checked = True
     if spec.get("per_day"):
         got = {_day(row[0]): int(row[1]) for row in rows}
         matched = got == counts
@@ -1121,7 +1158,7 @@ def _account(bench: Bench, outcome: Outcome) -> None:
                 outcome.observations.append(note)
     outcome.leaks = sum(
         text.count(FINANCE_CANARY)
-        for workspace, text in [*bench.backend.prompts, *bench.shown]
+        for workspace, text in [*bench.backend.prompts, *bench.shown, *bench.persisted()]
         if workspace != "finance"
     )
 
