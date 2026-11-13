@@ -111,7 +111,7 @@ def _parse_metric(item: Any, index: int) -> Metric:
     where = f"metrics[{index}]"
     if not isinstance(item, dict):
         raise ValueError(f"{where}: each metric must be a mapping")
-    _refuse_unknown(item, METRIC_KEYS, where)
+    refuse_unknown_keys(item, METRIC_KEYS, where)
     name = item.get("name")
     if not isinstance(name, str) or not name.strip():
         raise ValueError(f"{where}: 'name' is required and must be a non-empty string")
@@ -147,7 +147,7 @@ def _variants(item: dict[str, Any], where: str) -> tuple[MetricVariant, ...]:
         at = f"{where}.variants[{index}]"
         if not isinstance(entry, dict):
             raise ValueError(f"{at}: each variant must be a mapping")
-        _refuse_unknown(entry, VARIANT_KEYS, at)
+        refuse_unknown_keys(entry, VARIANT_KEYS, at)
         fields = {}
         for key in ("key", "label", "definition"):
             text = entry.get(key)
@@ -161,7 +161,12 @@ def _variants(item: dict[str, Any], where: str) -> tuple[MetricVariant, ...]:
     return tuple(parsed)
 
 
-def _refuse_unknown(item: dict[str, Any], allowed: tuple[str, ...], where: str) -> None:
+def refuse_unknown_keys(item: dict[str, Any], allowed: tuple[str, ...], where: str) -> None:
+    """A misspelt key would be read as absent: 'time_colum' silently drops the period.
+
+    Shared by both maintainer files (this one and ``query_mappings.yaml``), so
+    the two refuse in the same words.
+    """
     unknown = sorted(str(key) for key in item if key not in allowed)
     if unknown:
         raise ValueError(f"{where}: unknown keys {unknown}; allowed: {', '.join(allowed)}")

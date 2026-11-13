@@ -122,12 +122,12 @@ from queryagent.workflow.periods import (
     period_alternatives,
 )
 from queryagent.workflow.render import (
+    progress_label,
     render_draft,
     render_result,
     rule_label,
 )
 from queryagent.workflow.service import QueryWorkflow
-from queryagent.workflow.store import SqliteWorkflowStore
 from queryagent.workflow.wiring import (
     WorkflowWiring,
     build_workflow,
@@ -834,7 +834,7 @@ def _run_flow(
                 actor,
                 draft.draft_id,
                 expected_version=draft.version,
-                rules=(variant_rule(draft.definition, args.variant, RuleSource.USER),),
+                rules=(variant_rule(draft.definition, args.variant, actor.authoring_source),),
             )
         # F13: a document wording adopted on the same command line that names
         # a different reading is a contradiction. The adopted rule does not
@@ -859,21 +859,21 @@ def _run_flow(
             actor,
             draft.draft_id,
             expected_version=draft.version,
-            rules=(stated_period(args.period, today, RuleSource.USER),),
+            rules=(stated_period(args.period, today, actor.authoring_source),),
         )
     if args.group_by:
         draft = workflow.amend(
             actor,
             draft.draft_id,
             expected_version=draft.version,
-            rules=(stated_grouping(args.group_by, dimensions, RuleSource.USER),),
+            rules=(stated_grouping(args.group_by, dimensions, actor.authoring_source),),
         )
     if args.value_filter:
         draft = workflow.amend(
             actor,
             draft.draft_id,
             expected_version=draft.version,
-            rules=(stated_filter(args.value_filter, dimensions, RuleSource.USER),),
+            rules=(stated_filter(args.value_filter, dimensions, actor.authoring_source),),
         )
     if PERIOD_RULE_KEY in draft.definition.missing:
         _explain_missing_period(args.question, today)
@@ -888,7 +888,9 @@ def _run_flow(
         print("\n（未检索到该身份可见的相关文档；以下口径仅来自系统映射）")
 
     if draft.status is DraftStatus.NEEDS_INPUT:
-        rules = _open_choices(draft, args, citations, today, dimensions)
+        rules = _open_choices(
+            draft, args, citations, today, dimensions, source=actor.authoring_source
+        )
         if rules is None:
             print("\n[已取消] 未选择口径，没有执行任何查询。")
             return 2
@@ -963,6 +965,8 @@ def _cmd_web(args: argparse.Namespace) -> int:
         try:
             server.serve_forever()
         except KeyboardInterrupt:
+            # 0, not 130 (ADR-006): Ctrl-C is how this command is told to end,
+            # as the line above says. Nothing was interrupted part-way.
             print("\n确认页已关闭。")
     return 0
 
@@ -970,19 +974,22 @@ def _cmd_web(args: argparse.Namespace) -> int:
 def _cmd_drafts(args: argparse.Namespace) -> int:
     """List the drafts waiting on this person, so an agent's drafts are not confirmed blind."""
     config = load_config(args.config)
-    store = SqliteWorkflowStore(config.workflow.state_path)
-    try:
-        drafts = store.pending_drafts(args.subject, args.workspace)
-    finally:
-        store.close()
-    if not drafts:
+    actor = ActorContext(subject_id=args.subject, workspace_id=args.workspace)
+    with contextlib.ExitStack() as stack:
+        # The same assembly as every other door, so "waiting" means here what
+        # it means on the page. Listing asks the database nothing.
+        workflow = build_workflow(config, actor, stack, offer_history=False).workflow
+        waiting = [
+            (draft, workflow.progress(actor, draft.draft_id))
+            for draft in workflow.pending_drafts(actor)
+        ]
+    if not waiting:
         print(f"没有等待 {args.subject}@{args.workspace} 确认的口径。")
         return 0
     print(f"等待 {args.subject}@{args.workspace} 确认的口径：")
-    for draft in drafts:
-        state = "待补充" if draft.status is DraftStatus.NEEDS_INPUT else "待确认"
+    for draft, progress in waiting:
         print(
-            f"  #{draft.draft_id[:8]}  v{draft.version}  {state}  "
+            f"  #{draft.draft_id[:8]}  v{draft.version}  {progress_label(progress)}  "
             f"{draft.definition.display_name}  {draft.question}"
         )
     print("\n用 queryagent confirm <草案号> 在终端查看并确认，或用 queryagent web 在浏览器里确认。")
@@ -1031,7 +1038,9 @@ def _cmd_confirm(args: argparse.Namespace) -> int:
             asked = argparse.Namespace(
                 adopt=[], rule=[], variant=None, period=None, group_by=None, value_filter=None
             )
-            rules = _open_choices(draft, asked, citations, today, wiring.dimensions)
+            rules = _open_choices(
+                draft, asked, citations, today, wiring.dimensions, source=actor.authoring_source
+            )
             if rules is None:
                 print("\n[已取消] 口径仍有未定项，没有确认。")
                 return 2
@@ -1103,7 +1112,7 @@ def _prompt_period(question: str, today: date) -> str:
         return ""
 
 
-def _period_answer(text: str, question: str, today: date) -> Rule:
+def _period_answer(text: str, question: str, today: date, source: RuleSource) -> Rule:
     choices = period_alternatives(question, today)
     if text.isdigit() and choices:
         index = int(text)
@@ -1113,10 +1122,10 @@ def _period_answer(text: str, question: str, today: date) -> Rule:
         return Rule(
             PERIOD_RULE_KEY,
             choice.period.encode(),
-            RuleSource.USER,
+            source,
             note=f"由「{question}」选择：{choice.label}",
         )
-    return stated_period(text, today, RuleSource.USER)
+    return stated_period(text, today, source)
 
 
 def _explain_missing_grouping(question: str, dimensions: tuple[Dimension, ...]) -> None:
@@ -1161,8 +1170,13 @@ def _open_choices(
     citations: dict[str, str],
     today: date,
     dimensions: tuple[Dimension, ...] = (),
+    *,
+    source: RuleSource,
 ) -> tuple[Rule, ...] | None:
     """The user's answer to every open choice, or None when they decline.
+
+    ``source`` is the acting identity's ``authoring_source``: who a rule is
+    marked as coming from is decided by who is at the door, not by this file.
 
     Document disagreements are asked first, then rules nothing has stated,
     then the executable variant: which handbook the user sides with, and what
@@ -1214,19 +1228,19 @@ def _open_choices(
             return None
         # The words are the handbook's, the decision is the user's (D07): a
         # 本次约定 rule that keeps the adopted document's citation.
-        rules.append(adopted_rule(definition, chosen.key, RuleSource.USER))
+        rules.append(adopted_rule(definition, chosen.key, source))
     for key in gaps:
         if key == GROUP_RULE_KEY:
             if args.group_by or supplied.get(key):
                 rules.append(
                     stated_grouping(
-                        args.group_by or supplied[key], dimensions, RuleSource.USER
+                        args.group_by or supplied[key], dimensions, source
                     )
                 )
             else:
                 rule = _ask_until_valid(
                     _prompt_grouping,
-                    lambda text: stated_grouping(text, dimensions, RuleSource.USER),
+                    lambda text: stated_grouping(text, dimensions, source),
                 )
                 if rule is None:
                     return None
@@ -1235,12 +1249,12 @@ def _open_choices(
         if key == PERIOD_RULE_KEY:
             if args.period or supplied.get(key):
                 rules.append(
-                    _period_answer(args.period or supplied[key], args.question, today)
+                    _period_answer(args.period or supplied[key], args.question, today, source)
                 )
             else:
                 rule = _ask_until_valid(
                     lambda: _prompt_period(args.question, today),
-                    lambda text: _period_answer(text, args.question, today),
+                    lambda text: _period_answer(text, args.question, today, source),
                 )
                 if rule is None:
                     return None
@@ -1249,12 +1263,12 @@ def _open_choices(
         if key == FILTER_RULE_KEY:
             if args.value_filter or supplied.get(key):
                 rules.append(
-                    stated_filter(args.value_filter or supplied[key], dimensions, RuleSource.USER)
+                    stated_filter(args.value_filter or supplied[key], dimensions, source)
                 )
             else:
                 rule = _ask_until_valid(
                     _prompt_filter,
-                    lambda text: stated_filter(text, dimensions, RuleSource.USER),
+                    lambda text: stated_filter(text, dimensions, source),
                 )
                 if rule is None:
                     return None
@@ -1265,9 +1279,9 @@ def _open_choices(
         value = supplied.get(key) or _prompt_rule(rule_label(key))
         if not value:
             return None
-        rules.append(Rule(key, value, RuleSource.USER))
+        rules.append(Rule(key, value, source))
     if VARIANT_RULE_KEY in definition.missing:
-        implied = implied_variant_rule(definition, rules, RuleSource.USER)
+        implied = implied_variant_rule(definition, rules, source)
         if implied is not None and not args.variant:
             # The wording the user adopted names one executable reading; asking
             # them to pick again invites picking the other one (E13).
@@ -1275,7 +1289,7 @@ def _open_choices(
             return tuple(rules)
         rule = _ask_until_valid(
             lambda: _prompt_variant(draft),
-            lambda text: _variant_answer(draft, text),
+            lambda text: _variant_answer(draft, text, source),
         )
         if rule is None:
             return None
@@ -1317,13 +1331,13 @@ def _resolve_adopt(
     return None
 
 
-def _variant_answer(draft: DefinitionDraft, choice: str) -> Rule:
+def _variant_answer(draft: DefinitionDraft, choice: str, source: RuleSource) -> Rule:
     """A reading chosen at a prompt: canonical key, number, or its label."""
     definition = draft.definition
     options = [c for c in definition.candidates if c.rule_key == VARIANT_RULE_KEY]
     direct = next((c for c in options if c.key == choice.strip()), None)
     if direct is not None:
-        return variant_rule(definition, direct.key, RuleSource.USER)
+        return variant_rule(definition, direct.key, source)
     stripped = choice.strip()
     if stripped.isdigit():
         index = int(stripped)
@@ -1331,10 +1345,10 @@ def _variant_answer(draft: DefinitionDraft, choice: str) -> Rule:
             from queryagent.errors import AnswerError as _AnswerError
 
             raise _AnswerError(f"编号超出范围：请写 1 到 {len(options)}")
-        return variant_rule(definition, options[index - 1].key, RuleSource.USER)
+        return variant_rule(definition, options[index - 1].key, source)
     by_label = [c for c in options if stripped in (c.label, c.summary)]
     if len(by_label) == 1:
-        return variant_rule(definition, by_label[0].key, RuleSource.USER)
+        return variant_rule(definition, by_label[0].key, source)
     from queryagent.errors import AnswerError as _AnswerError
 
     raise _AnswerError(

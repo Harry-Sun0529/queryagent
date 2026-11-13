@@ -497,7 +497,7 @@ def test_the_terminal_lets_a_person_confirm_again_after_a_failed_run(
     capsys.readouterr()
 
     assert main(["drafts", "--config", str(config), *alice]) == 0
-    assert f"#{draft_id[:8]}" in capsys.readouterr().out
+    assert f"#{draft_id[:8]}  v2  执行失败，需重新确认" in capsys.readouterr().out
     assert main(["confirm", draft_id[:8], "--config", str(config), *alice]) == 0
     out = capsys.readouterr().out
     assert "执行失败" in out and "已在终端确认" in out
