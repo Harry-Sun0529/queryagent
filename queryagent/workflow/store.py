@@ -241,19 +241,24 @@ class SqliteWorkflowStore:
     ) -> tuple[DefinitionDraft, ...]:
         """Drafts still waiting on this person, newest first (T45).
 
-        Waiting means open for input, or complete with no confirmation of its
-        current version and hash. Expired drafts are not waiting on anyone.
+        Waiting means open for input, or complete with no usable confirmation
+        of its current version and hash. A confirmation whose run failed is
+        spent, so its draft waits on the person again. Expired drafts are not
+        waiting on anyone.
         """
         rows = self._conn.execute(
-            "SELECT d.* FROM drafts d LEFT JOIN confirmations c ON c.draft_id = d.draft_id "
-            "AND c.draft_version = d.version AND c.definition_hash = d.definition_hash "
+            "SELECT d.* FROM drafts d "
             "WHERE d.subject_id = ? AND d.workspace_id = ? AND d.status IN (?, ?) "
-            "AND c.confirmation_id IS NULL ORDER BY d.updated_at DESC LIMIT ?",
+            "AND NOT EXISTS (SELECT 1 FROM confirmations c WHERE c.draft_id = d.draft_id "
+            "AND c.draft_version = d.version AND c.definition_hash = d.definition_hash "
+            "AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.confirmation_id = c.confirmation_id "
+            "AND r.status = ?)) ORDER BY d.updated_at DESC LIMIT ?",
             (
                 subject_id,
                 workspace_id,
                 DraftStatus.NEEDS_INPUT.value,
                 DraftStatus.AWAITING_CONFIRMATION.value,
+                RunStatus.FAILED.value,
                 limit,
             ),
         ).fetchall()
@@ -310,7 +315,7 @@ class SqliteWorkflowStore:
             "SELECT * FROM confirmations WHERE draft_id = ? AND subject_id = ? "
             "AND draft_version = ? AND definition_hash = ? AND channel IN ("
             + ",".join("?" for _ in HUMAN_CHANNELS)
-            + ") ORDER BY confirmed_at DESC LIMIT 1",
+            + ") ORDER BY confirmed_at DESC, rowid DESC LIMIT 1",
             (
                 draft_id,
                 subject_id,

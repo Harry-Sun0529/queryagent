@@ -346,6 +346,11 @@ class DraftProgress(Enum):
 
     Derived, not stored: the draft's status, whether a person confirmed its
     current version, and whether that confirmation has run.
+
+    ``FAILED`` is a confirmation whose one run failed. It is spent like any
+    other, so it is not ``CONFIRMED``: telling an agent it may execute would
+    only hand it the same failure again. Running again takes a person
+    confirming again.
     """
 
     NEEDS_INPUT = "needs_input"
@@ -353,6 +358,7 @@ class DraftProgress(Enum):
     CONFIRMED = "confirmed"
     EXPIRED = "expired"
     EXECUTED = "executed"
+    FAILED = "failed"
 
 
 @dataclass(frozen=True)

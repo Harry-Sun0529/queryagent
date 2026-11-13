@@ -42,6 +42,7 @@ from queryagent.workflow.models import (
     BusinessDefinition,
     Candidate,
     DefinitionDraft,
+    DraftProgress,
     QueryRun,
     Rule,
     RuleSource,
@@ -55,6 +56,21 @@ _SOURCE_LABELS = {
     RuleSource.HISTORY: "历史选择",
     RuleSource.AGENT: "Agent 代填",
 }
+
+
+_PROGRESS_LABELS = {
+    DraftProgress.NEEDS_INPUT: "待补充",
+    DraftProgress.AWAITING_CONFIRMATION: "待确认",
+    DraftProgress.CONFIRMED: "已确认，等待执行",
+    DraftProgress.EXECUTED: "已执行",
+    DraftProgress.FAILED: "执行失败，需重新确认",
+    DraftProgress.EXPIRED: "已失效",
+}
+
+
+def progress_label(progress: DraftProgress) -> str:
+    """Where a draft stands, in the words every door shows a person."""
+    return _PROGRESS_LABELS[progress]
 
 
 def source_label(source: RuleSource) -> str:

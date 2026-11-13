@@ -285,6 +285,50 @@ def test_a_person_confirms_on_the_page_and_the_agent_runs_it(site: Site) -> None
     assert "<form" not in shown  # nothing left to confirm or amend
 
 
+def _rename_table(parts: Parts, old: str, new: str) -> None:
+    with sqlite3.connect(parts.db) as connection:
+        connection.execute(f"ALTER TABLE {old} RENAME TO {new}")
+
+
+def test_a_failed_run_spends_its_confirmation_and_asks_the_person_again(site: Site) -> None:
+    """A confirmation whose run failed is not one the agent is told it may execute.
+
+    Found in review: the status stayed "confirmed", so the agent was sent
+    back to execute_query, which could only return the same failure.
+    """
+    parts = site.parts
+    draft_id = parts.agent_prepares(variant="first_order")["draft_id"]
+    site.browser.post(f"/drafts/{draft_id}/confirm", site.browser.form(draft_id, "confirm"))
+    _rename_table(parts, "users", "users_gone")
+    first = parts.call("execute_query", {"draft_id": draft_id})
+    assert "error" in first or first["result"]["isError"] is True
+    assert len(parts.executed) == 1  # the statement that failed
+
+    status = parts.call("query_status", {"draft_id": draft_id})["result"]["structuredContent"]
+    assert status["status"] == DraftProgress.FAILED.value
+    assert "可以调用 execute_query" not in status["next_step"]
+    assert "重新确认" in status["next_step"]
+    again = parts.call("execute_query", {"draft_id": draft_id})["result"]
+    assert again["isError"] is True
+    assert "执行失败" in again["content"][0]["text"]
+    assert len(parts.executed) == 1  # the same failure, answered without a second statement
+
+    shown = site.browser.get(f"/drafts/{draft_id}").body
+    assert "执行失败，需重新确认" in shown
+    assert "Agent 调用 execute_query 即可执行" not in shown
+    assert draft_id[:8] in site.browser.get("/").body  # it waits on the person again
+
+    _rename_table(parts, "users_gone", "users")
+    site.browser.post(f"/drafts/{draft_id}/confirm", site.browser.form(draft_id, "confirm"))
+    assert parts.confirmations() == [(draft_id, "web"), (draft_id, "web")]
+    assert len(parts.executed) == 1  # confirming again is still not executing
+    assert parts.workflow.progress(ALICE_WEB, draft_id) is DraftProgress.CONFIRMED
+    run = parts.call("execute_query", {"draft_id": draft_id})["result"]
+    assert run["structuredContent"]["rows"] == [[1]]
+    assert len(parts.executed) == 2
+    assert parts.workflow.progress(ALICE_WEB, draft_id) is DraftProgress.EXECUTED
+
+
 def test_an_amendment_on_the_page_is_the_persons_own(site: Site) -> None:
     draft = site.parts.agent_prepares(variant="registered")
     draft_id = draft["draft_id"]
@@ -435,6 +479,32 @@ def test_confirming_in_the_terminal_records_the_cli_channel(
     assert "execute_query" in out
     assert parts.confirmations() == [(draft["draft_id"], Channel.CLI.value)]
     assert parts.executed == []
+    parts.close()
+
+
+def test_the_terminal_lets_a_person_confirm_again_after_a_failed_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    parts = Parts(tmp_path)
+    draft_id = parts.agent_prepares()["draft_id"]
+    config = parts.write_config()
+    alice = ["--subject", "alice", "--workspace", "ops"]
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
+    assert main(["confirm", draft_id[:8], "--config", str(config), *alice]) == 0
+    _rename_table(parts, "users", "users_gone")
+    parts.call("execute_query", {"draft_id": draft_id})
+    _rename_table(parts, "users_gone", "users")
+    capsys.readouterr()
+
+    assert main(["drafts", "--config", str(config), *alice]) == 0
+    assert f"#{draft_id[:8]}" in capsys.readouterr().out
+    assert main(["confirm", draft_id[:8], "--config", str(config), *alice]) == 0
+    out = capsys.readouterr().out
+    assert "执行失败" in out and "已在终端确认" in out
+    assert parts.confirmations() == [(draft_id, "cli"), (draft_id, "cli")]
+    assert len(parts.executed) == 1  # only the failed statement; confirming ran nothing
+    run = parts.call("execute_query", {"draft_id": draft_id})["result"]
+    assert run["structuredContent"]["rows"] == [[3]]
     parts.close()
 
 

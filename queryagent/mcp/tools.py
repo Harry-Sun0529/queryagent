@@ -336,6 +336,12 @@ def _next_step(draft: DefinitionDraft, progress: DraftProgress) -> str:
         return "用户已确认当前版本，可以调用 execute_query。"
     if progress is DraftProgress.EXECUTED:
         return "已执行；再次调用 execute_query 会返回同一次的结果。"
+    if progress is DraftProgress.FAILED:
+        return (
+            "用户确认过当前版本，但那次执行失败了。一次确认只执行一次，再调用 execute_query "
+            "只会返回同一次失败。请把失败原因告诉用户，请用户在本地确认页（queryagent web）"
+            f"或终端运行 `queryagent confirm {short}` 重新确认后，再调用 execute_query。"
+        )
     return "草案已失效（所依据的文档已变化）；请重新调用 prepare_query。"
 
 

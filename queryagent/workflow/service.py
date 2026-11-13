@@ -471,6 +471,8 @@ class QueryWorkflow:
         run = self.last_run(actor, draft_id)
         if run is not None and run.status is RunStatus.SUCCEEDED:
             return DraftProgress.EXECUTED
+        if run is not None and run.status is RunStatus.FAILED:
+            return DraftProgress.FAILED
         return DraftProgress.CONFIRMED
 
     def execute_confirmed(self, actor: ActorContext, draft_id: str) -> QueryRun:

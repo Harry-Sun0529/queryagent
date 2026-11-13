@@ -23,18 +23,10 @@ from queryagent.workflow.models import (
     DefinitionDraft,
     DraftProgress,
 )
-from queryagent.workflow.render import SheetLine, rule_label
+from queryagent.workflow.render import SheetLine, progress_label, rule_label
 
 FormToken = Callable[[str], str]
 """The form token for an action on the draft shown: ``amend`` or ``confirm``."""
-
-PROGRESS_LABELS = {
-    DraftProgress.NEEDS_INPUT: "待补充",
-    DraftProgress.AWAITING_CONFIRMATION: "待确认",
-    DraftProgress.CONFIRMED: "已确认，等待执行",
-    DraftProgress.EXECUTED: "已执行",
-    DraftProgress.EXPIRED: "已失效",
-}
 
 CHANNEL_LABELS = {"cli": "终端", "web": "确认页"}
 
@@ -115,11 +107,12 @@ def draft_page(
     result: Sequence[str],
     token: FormToken,
     zone: tzinfo,
+    failure: str = "",
 ) -> str:
     parts = [
         '<p><a href="/">← 待确认列表</a></p>',
         f"<h1>口径确认 #{esc(draft.draft_id[:8])} · v{draft.version}</h1>",
-        f'<p><span class="status">{esc(PROGRESS_LABELS[progress])}</span></p>',
+        f'<p><span class="status">{esc(progress_label(progress))}</span></p>',
         _sheet(sheet),
     ]
     if any(line.agent for line in sheet):
@@ -130,7 +123,13 @@ def draft_page(
     if freshness:
         items = "".join(f"<li>{esc(note)}</li>" for note in freshness)
         parts.append(f"<p>数据新鲜度（确认前的参考，不属于口径）：</p><ul>{items}</ul>")
-    if confirmation is not None:
+    if progress is DraftProgress.FAILED:
+        parts.append(
+            f'<p class="error">上一次确认后的执行失败了：{esc(failure)}</p>'
+            '<p class="note">一次确认只执行一次，那次确认已经用掉。核对口径后可以再确认一次，'
+            "再让 Agent 调用 execute_query。</p>"
+        )
+    elif confirmation is not None:
         channel = CHANNEL_LABELS.get(confirmation.channel.value, confirmation.channel.value)
         parts.append(
             f'<p class="note">你已于 {esc(_when(confirmation.confirmed_at, zone))} 在{esc(channel)}'
@@ -138,7 +137,7 @@ def draft_page(
         )
     if result:
         parts.append(f'<pre class="result">{esc(chr(10).join(result))}</pre>')
-    if progress is DraftProgress.AWAITING_CONFIRMATION:
+    if progress in (DraftProgress.AWAITING_CONFIRMATION, DraftProgress.FAILED):
         parts.append(_confirm_form(draft, token("confirm")))
     if progress in (DraftProgress.NEEDS_INPUT, DraftProgress.AWAITING_CONFIRMATION):
         parts.append(_amend_form(draft, token("amend")))

@@ -1017,6 +1017,13 @@ def _cmd_confirm(args: argparse.Namespace) -> int:
         if progress in (DraftProgress.CONFIRMED, DraftProgress.EXECUTED):
             print(f"草案 #{draft.draft_id[:8]} v{draft.version} 的当前版本已经确认过。")
             return 0
+        if progress is DraftProgress.FAILED:
+            failed = workflow.last_run(actor, draft.draft_id)
+            print(
+                f"草案 #{draft.draft_id[:8]} v{draft.version} 上一次确认后的执行失败了"
+                f"（{failed.error if failed else '原因未知'}）。那次确认已经用掉；"
+                "核对后可以再确认一次。\n"
+            )
         citations = wiring.citations(actor, draft.question)
         print(render_draft(draft, citations, wiring.labels))
         _print_freshness(workflow, actor, draft)

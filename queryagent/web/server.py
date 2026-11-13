@@ -149,6 +149,7 @@ class ConfirmationPage:
             freshness=self._workflow.freshness_advisory(self._actor, draft_id),
             confirmation=self._workflow.human_confirmation(self._actor, draft_id),
             result=result,
+            failure=run.error if run is not None and progress is DraftProgress.FAILED else "",
             token=lambda action: self._gate.form_token(
                 session, action, draft.draft_id, draft.version, draft.definition_hash
             ),
