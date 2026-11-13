@@ -204,7 +204,7 @@ def _() -> None:
 # --------------------------------------------------------------- MCP checks
 
 
-def _mcp(root: Path) -> subprocess.Popen[Any]:
+def _mcp(root: Path, workspace: str = "ops") -> subprocess.Popen[Any]:
     """A real stdio MCP server subprocess, as a host would launch it."""
     return subprocess.Popen(
         [
@@ -217,7 +217,7 @@ def _mcp(root: Path) -> subprocess.Popen[Any]:
             "--subject",
             "alice",
             "--workspace",
-            "ops",
+            workspace,
         ],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -335,6 +335,145 @@ def _() -> None:
                 },
             )
             assert frame["result"]["isError"] is True, frame
+        finally:
+            proc.kill()
+
+
+def _tool(proc: subprocess.Popen[Any], name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    """One tools/call; the result object (isError, content, structuredContent)."""
+    frame = _rpc(
+        proc,
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": arguments},
+        },
+    )
+    assert "result" in frame, frame
+    return frame["result"]
+
+
+def _agent_prepares(proc: subprocess.Popen[Any]) -> str:
+    """Prepare and complete a draft over MCP; its id. Two users match the period."""
+    prepared = _tool(proc, "prepare_query", {"question": "新增用户有多少？"})["structuredContent"]
+    amended = _tool(
+        proc,
+        "amend_query",
+        {
+            "draft_id": prepared["draft_id"],
+            "expected_version": prepared["version"],
+            "variant": "registered",
+            "period": "2026-01-01..2026-01-02",
+        },
+    )
+    assert amended["isError"] is False, amended
+    return str(prepared["draft_id"])
+
+
+def _person(root: Path, command: str, *args: str, stdin: str = "") -> tuple[int, str]:
+    """The person's terminal: `queryagent drafts` or `queryagent confirm`, as alice@ops."""
+    proc = subprocess.run(
+        [
+            sys.executable, "-m", "queryagent.cli", command, *args,
+            "--config", str(root / "config.yaml"), "--subject", "alice", "--workspace", "ops",
+        ],
+        input=stdin,
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        env={**os.environ, "PYTHONPATH": str(ROOT)},
+        timeout=60,
+    )
+    return proc.returncode, proc.stdout + proc.stderr
+
+
+def _state(root: Path, sql: str) -> list[tuple[Any, ...]]:
+    import sqlite3
+
+    with contextlib.closing(sqlite3.connect(root / "wf.db")) as conn:
+        return conn.execute(sql).fetchall()
+
+
+def _rename_users(root: Path, old: str, new: str) -> None:
+    import sqlite3
+
+    with contextlib.closing(sqlite3.connect(root / "shop.db")) as conn:
+        conn.execute(f"ALTER TABLE {old} RENAME TO {new}")
+        conn.commit()
+
+
+@check("mcp-draft-from-another-workspace-is-a-strangers")
+def _() -> None:
+    with _temp_env() as root:
+        finance = _mcp(root, "finance")
+        ops = _mcp(root, "ops")
+        try:
+            draft_id = _agent_prepares(finance)
+            before = _state(root, "SELECT version, definition_hash FROM drafts")
+            named = {"draft_id": draft_id}
+            for tool, arguments in (
+                ("query_status", named),
+                ("amend_query", {**named, "expected_version": 2, "variant": "first_order"}),
+                ("execute_query", named),
+            ):
+                reply = _tool(ops, tool, arguments)
+                assert reply["isError"] is True, (tool, reply)
+                shown = json.dumps(reply, ensure_ascii=False)
+                assert "注册口径" not in shown and "2026-01-01" not in shown, (tool, shown)
+            assert _state(root, "SELECT version, definition_hash FROM drafts") == before
+            assert _state(root, "SELECT COUNT(*) FROM runs") == [(0,)]
+            # ...and it is still there for the workspace it belongs to.
+            assert _tool(finance, "query_status", named)["isError"] is False
+        finally:
+            finance.kill()
+            ops.kill()
+
+
+@check("mcp-one-confirmation-one-run-and-a-failed-run-asks-again")
+def _() -> None:
+    with _temp_env() as root:
+        proc = _mcp(root)
+        try:
+            draft_id = _agent_prepares(proc)
+            named = {"draft_id": draft_id}
+            code, out = _person(root, "confirm", draft_id[:8], stdin="y\n")
+            assert code == 0, out
+
+            _rename_users(root, "users", "users_gone")
+            failed = _rpc(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": 9,
+                    "method": "tools/call",
+                    "params": {"name": "execute_query", "arguments": named},
+                },
+            )
+            assert failed.get("error") is not None or failed["result"]["isError"] is True, failed
+            status = _tool(proc, "query_status", named)["structuredContent"]
+            assert status["status"] == "failed", status
+            assert "可以调用 execute_query" not in status["next_step"], status
+            assert _tool(proc, "execute_query", named)["isError"] is True
+            assert _state(root, "SELECT status FROM runs") == [("failed",)]
+            code, out = _person(root, "drafts")
+            assert code == 0 and draft_id[:8] in out and "执行失败" in out, out
+
+            _rename_users(root, "users_gone", "users")
+            code, out = _person(root, "confirm", draft_id[:8], stdin="y\n")
+            assert code == 0 and "已在终端确认" in out, out
+            first = _tool(proc, "execute_query", named)
+            assert first["isError"] is False, first
+            assert first["structuredContent"]["rows"] == [[2]], first
+            again = _tool(proc, "execute_query", named)
+            assert again["structuredContent"]["rows"] == [[2]], again
+            # Two confirmations, two runs: the one that failed and the one that ran. The
+            # second execute_query answered from the stored run.
+            assert _state(root, "SELECT COUNT(*) FROM confirmations") == [(2,)]
+            assert _state(root, "SELECT status FROM runs ORDER BY rowid") == [
+                ("failed",),
+                ("succeeded",),
+            ]
         finally:
             proc.kill()
 

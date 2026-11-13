@@ -27,6 +27,10 @@ and it has five tools: `list_metrics`, `prepare_query`, `amend_query`,
   runs. The confirmation is the idempotency key: one confirmation authorises
   one run, asking again returns that run, and running again takes a person
   confirming again.
+  - *1.0.1:* this holds under any key and through either door — the claim on
+    the state file refuses a confirmation that already has a run. A run that
+    failed has spent its confirmation too; the draft then reads `failed`, and
+    the person may confirm the same version again.
 - The protocol is written by hand: JSON-RPC 2.0, one message per line,
   revision `2025-06-18`, methods `initialize`, `ping`, `tools/list`,
   `tools/call`. stdout carries frames only; everything for a person goes to

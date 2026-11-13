@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "queryagent"
-version = "1.0.0"
+version = "1.0.1"
 description = "Business numbers a person confirms before anything runs: declared metrics, cited documents, and an MCP door where agents prepare and people confirm."
 readme = "README.md"
 requires-python = ">=3.10"

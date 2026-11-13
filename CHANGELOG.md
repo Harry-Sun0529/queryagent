@@ -8,6 +8,72 @@ frozen from v0.1.1 (spec §四).
 
 ## [Unreleased]
 
+## [1.0.1] — 2026-11-13
+
+What the pre-release review of 1.0.0 found and 1.0.0 shipped with. No frozen
+surface moved (ADR-014): the CLI, exit codes, config and file keys,
+`__all__` and the MCP input schemas are as they were.
+契约摘要：26f385531e97
+
+### Fixed
+
+- **One confirmation runs once, under whatever key and through whichever
+  door** (ADR-013). `QueryWorkflow.execute()` under one idempotency key
+  followed by `execute_confirmed()` — the MCP `execute_query` path — made
+  two runs for one confirmation. The claim on the state file now refuses a
+  confirmation that already has a run, in one statement, so two racing
+  callers cannot both run.
+  - **Behaviour change for embedders:** calling `execute()` again on the
+    same confirmation with a *different* key used to run the query again. It
+    now returns the first run. Running again takes confirming again.
+- **A draft is read, changed and run only from the workspace it was prepared
+  in.** The MCP server looked drafts up by subject alone, so the server
+  started for `alice@ops` could read and amend a draft `alice` prepared in
+  `finance` — a sheet whose rule values come from finance's documents. The
+  check now lives in the service, behind every method that takes a draft id;
+  the confirmation page's own copy is gone. The refusal is the one a stranger
+  gets.
+- **A confirmation whose run failed reads as failed.** The draft used to
+  stay `confirmed`, and `query_status` told the agent it could call
+  `execute_query`, which could only return the same failure.
+  - `DraftProgress` has a new value, `failed`. `query_status` reports it and
+    tells the agent to ask its person.
+  - The page, `queryagent confirm` and `queryagent drafts` show the failure
+    and let the person confirm the same version again; the next
+    `execute_query` then runs.
+- `pip install queryagent[clickhouse]` in the README named a package that is
+  not on PyPI. It now reads `pip install -e ".[clickhouse]"`.
+
+### Changed
+
+- **Workflow scenarios count less, and read more.**
+  - F5 compared the product's answer for a period wholly after the data with
+    a recount of the same empty period: 0 == 0, counted among the numbers
+    that agree. It is still held to its zero and its wording, and is no
+    longer counted. The scripted run reads **11/11** numbers, not 12/12.
+  - The leak gate read prompts and shown text. It now also reads every
+    draft, confirmation and run a scenario stored for a workspace, and any
+    trace file, and a test plants the canary in each and reads one. (The
+    confirmed flow writes no trace today; the gate is ready for the day it
+    does.)
+  - The scripted run on this release: 22/22, all gates 0, numbers 11/11.
+  - Three DeepSeek runs of the six document scenarios: 6/6 each, all gates
+    0, numbers 5/5.
+- `scripts/acceptance_check.py` drives two more real-process checks, twelve
+  in all: a draft from another workspace over MCP, and one confirmation /
+  one run / confirm again after a failure across MCP and the terminal.
+- `queryagent drafts` is assembled like every other door, so it now opens
+  the configured database connection as `queryagent confirm` does.
+- Internal: the two maintainer files refuse unknown keys through one
+  function; the progress words live in one place; the terminal marks a rule
+  by the acting identity's `authoring_source`.
+
+### Known
+
+- A run interrupted mid-query (the process killed) stays `executing`; its
+  draft reads `confirmed` and `execute_query` answers that it is still
+  running. Prepare the question again.
+
 ## [1.0.0] — 2026-09-11
 
 The first release whose version number is a promise (ADR-014).
@@ -57,9 +123,13 @@ The first release whose version number is a promise (ADR-014).
 - **State files from 0.6–0.9**, written by those releases' own code, are
   kept as fixtures, and 1.0 reads and upgrades each of them.
 - A release workflow: build, `twine check`, and a wheel smoke test in a
-  clean virtualenv. Publishing goes through PyPI trusted publishing (OIDC)
-  behind a `pypi` environment the maintainer approves, and TestPyPI is
-  available as a rehearsal. CI now smoke-tests the wheel on every push.
+  clean virtualenv. A tag publishes a **GitHub Release** with the wheel and
+  sdist attached. Nothing is uploaded to PyPI by a tag: that is a separate,
+  manual run of the workflow (trusted publishing over OIDC, behind a `pypi`
+  environment the maintainer approves, with TestPyPI as a rehearsal), and it
+  has not been done — this version is not on PyPI. CI now smoke-tests the
+  wheel on every push.
+  *(Corrected in 1.0.1: this entry first said publishing went to PyPI.)*
 
 ### Changed
 

@@ -78,7 +78,7 @@ definitions today, with zero new infrastructure*. Lightness is the feature.
   it), connector-enforced timeouts and row caps, and a documented read-only
   account setup as the final backstop. See [SECURITY.md](SECURITY.md).
 - **Three dialects out of the box**: MySQL, SQLite (stdlib, Docker-free
-  demo), ClickHouse (`pip install queryagent[clickhouse]`). New sources
+  demo), ClickHouse (`pip install -e ".[clickhouse]"`). New sources
   implement one 3-method protocol.
 - **Two providers, one abstraction**: any OpenAI-compatible endpoint
   (DeepSeek / Qwen / GLM / vLLM / Ollama) via `base_url`, plus Anthropic.
