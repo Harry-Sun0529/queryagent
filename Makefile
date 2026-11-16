@@ -5,7 +5,7 @@ PYTHON ?= $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
 test: lint typecheck unit
 
 lint:
-	ruff check queryagent tests examples scripts eval/run_workflow_scenarios.py
+	ruff check queryagent tests examples scripts eval/run_workflow_scenarios.py eval/run_faithfulness_check.py
 
 eval:
 	queryagent eval --config examples/demo_ecommerce/config.sqlite.yaml --cases eval/cases.yaml
