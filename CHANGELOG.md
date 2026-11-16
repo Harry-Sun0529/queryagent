@@ -34,6 +34,18 @@ No frozen surface moved (ADR-014).
     has no start time and is treated as past its deadline.
   - `QueryWorkflow(run_deadline_s=...)` for embedders; without it nothing
     is ever presumed dead, as before. `build_workflow` sets it.
+- **Two processes opening a new state file at the same moment could lose
+  one of them to "database is locked".** Switching a file to WAL while
+  another connection does the same fails at once instead of waiting, so an
+  MCP server started beside a confirmation page — the ordinary way to run
+  this — exited on roughly one start in forty. Found by the acceptance
+  checks, which start two MCP servers on a fresh file. The workflow state,
+  the budget ledger and the document index now open through one retrying
+  function, and a state file upgraded by two processes at once no longer
+  fails on the column the other one just added. 480 concurrent opens in real
+  processes: none lost.
+- Thirty-five tests asserted a refusal by its type alone; each now matches
+  the message it means.
 - `scripts/acceptance_check.py`: a thirteenth check kills a real MCP server
   with SIGKILL in the middle of a query and takes the draft through to a
   successful second run.

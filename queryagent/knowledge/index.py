@@ -21,6 +21,7 @@ from queryagent.knowledge.embedding import EmbeddingClient
 from queryagent.knowledge.errors import DocumentParseError, UnsupportedFormat
 from queryagent.knowledge.loaders import SUPPORTED_SUFFIXES, load_document
 from queryagent.knowledge.models import Chunk, Document, IndexedChunk
+from queryagent.sqlite_state import open_shared
 from queryagent.text import tokens
 
 _SCHEMA = """
@@ -69,11 +70,7 @@ class SqliteKnowledgeIndex:
 
     def __init__(self, path: str | Path) -> None:
         self._path = Path(path)
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self._path, isolation_level=None)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.executescript(_SCHEMA)
+        self._conn = open_shared(self._path, _SCHEMA)
 
     def close(self) -> None:
         self._conn.close()

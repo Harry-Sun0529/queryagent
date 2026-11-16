@@ -36,6 +36,7 @@ from queryagent.config import BudgetConfig
 from queryagent.connectors.base import Connector, QueryResult
 from queryagent.errors import QueryAgentError
 from queryagent.schema import TableSchema
+from queryagent.sqlite_state import open_shared
 
 LEASE_MARGIN_S = 5
 """Seconds a lease outlives the timeouts it covers, for connecting and moving
@@ -138,13 +139,9 @@ class SqliteBudgetLedger:
         self._lease_seconds = statement_timeout_s + LEASE_MARGIN_S
         self._zone = zone
         self._clock = clock
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # Wait for another process's admission rather than fail on a locked
-        # file: an admission is a handful of statements long.
-        self._conn = sqlite3.connect(path, isolation_level=None, timeout=10)
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.executescript(_SCHEMA)
+        # Statements wait for another process's admission rather than fail on
+        # a locked file: an admission is a handful of statements long.
+        self._conn = open_shared(path, _SCHEMA, timeout_s=10, named_rows=False)
 
     def close(self) -> None:
         self._conn.close()

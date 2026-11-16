@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import NamedTuple
 
+from queryagent.sqlite_state import open_shared
 from queryagent.workflow.errors import NotFound, PermissionDenied, StaleVersion
 from queryagent.workflow.models import (
     HUMAN_CHANNELS,
@@ -124,11 +125,7 @@ class SqliteWorkflowStore:
 
     def __init__(self, path: str | Path) -> None:
         self._path = Path(path)
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self._path, isolation_level=None)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.executescript(_SCHEMA)
+        self._conn = open_shared(self._path, _SCHEMA)
         self._add_missing_columns()
 
     def _add_missing_columns(self) -> None:
@@ -144,7 +141,15 @@ class SqliteWorkflowStore:
             }
             for column, declaration in columns:
                 if column not in present:
-                    self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+                    try:
+                        self._conn.execute(
+                            f"ALTER TABLE {table} ADD COLUMN {column} {declaration}"
+                        )
+                    except sqlite3.OperationalError as exc:
+                        # Another process upgrading the same file got there
+                        # between the look and the ALTER. The column is there.
+                        if "duplicate column name" not in str(exc).lower():
+                            raise
 
     def close(self) -> None:
         self._conn.close()
