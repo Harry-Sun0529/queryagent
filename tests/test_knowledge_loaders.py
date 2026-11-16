@@ -153,7 +153,7 @@ def test_an_unknown_suffix_is_refused_rather_than_guessed(tmp_path: Path) -> Non
 
 
 def test_a_missing_file_names_the_path(tmp_path: Path) -> None:
-    with pytest.raises(FileNotFoundError):
+    with pytest.raises(FileNotFoundError, match="no such document"):
         load_document(tmp_path / "nope.md")
 
 
@@ -178,7 +178,7 @@ def test_a_pdf_without_the_extra_names_the_install_command(
     monkeypatch.delitem(sys.modules, "queryagent.knowledge.loaders.pdf", raising=False)
     path = tmp_path / "report.pdf"
     path.write_bytes(b"%PDF-1.4\n")
-    with pytest.raises(ImportError):
+    with pytest.raises(ImportError, match="pypdf"):
         load_document(path)
 
     markdown = tmp_path / "still.md"

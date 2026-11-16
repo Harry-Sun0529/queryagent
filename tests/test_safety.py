@@ -55,7 +55,7 @@ MUST_MENTION_REASON = [
 
 @pytest.mark.parametrize(("sql", "fragment"), MUST_MENTION_REASON)
 def test_rejection_reasons_are_actionable(sql: str, fragment: str) -> None:
-    with pytest.raises(SafetyViolation) as exc_info:
+    with pytest.raises(SafetyViolation, match="statements") as exc_info:
         ensure_safe_select(sql)
     assert fragment.lower() in str(exc_info.value).lower()
     assert exc_info.value.sql == sql
@@ -66,7 +66,10 @@ def test_allowed(sql: str) -> None:
     ensure_safe_select(sql)  # must not raise
 
 
+_REFUSALS = "empty SQL statement|only SELECT statements|multiple SQL statements|forbidden keyword"
+
+
 @pytest.mark.parametrize("sql", BLOCKED)
 def test_blocked(sql: str) -> None:
-    with pytest.raises(SafetyViolation):
+    with pytest.raises(SafetyViolation, match=_REFUSALS):
         ensure_safe_select(sql)

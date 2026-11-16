@@ -66,7 +66,7 @@ def test_state_survives_reopening_the_store(tmp_path: Path) -> None:
 def test_another_subject_cannot_read_the_draft(store: SqliteWorkflowStore) -> None:
     """T06: ownership is checked in the store, not only in the UI."""
     store.create_draft(_draft())
-    with pytest.raises(PermissionDenied):
+    with pytest.raises(PermissionDenied, match="not permitted"):
         store.get_draft("mallory", "d1")
 
 
@@ -74,7 +74,7 @@ def test_update_requires_the_expected_version(store: SqliteWorkflowStore) -> Non
     """T12: a second editor must lose loudly, not overwrite silently."""
     store.create_draft(_draft())
     store.update_draft("alice", _draft(version=2), expected_version=1)
-    with pytest.raises(StaleVersion):
+    with pytest.raises(StaleVersion, match="is at version 2, not 1"):
         store.update_draft("alice", _draft(version=3), expected_version=1)
     assert store.get_draft("alice", "d1").version == 2
 
@@ -91,7 +91,7 @@ def test_confirmation_round_trips(store: SqliteWorkflowStore) -> None:
     )
     store.save_confirmation(confirmation)
     assert store.get_confirmation("alice", "c1").draft_version == 1
-    with pytest.raises(PermissionDenied):
+    with pytest.raises(PermissionDenied, match="not permitted"):
         store.get_confirmation("mallory", "c1")
 
 
@@ -346,5 +346,5 @@ def test_correspondences_are_written_only_when_present(tmp_path: Path) -> None:
 def test_missing_draft_is_reported_as_not_found(store: SqliteWorkflowStore) -> None:
     from queryagent.workflow.errors import NotFound
 
-    with pytest.raises(NotFound):
+    with pytest.raises(NotFound, match="no such draft"):
         store.get_draft("alice", "nope")

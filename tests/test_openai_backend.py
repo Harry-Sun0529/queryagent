@@ -121,7 +121,7 @@ def test_malformed_tool_arguments_raise_parse_error(monkeypatch: pytest.MonkeyPa
         ]
     }
     backend = make_backend(monkeypatch, reply)
-    with pytest.raises(LLMParseError):
+    with pytest.raises(LLMParseError, match="not valid JSON"):
         backend.complete([Message(role="user", content="q")])
 
 

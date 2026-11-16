@@ -83,7 +83,7 @@ def test_reading_another_workspaces_chunk_is_refused(
 ) -> None:
     """A ref leaked by any means still does not read across the boundary."""
     finance_hit = provider.search(scope_of(MALLORY), "新增用户", limit=1)[0]
-    with pytest.raises(EvidenceUnavailable):
+    with pytest.raises(EvidenceUnavailable, match="引用不可用"):
         provider.read(scope_of(ALICE), finance_hit.ref)
 
 
@@ -92,9 +92,9 @@ def test_a_refused_read_does_not_reveal_whether_the_chunk_exists(
 ) -> None:
     """Distinguishing 'revoked' from 'never existed' is itself a disclosure."""
     finance_hit = provider.search(scope_of(MALLORY), "新增用户", limit=1)[0]
-    with pytest.raises(EvidenceUnavailable) as denied:
+    with pytest.raises(EvidenceUnavailable, match="引用不可用") as denied:
         provider.read(scope_of(ALICE), finance_hit.ref)
-    with pytest.raises(EvidenceUnavailable) as missing:
+    with pytest.raises(EvidenceUnavailable, match="引用不可用") as missing:
         provider.read(scope_of(ALICE), finance_hit.ref.replace(chunk_id="nope"))
     assert str(denied.value) == str(missing.value)
 

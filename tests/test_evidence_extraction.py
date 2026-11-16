@@ -198,9 +198,9 @@ def test_unparseable_model_output_fails_the_whole_extraction() -> None:
     A dropped rule becomes "the document did not specify this" — a statement
     about the business. A parser failure must never be rendered as one.
     """
-    with pytest.raises(ExtractionUnreadable):
+    with pytest.raises(ExtractionUnreadable, match="不是合法 JSON"):
         validate_extraction(CHUNKS, "not json at all")
-    with pytest.raises(ExtractionUnreadable):
+    with pytest.raises(ExtractionUnreadable, match="缺少 rules 列表"):
         validate_extraction(CHUNKS, json.dumps({"unexpected": []}))
 
 

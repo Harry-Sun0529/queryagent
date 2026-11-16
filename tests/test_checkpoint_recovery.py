@@ -60,5 +60,5 @@ def test_run_cannot_resume_log_without_identity(tmp_path: Path) -> None:
     path = tmp_path / "legacy.jsonl"
     path.write_text(json.dumps(result_to_dict(scored("old"))) + "\n")
     assert set(ResultLog(path, resume=True).completed()) == {"old"}
-    with pytest.raises(ResumeMismatch):
+    with pytest.raises(ResumeMismatch, match="来自不同的运行配置"):
         ResultLog(path, resume=True, signature="new-experiment")

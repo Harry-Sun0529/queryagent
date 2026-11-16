@@ -113,7 +113,7 @@ def test_an_impossible_date_is_refused_rather_than_skipped() -> None:
 
 
 def test_a_range_that_ends_before_it_starts_is_refused() -> None:
-    with pytest.raises(PeriodError):
+    with pytest.raises(PeriodError, match="区间结束早于开始"):
         find_period("2026-08-15..2026-08-01", TODAY)
 
 
@@ -133,7 +133,7 @@ def test_encode_and_decode_round_trip() -> None:
 
 @pytest.mark.parametrize("text", ["", "上个月", "2026-08-01", "2026-08-31..2026-08-01"])
 def test_decode_accepts_only_the_canonical_form(text: str) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="not a canonical period|区间结束早于开始"):
         Period.decode(text)
 
 

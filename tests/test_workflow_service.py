@@ -141,7 +141,7 @@ def test_execution_without_a_confirmation_is_refused_and_runs_no_sql(
     """I1/T01: the central invariant of this slice."""
     workflow, executor = parts
     workflow.prepare(ALICE, "成交额是多少？", request_id="r1")
-    with pytest.raises(ConfirmationRequired):
+    with pytest.raises(ConfirmationRequired, match="no confirmation to execute"):
         workflow.execute(ALICE, "made-up-confirmation", idempotency_key="k1")
     assert executor.executed == []
 
@@ -155,7 +155,7 @@ def test_a_caller_claimed_confirmation_flag_is_not_a_confirmation(
     no API that would accept it — the signature below is the whole surface.
     """
     workflow, executor = parts
-    with pytest.raises(TypeError):
+    with pytest.raises(TypeError, match="unexpected keyword argument"):
         workflow.execute(ALICE, "c1", idempotency_key="k1", confirmed=True)  # type: ignore[call-arg]
     assert executor.executed == []
 
@@ -179,7 +179,7 @@ def test_confirming_an_incomplete_draft_is_refused(
 ) -> None:
     workflow, _ = parts
     draft = workflow.prepare(ALICE, "上个月新增用户多少？", request_id="r1")
-    with pytest.raises(WorkflowStateError):
+    with pytest.raises(WorkflowStateError, match="undetermined rules"):
         workflow.confirm(
             ALICE, draft.draft_id, version=draft.version, definition_hash=draft.definition_hash
         )
@@ -219,7 +219,7 @@ def test_amending_after_confirmation_invalidates_that_confirmation(
         expected_version=amended.version,  # type: ignore[union-attr]
         rules=(Rule("variant", "first_order", RuleSource.USER),),
     )
-    with pytest.raises(ConfirmationRequired):
+    with pytest.raises(ConfirmationRequired, match="changed after confirmation"):
         workflow.execute(ALICE, confirmation.confirmation_id, idempotency_key="k1")
     assert executor.executed == []
 
@@ -231,7 +231,7 @@ def test_confirming_a_stale_version_is_refused(
     workflow, _ = parts
     draft = workflow.prepare(ALICE, "上个月新增用户多少？", request_id="r1")
     amended = _pick_registered(workflow, draft.draft_id)
-    with pytest.raises(StaleVersion):
+    with pytest.raises(StaleVersion, match="is at version 2; review"):
         workflow.confirm(
             ALICE, draft.draft_id, version=draft.version, definition_hash=draft.definition_hash
         )
@@ -243,7 +243,7 @@ def test_concurrent_amend_loses_loudly(parts: tuple[QueryWorkflow, CountingExecu
     workflow, _ = parts
     draft = workflow.prepare(ALICE, "上个月新增用户多少？", request_id="r1")
     _pick_registered(workflow, draft.draft_id)
-    with pytest.raises(StaleVersion):
+    with pytest.raises(StaleVersion, match="is at version 2, not 1"):
         workflow.amend(
             ALICE,
             draft.draft_id,
@@ -334,9 +334,9 @@ def test_another_subject_cannot_use_someone_elses_confirmation(
         version=amended.version,  # type: ignore[union-attr]
         definition_hash=amended.definition_hash,  # type: ignore[union-attr]
     )
-    with pytest.raises(PermissionDenied):
+    with pytest.raises(PermissionDenied, match="not permitted"):
         workflow.execute(MALLORY, confirmation.confirmation_id, idempotency_key="k2")
-    with pytest.raises(PermissionDenied):
+    with pytest.raises(PermissionDenied, match="not permitted"):
         workflow.get_draft(MALLORY, draft.draft_id)
     assert executor.executed == []
 
@@ -382,7 +382,7 @@ def test_an_unmapped_definition_is_refused_rather_than_guessed(
     confirmation = workflow.confirm(
         ALICE, draft.draft_id, version=draft.version, definition_hash=draft.definition_hash
     )
-    with pytest.raises(MappingNotFound):
+    with pytest.raises(MappingNotFound, match="no maintainer-defined query mapping"):
         workflow.execute(ALICE, confirmation.confirmation_id, idempotency_key="k1")
     assert executor.executed == []
 
@@ -415,7 +415,7 @@ def test_no_question_match_yields_no_draft_rather_than_a_guess(
 ) -> None:
     """T25: no applicable definition is a fact to report, not a gap to fill."""
     workflow, _ = parts
-    with pytest.raises(MappingNotFound):
+    with pytest.raises(MappingNotFound, match="no declared business metric"):
         workflow.prepare(ALICE, "机房温度多少？", request_id="r1")
 
 
@@ -453,7 +453,7 @@ def test_amend_refuses_maintainer_sourced_rules_too(
     """「系统映射」 comes from the maintainer's config, never from a request."""
     workflow, _ = parts
     draft = workflow.prepare(ALICE, "上个月新增用户多少？", request_id="r1")
-    with pytest.raises(WorkflowStateError):
+    with pytest.raises(WorkflowStateError, match="只能标为「本次约定」"):
         workflow.amend(
             ALICE,
             draft.draft_id,
@@ -530,7 +530,7 @@ def test_expiring_a_draft_keeps_its_version_and_hash(tmp_path: Path) -> None:
     workflow, _, _ = _doc_backed(tmp_path, RefStatus.UNAVAILABLE)
     draft, amended = _confirmed_doc_draft(workflow)
     workflow.attach_evidence(ALICE, draft.draft_id, ("d1#c1@0:5",))
-    with pytest.raises(ConfirmationRequired):
+    with pytest.raises(ConfirmationRequired, match="所依据的文档已失效"):
         workflow.confirm(
             ALICE,
             draft.draft_id,
@@ -558,7 +558,7 @@ def test_evidence_withdrawn_between_confirm_and_execute_runs_no_sql(
         definition_hash=amended.definition_hash,
     )
     checker.status = RefStatus.CHANGED
-    with pytest.raises(ConfirmationRequired):
+    with pytest.raises(ConfirmationRequired, match="所依据的文档已失效"):
         workflow.execute(ALICE, confirmation.confirmation_id, idempotency_key="k1")
     assert executor.executed == []
 
@@ -577,7 +577,7 @@ def test_a_refused_execute_does_not_burn_the_idempotency_key(tmp_path: Path) -> 
         definition_hash=amended.definition_hash,
     )
     checker.status = RefStatus.UNAVAILABLE
-    with pytest.raises(ConfirmationRequired):
+    with pytest.raises(ConfirmationRequired, match="所依据的文档已失效"):
         workflow.execute(ALICE, confirmation.confirmation_id, idempotency_key="k1")
     assert workflow.get_run_by_key(ALICE, "k1") is None
 
@@ -690,7 +690,7 @@ def test_changing_the_period_after_confirmation_invalidates_it(tmp_path: Path) -
         expected_version=amended.version,  # type: ignore[union-attr]
         rules=(Rule(PERIOD_RULE_KEY, "2026-07-01..2026-07-31", RuleSource.USER),),
     )
-    with pytest.raises(ConfirmationRequired):
+    with pytest.raises(ConfirmationRequired, match="changed after confirmation"):
         workflow.execute(ALICE, confirmation.confirmation_id, idempotency_key="k1")
 
 

@@ -57,7 +57,7 @@ def test_row_cap_sets_truncated(connector: SQLiteConnector) -> None:
 
 
 def test_error_wrapped_as_query_error(connector: SQLiteConnector) -> None:
-    with pytest.raises(QueryError) as exc_info:
+    with pytest.raises(QueryError, match="no such table") as exc_info:
         connector.execute("SELECT * FROM missing_table", timeout_s=5, max_rows=10)
     assert exc_info.value.dialect == "sqlite"
     assert "missing_table" in exc_info.value.original_error
@@ -68,5 +68,5 @@ def test_timeout_aborts_runaway_query(connector: SQLiteConnector) -> None:
         "WITH RECURSIVE c(x) AS (VALUES(1) UNION ALL SELECT x + 1 FROM c) "
         "SELECT count(*) FROM c"
     )
-    with pytest.raises(QueryError):
+    with pytest.raises(QueryError, match="interrupted"):
         connector.execute(infinite, timeout_s=1, max_rows=10)

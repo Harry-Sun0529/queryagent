@@ -169,7 +169,7 @@ def test_a_mapping_without_a_time_column_refuses_a_period() -> None:
 def test_a_period_that_is_not_canonical_is_refused_not_interpolated() -> None:
     """P7: the only way a date reaches SQL is through Period.decode."""
     forged = Rule(PERIOD_RULE_KEY, "2026-08-01..2026-08-31'; DROP TABLE users; --", RuleSource.USER)
-    with pytest.raises(WorkflowStateError):
+    with pytest.raises(WorkflowStateError, match="统计区间不是规范格式"):
         TemplateCompiler({("new_users", "registered"): REGISTERED}).compile(_definition(forged))
 
 
@@ -188,7 +188,7 @@ def test_rule_text_from_users_and_documents_never_reaches_the_sql() -> None:
 
 def test_a_variant_value_is_a_lookup_key_never_interpolated() -> None:
     compiler = TemplateCompiler({("new_users", "registered"): REGISTERED})
-    with pytest.raises(MappingNotFound):
+    with pytest.raises(MappingNotFound, match="no maintainer-defined query mapping"):
         compiler.compile(_definition(variant="registered' OR '1'='1"))
 
 

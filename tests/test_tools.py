@@ -87,13 +87,13 @@ def test_safety_violation_propagates() -> None:
         raise SafetyViolation("only SELECT allowed", sql=msg)
 
     registry = ToolRegistry([echo_spec(blocked)])
-    with pytest.raises(SafetyViolation):
+    with pytest.raises(SafetyViolation, match="only SELECT allowed"):
         registry.validate_and_dispatch("echo", {"msg": "DROP TABLE users"})
 
 
 def test_duplicate_registration_raises() -> None:
     registry = ToolRegistry([echo_spec()])
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="duplicate tool name"):
         registry.register(echo_spec())
 
 
