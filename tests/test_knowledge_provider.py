@@ -363,3 +363,14 @@ def test_a_floor_outside_the_open_unit_interval_is_refused(
     """0 returns the top chunk for anything; 1 returns nothing ever."""
     with pytest.raises(ValueError, match="min_similarity"):
         LocalKnowledgeProvider(provider.index, StubEmbedder(), min_similarity=floor)  # type: ignore[arg-type]
+
+
+def test_every_chunks_terms_come_back_in_one_read_and_only_this_workspaces(
+    provider: LocalKnowledgeProvider,
+) -> None:
+    """Keyword search asked for each chunk's terms separately: a query per chunk."""
+    index = provider.index
+    ops = index.terms_in("ops")
+    assert set(ops) == {chunk.chunk_id for chunk in index.chunks_in("ops")}
+    assert all(ops[chunk_id] == index.terms_of("ops", chunk_id) for chunk_id in ops)
+    assert not set(ops) & set(index.terms_in("finance"))

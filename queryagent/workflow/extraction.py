@@ -54,7 +54,15 @@ _CJK_DIGITS = {
 # Instructions dressed as business rules. Not the main defence — that is the
 # closed field set below — but these strings must never reach a sheet a user
 # is asked to approve.
-_IMPERATIVE = ("忽略", "无需确认", "直接执行", "drop ", "delete ", "select ", "update ")
+_IMPERATIVE = ("无需确认", "直接执行", "drop ", "delete ", "select ", "update ")
+# 「忽略」 alone is ordinary business language: 「忽略测试账号」 is a filter, and
+# dropping it made the sheet say the documents were silent about test
+# accounts (found in the 1.1 read-through). It is an instruction when what
+# it tells the reader to ignore is this system's own process, or whatever
+# came before it.
+_IGNORE_THE_PROCESS = re.compile(
+    r"忽略.{0,8}(确认|指示|指令|说明|规则|口径|提示|流程|要求|限制)|忽略(以上|上述|之前|前面)"
+)
 
 
 class ExtractionUnreadable(WorkflowError):
@@ -130,7 +138,7 @@ def _validate_one(
         return None, f"规则取值超过 {MAX_VALUE_CHARS} 字符"
     value = " ".join(value.split())
     lowered = value.lower()
-    if any(marker in lowered for marker in _IMPERATIVE):
+    if any(marker in lowered for marker in _IMPERATIVE) or _IGNORE_THE_PROCESS.search(value):
         # Dropped, never cleaned: a scrubbed value is a new string no model,
         # document or person ever reviewed, and labelling *that* 「文档依据」
         # is worse than losing the rule.

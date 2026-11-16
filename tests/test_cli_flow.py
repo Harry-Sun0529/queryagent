@@ -757,3 +757,22 @@ def test_a_zero_count_is_an_answer_and_gets_no_note(
     assert code == 0
     assert "  0" in out.split("结果（")[1]
     assert "空不等于" not in out
+
+
+def test_a_split_nobody_declared_is_refused_before_a_draft_exists(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The question alone settles it, so it must not cost a draft.
+
+    Before the 1.1 read-through the draft was prepared first — with documents
+    configured, a model call — and then left behind, unusable.
+    """
+    from tests.wired import Parts
+
+    parts = Parts(tmp_path)
+    config = parts.write_config()
+    parts.close()
+    assert main(["flow", "--config", str(config), "按城市分组的新增用户有多少？", "--yes"]) == 2
+    assert "没有声明这个维度" in capsys.readouterr().err
+    with sqlite3.connect(tmp_path / "wf.db") as connection:
+        assert connection.execute("SELECT COUNT(*) FROM drafts").fetchone() == (0,)

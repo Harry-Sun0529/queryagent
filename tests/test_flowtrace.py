@@ -6,6 +6,7 @@ comes after it is.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import sqlite3
 from pathlib import Path
@@ -13,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from queryagent.cli import main
+from queryagent.mcp.tools import make_server
 from queryagent.workflow import flowtrace
 from queryagent.workflow.errors import ConfirmationRequired, PermissionDenied, StaleVersion
 from queryagent.workflow.flowtrace import (
@@ -141,6 +143,42 @@ def test_each_refusal_is_traced_once_with_its_step(traced: Traced) -> None:
         ("cli", "amend", "StaleVersion"),
     ]
     assert CONFIRMED not in traced.kinds() and AMENDED not in traced.kinds()
+
+
+def test_an_answer_a_door_cannot_read_is_traced_as_a_refusal_and_changes_nothing(
+    traced: Traced,
+) -> None:
+    """Found in the 1.1 read-through: the doors read answers before calling the service.
+
+    So a refusal to read one was the only kind the trace never saw. Through
+    the real MCP tool: the refusal is traced, and no amendment is.
+    """
+    wiring = dataclasses.replace(traced.parts.wiring, workflow=traced.workflow)
+    server = make_server(wiring, AGENT)
+    draft = traced.workflow.prepare(AGENT, "新增用户有多少？", request_id="r")
+    reply = server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "amend_query",
+                "arguments": {
+                    "draft_id": draft.draft_id,
+                    "expected_version": 1,
+                    "variant": "no_such_reading",
+                },
+            },
+        }
+    )
+    assert reply is not None and reply["result"]["isError"] is True
+    refused = [e for e in traced.events if e.kind == REFUSED]
+    assert [(e.channel, e.detail["step"], e.detail["refusal"]) for e in refused] == [
+        ("mcp", "amend", "ValueError")
+    ]
+    assert "no_such_reading" in refused[0].detail["message"]
+    assert AMENDED not in traced.kinds()
+    assert traced.workflow.get_draft(AGENT, draft.draft_id).version == 1
 
 
 def test_a_refused_reach_into_another_workspace_is_filed_under_the_callers_own(

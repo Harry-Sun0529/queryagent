@@ -230,7 +230,6 @@ class QueryTools:
 
     def amend_query(self, arguments: dict[str, Any]) -> ToolResult:
         args = _check(arguments, "amend_query")
-        draft = self._workflow.get_draft(self._actor, args["draft_id"])
         answers = Answers(
             variant=args.get("variant", ""),
             adopt=tuple(args.get("adopt", ())),
@@ -239,15 +238,17 @@ class QueryTools:
             group_by=args.get("group_by", ""),
             value_filter=args.get("filter", ""),
         )
-        rules = answer_rules(
-            draft.definition,
-            answers,
-            source=self._actor.authoring_source,
-            today=self._wiring.today(),
-            dimensions=self._wiring.dimensions,
-        )
-        updated = self._workflow.amend(
-            self._actor, draft.draft_id, expected_version=args["expected_version"], rules=rules
+        updated = self._workflow.amend_from(
+            self._actor,
+            args["draft_id"],
+            expected_version=args["expected_version"],
+            read=lambda draft: answer_rules(
+                draft.definition,
+                answers,
+                source=self._actor.authoring_source,
+                today=self._wiring.today(),
+                dimensions=self._wiring.dimensions,
+            ),
         )
         return self._draft_view(updated)
 

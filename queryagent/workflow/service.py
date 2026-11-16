@@ -552,6 +552,34 @@ class QueryWorkflow:
         )
         return updated
 
+    def amend_from(
+        self,
+        actor: ActorContext,
+        draft_id: str,
+        *,
+        expected_version: int,
+        read: Callable[[DefinitionDraft], tuple[Rule, ...]],
+    ) -> DefinitionDraft:
+        """Amend with whatever ``read`` makes of an answer, given the stored draft.
+
+        For the doors that take a typed or structured answer (the page, MCP).
+        Reading it can refuse — a reading nobody declared, a period that
+        cannot be parsed — and that refusal used to happen in the door,
+        before the service was called, so it was the one kind the trace
+        never saw (found in the 1.1 read-through). Read here, it is traced
+        like any other.
+
+        Raises:
+            ValueError: The answer fits nothing on the draft; from ``read``.
+            WorkflowError: As ``amend``.
+        """
+        try:
+            rules = read(self._draft_of(actor, draft_id))
+        except (ValueError, WorkflowError) as exc:
+            self._trace_refusal(actor, draft_id, "amend", exc)
+            raise
+        return self.amend(actor, draft_id, expected_version=expected_version, rules=rules)
+
     # ------------------------------------------------------------- confirm
 
     @_watched("confirm")

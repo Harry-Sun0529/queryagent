@@ -135,8 +135,9 @@ class LocalKnowledgeProvider:
                 return semantic
         wanted = tokens(query)
         scored: list[tuple[float, EvidenceHit]] = []
+        terms = self.index.terms_in(scope.workspace_id)
         for chunk in self.index.chunks_in(scope.workspace_id):
-            overlap = len(wanted & self.index.terms_of(scope.workspace_id, chunk.chunk_id))
+            overlap = len(wanted & terms.get(chunk.chunk_id, frozenset()))
             if overlap < MIN_SCORE:
                 continue
             ref = EvidenceRef(

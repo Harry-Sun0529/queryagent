@@ -827,14 +827,16 @@ def _run_flow(
     dimensions = wiring.dimensions
     labels = wiring.labels
     request_id = uuid.uuid4().hex
-    draft = workflow.prepare(actor, args.question, request_id=request_id)
     if not args.group_by:
+        # Before preparing: the question alone settles this, so it should not
+        # cost a model call and leave a draft nobody can use.
         try:
             find_grouping(args.question, dimensions)
         except GroupingError as exc:
             if exc.undeclared:
                 print(f"[错误] {exc}", file=sys.stderr)
                 return EXIT_USER_ERROR
+    draft = workflow.prepare(actor, args.question, request_id=request_id)
     if args.variant:
         documented = draft.definition.rule(VARIANT_RULE_KEY)
         if documented is None or documented.value != args.variant:

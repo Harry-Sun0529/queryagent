@@ -257,6 +257,17 @@ class SqliteKnowledgeIndex:
         ).fetchone()
         return _decode(row) if row is not None else None
 
+    def terms_in(self, workspace_id: str) -> dict[str, frozenset[str]]:
+        """Every chunk's search terms in one workspace, in one query.
+
+        Keyword search scores every chunk of the workspace; asking for each
+        chunk's terms separately was a query per chunk per question.
+        """
+        rows = self._conn.execute(
+            "SELECT chunk_id, terms FROM chunks WHERE workspace_id = ?", (workspace_id,)
+        ).fetchall()
+        return {row["chunk_id"]: frozenset(json.loads(row["terms"])) for row in rows}
+
     def terms_of(self, workspace_id: str, chunk_id: str) -> frozenset[str]:
         row = self._conn.execute(
             "SELECT terms FROM chunks WHERE chunk_id = ? AND workspace_id = ?",

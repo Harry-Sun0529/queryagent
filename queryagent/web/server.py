@@ -173,20 +173,23 @@ class ConfirmationPage:
             return _refused(403, "表单令牌无效或已过期：请回到草案页重新提交（防跨站请求伪造）。")
         back = f"/drafts/{draft_id}"
         try:
-            draft = self._workflow.get_draft(self._actor, draft_id)
             if action == "confirm":
                 self._workflow.confirm(
                     self._actor, draft_id, version=version, definition_hash=definition_hash
                 )
             else:
-                rules = answer_rules(
-                    draft.definition,
-                    _answers(form),
-                    source=self._actor.authoring_source,
-                    today=self._wiring.today(),
-                    dimensions=self._wiring.dimensions,
+                self._workflow.amend_from(
+                    self._actor,
+                    draft_id,
+                    expected_version=version,
+                    read=lambda draft: answer_rules(
+                        draft.definition,
+                        _answers(form),
+                        source=self._actor.authoring_source,
+                        today=self._wiring.today(),
+                        dimensions=self._wiring.dimensions,
+                    ),
                 )
-                self._workflow.amend(self._actor, draft_id, expected_version=version, rules=rules)
         except (NotFound, PermissionDenied):
             return _refused(404, "没有这份草案。")
         except StaleVersion:
