@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from queryagent.knowledge.models import EvidenceRef, IndexedChunk
-from queryagent.text import normalize
+from queryagent.text import normalize, unfenced
 from queryagent.workflow.errors import WorkflowError
 from queryagent.workflow.models import ALLOWED_RULE_KEYS, Rule, RuleSource
 
@@ -103,7 +103,7 @@ def validate_extraction(chunks: tuple[IndexedChunk, ...], raw: str) -> Extractio
 
 def _parse(raw: str) -> list[dict[str, Any]]:
     try:
-        payload = json.loads(raw)
+        payload = json.loads(unfenced(raw))
     except json.JSONDecodeError as exc:
         raise ExtractionUnreadable(f"模型输出不是合法 JSON：{exc}") from exc
     if not isinstance(payload, dict) or not isinstance(payload.get("rules"), list):

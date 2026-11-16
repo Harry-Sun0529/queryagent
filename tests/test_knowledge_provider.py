@@ -173,6 +173,73 @@ def test_a_ref_survives_a_reimport_of_unchanged_content(
     assert provider.check_refs(scope_of(ALICE), (before,)) == (RefStatus.OK,)
 
 
+# ------------------------------------- the index follows the directory
+
+
+def test_a_file_deleted_from_the_directory_leaves_the_index_on_reimport(
+    provider: LocalKnowledgeProvider, tmp_path: Path
+) -> None:
+    """Found in the 1.1 read-through: an import only ever added.
+
+    A withdrawn handbook went on supplying rules, and its citations went on
+    checking out. Asserted as a pair: gone from search, and the stored
+    citation no longer stands.
+    """
+    hit = provider.search(scope_of(ALICE), "新增用户", limit=1)[0]
+    (tmp_path / "ops" / "handbook.md").unlink()
+    report = provider.index.import_directory(tmp_path / "ops", workspace_id="ops")
+    assert report.removed > 0
+    assert "已移除" in report.render()
+    assert provider.search(scope_of(ALICE), "新增用户", limit=5) == ()
+    assert provider.check_refs(scope_of(ALICE), (hit.ref,)) == (RefStatus.UNAVAILABLE,)
+
+
+def test_deleting_one_workspaces_file_leaves_the_other_workspace_alone(
+    provider: LocalKnowledgeProvider, tmp_path: Path
+) -> None:
+    before = provider.search(scope_of(MALLORY), "新增用户", limit=5)
+    (tmp_path / "ops" / "handbook.md").unlink()
+    provider.index.import_directory(tmp_path / "ops", workspace_id="ops")
+    assert provider.search(scope_of(MALLORY), "新增用户", limit=5) == before
+    assert before != ()
+
+
+def test_a_section_deleted_from_a_file_leaves_the_index_on_reimport(
+    provider: LocalKnowledgeProvider, tmp_path: Path
+) -> None:
+    chunks_before = provider.index.chunks_in("ops")
+    (tmp_path / "ops" / "handbook.md").write_text(
+        OPS_DOC + "\n# 退款口径\n\n退款在原订单日期冲减成交额。\n", encoding="utf-8"
+    )
+    provider.index.import_directory(tmp_path / "ops", workspace_id="ops")
+    assert len(provider.index.chunks_in("ops")) > len(chunks_before)
+    (tmp_path / "ops" / "handbook.md").write_text(OPS_DOC, encoding="utf-8")
+    report = provider.index.import_directory(tmp_path / "ops", workspace_id="ops")
+    assert report.removed > 0
+    assert provider.index.chunks_in("ops") == chunks_before
+    assert not any("退款" in chunk.text for chunk in provider.index.chunks_in("ops"))
+
+
+def test_a_reimport_with_nothing_gone_removes_nothing(
+    provider: LocalKnowledgeProvider, tmp_path: Path
+) -> None:
+    report = provider.index.import_directory(tmp_path / "ops", workspace_id="ops")
+    assert report.removed == 0
+    assert "已移除" not in report.render()
+
+
+def test_a_file_already_in_another_workspace_is_skipped_not_taken_over(
+    provider: LocalKnowledgeProvider, tmp_path: Path
+) -> None:
+    """Chunk ids come from the path, so the second workspace would take the first one's."""
+    before = provider.index.chunks_in("finance")
+    report = provider.index.import_directory(tmp_path / "finance", workspace_id="ops")
+    assert report.imported == []
+    assert "只能属于一个业务空间" in report.render()
+    assert provider.index.chunks_in("finance") == before
+    assert not any(SECRET in chunk.text for chunk in provider.index.chunks_in("ops"))
+
+
 # --------------------------------------------------- K10: semantic mode
 
 
@@ -242,6 +309,32 @@ def test_embedding_is_not_repaid_for_chunks_that_already_have_a_vector(
     first = provider.index.embed_missing("ops", embedder)  # type: ignore[arg-type]
     assert first > 0
     assert provider.index.embed_missing("ops", embedder) == 0  # type: ignore[arg-type]
+
+
+def test_a_reimport_keeps_the_vectors_of_text_that_did_not_change(
+    provider: LocalKnowledgeProvider, tmp_path: Path
+) -> None:
+    """Found in the 1.1 read-through: every ``kb import`` cleared every vector.
+
+    So every import sent every document to the embeddings endpoint again,
+    under a line saying existing vectors are not resent.
+    """
+    embedder = StubEmbedder()
+    assert provider.index.embed_missing("ops", embedder) > 0  # type: ignore[arg-type]
+    provider.index.import_directory(tmp_path / "ops", workspace_id="ops")
+    assert provider.index.embed_missing("ops", embedder) == 0  # type: ignore[arg-type]
+
+
+def test_a_reimport_drops_the_vector_of_text_that_changed(
+    provider: LocalKnowledgeProvider, tmp_path: Path
+) -> None:
+    embedder = StubEmbedder()
+    provider.index.embed_missing("ops", embedder)  # type: ignore[arg-type]
+    (tmp_path / "ops" / "handbook.md").write_text(
+        OPS_DOC.replace("注册日期", "首单日期"), encoding="utf-8"
+    )
+    provider.index.import_directory(tmp_path / "ops", workspace_id="ops")
+    assert provider.index.embed_missing("ops", embedder) > 0  # type: ignore[arg-type]
 
 
 def test_the_similarity_floor_is_a_setting_not_a_constant(

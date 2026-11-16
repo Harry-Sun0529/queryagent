@@ -263,6 +263,29 @@ def test_old_draft_traces_are_pruned(tmp_path: Path) -> None:
     assert len(list(directory.glob("*.jsonl"))) == 2
 
 
+def test_a_writer_prunes_a_folder_that_was_already_full(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Found in the 1.1 read-through: pruning ran only when the folder was new.
+
+    A new folder is the one case with nothing to prune, so traces grew for
+    ever. The folder here exists and is over the limit before the first write.
+    """
+    monkeypatch.setattr(flowtrace, "KEEP_FLOW_TRACES", 3)
+    directory = tmp_path / "flows"
+    directory.mkdir()
+    for index in range(6):
+        (directory / f"old{index}-ops.jsonl").write_text("{}\n", encoding="utf-8")
+    writer = FlowTraceWriter(tmp_path, warn=lambda _text: None)
+    event = FlowEvent(PREPARED, "new", "2026-11-16T00:00:00+00:00", "alice", "ops", "cli")
+    writer.write(event)
+    writer.write(event)
+    names = sorted(path.name for path in directory.glob("*.jsonl"))
+    assert len(names) == 3
+    assert "new-ops.jsonl" in names
+    assert len(read_flow_trace(directory / "new-ops.jsonl")) == 2
+
+
 def test_rendering_says_what_was_dropped_and_what_was_refused() -> None:
     events = [
         FlowEvent("extracted", "d" * 32, "2026-11-16T10:00:00+00:00", "alice", "ops", "cli", {

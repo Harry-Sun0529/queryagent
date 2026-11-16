@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import dataclasses
 import functools
+import inspect
 import uuid
 from collections.abc import Callable
 from datetime import date, datetime, timedelta, timezone
@@ -148,6 +149,7 @@ class QueryWorkflow:
     ) -> None:
         self._store = store
         self._builder = builder
+        self._builder_takes_actor = _takes_actor(builder)
         self._compiler = compiler
         self._execute_sql = executor
         self._clock = clock
@@ -263,12 +265,14 @@ class QueryWorkflow:
 
         Evidence-backed builders retrieve under the actor's scope; the
         maintainer-only builder has nothing to scope and takes no actor. One
-        call site rather than two branches at every caller.
+        call site rather than two branches at every caller. Which kind it is
+        was read off the signature when the service was built: catching
+        ``TypeError`` here instead would also catch one raised *inside* a
+        builder, and answer it by building again with nobody's documents.
         """
-        try:
+        if self._builder_takes_actor:
             return self._builder.build(question, actor)
-        except TypeError:
-            return self._builder.build(question)
+        return self._builder.build(question)
 
     def _reap(self) -> int:
         """Fail the runs no process can still be running; how many there were.
@@ -506,6 +510,20 @@ class QueryWorkflow:
                     f"选定口径 {chosen.value} 矛盾；请只保留一个"
                 )
         current = self._draft_of(actor, draft_id)
+        # A caller's rule may carry a citation only by adopting wording the
+        # sheet already shows with that citation. Any other string would put
+        # a source on the sheet that retrieval never returned for this
+        # identity and that is never re-checked (D07). The doors build rules
+        # through ``answers``, which cannot do this; a caller of this method
+        # could.
+        known = set(_cited(current.definition))
+        uncited = sorted(
+            rule.key for rule in rules if rule.evidence_ref and rule.evidence_ref not in known
+        )
+        if uncited:
+            raise WorkflowStateError(
+                f"补充的规则只能引用这份确认单上已有的出处：{', '.join(uncited)}"
+            )
         definition = current.definition.with_rules(rules)
         updated = DefinitionDraft(
             draft_id=current.draft_id,
@@ -662,7 +680,12 @@ class QueryWorkflow:
             raise
 
     def _draft_behind(self, actor: ActorContext, confirmation_id: str) -> str:
-        """The draft a confirmation names, for filing a trace; '' if not this caller's."""
+        """The draft a confirmation names, for filing a trace.
+
+        A confirmation that does not exist, or is somebody else's, names no
+        draft this caller may hear about: the refusal is filed under
+        ``unconfirmed`` in the caller's own workspace.
+        """
         try:
             return self._store.get_confirmation(actor.subject_id, confirmation_id).draft_id
         except WorkflowError:
@@ -849,6 +872,18 @@ class QueryWorkflow:
             return ""
         latest = _latest_in(result)
         return latest.isoformat() if latest else ""
+
+
+def _takes_actor(builder: DraftBuilder) -> bool:
+    """Whether ``builder.build`` accepts the identity after the question."""
+    try:
+        parameters = inspect.signature(builder.build).parameters.values()
+    except (TypeError, ValueError):  # no readable signature: assume the full protocol
+        return True
+    positional = [
+        p for p in parameters if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+    ]
+    return len(positional) >= 2 or any(p.kind is p.VAR_POSITIONAL for p in parameters)
 
 
 def _cited(definition: BusinessDefinition) -> tuple[str, ...]:

@@ -55,10 +55,17 @@ class ImportReport:
     def __init__(self) -> None:
         self.imported: list[str] = []
         self.skipped: list[tuple[str, str]] = []
+        self.removed = 0
+        """Chunks dropped because their file or section is no longer there."""
 
     def render(self) -> str:
         lines = [f"已纳入 {len(self.imported)} 个文件："]
         lines.extend(f"  · {path}" for path in self.imported)
+        if self.removed:
+            lines.append(
+                f"已移除 {self.removed} 个片段：它们的文件或章节已不在该目录下，"
+                "引用它们的确认单会失效"
+            )
         if self.skipped:
             lines.append(f"未能纳入 {len(self.skipped)} 个文件（其规则不会出现在任何草案里）：")
             lines.extend(f"  · {path} — {why}" for path, why in self.skipped)
@@ -82,10 +89,24 @@ class SqliteKnowledgeIndex:
 
         Re-importing is idempotent for unchanged content: chunk ids are
         derived from the document and section, so a stored citation survives
-        a re-index (§4.5.4).
+        a re-index (§4.5.4), and a chunk whose text did not change keeps its
+        vector.
+
+        The index follows the directory, not only into it. A file deleted
+        from the directory, or a section deleted from a file, is deleted
+        here too: found in the 1.1 read-through, an import only ever added,
+        so a withdrawn handbook went on supplying rules and its citations
+        went on checking out. A file that could not be read this time keeps
+        what it had; it is reported as skipped, and a parse failure must not
+        look like the document being withdrawn.
+
+        One file belongs to one workspace. Chunk ids come from the path, so
+        the same file under a second workspace would take the first one's
+        chunks away; it is skipped and reported instead.
         """
         report = ImportReport()
         root = Path(directory)
+        kept: set[str] = set()
         for path in sorted(root.rglob("*")):
             if not path.is_file() or path.suffix.lower() not in SUPPORTED_SUFFIXES:
                 continue
@@ -93,16 +114,75 @@ class SqliteKnowledgeIndex:
                 document = load_document(path)
             except (DocumentParseError, UnsupportedFormat) as exc:
                 report.skipped.append((str(path), str(exc)))
+                kept.add(str(path))
                 continue
-            self._upsert(chunk_document(document), document, workspace_id)
+            elsewhere = self._conn.execute(
+                "SELECT workspace_id FROM chunks WHERE doc_id = ? AND workspace_id != ? LIMIT 1",
+                (document.doc_id, workspace_id),
+            ).fetchone()
+            if elsewhere is not None:
+                report.skipped.append(
+                    (
+                        str(path),
+                        f"该文件已在业务空间 '{elsewhere['workspace_id']}' 的索引里；"
+                        "一个文件只能属于一个业务空间",
+                    )
+                )
+                continue
+            chunks = chunk_document(document)
+            self._upsert(chunks, document, workspace_id)
+            report.removed += self._drop_sections_gone(document, chunks, workspace_id)
             report.imported.append(str(path))
+            kept.add(str(path))
+        report.removed += self._drop_files_gone(root, kept, workspace_id)
         return report
+
+    def _drop_sections_gone(
+        self, document: Document, chunks: tuple[Chunk, ...], workspace_id: str
+    ) -> int:
+        """Delete this document's chunks that the file no longer produces."""
+        current = {chunk.chunk_id for chunk in chunks}
+        stored = self._conn.execute(
+            "SELECT chunk_id FROM chunks WHERE doc_id = ? AND workspace_id = ?",
+            (document.doc_id, workspace_id),
+        ).fetchall()
+        gone = [(row["chunk_id"],) for row in stored if row["chunk_id"] not in current]
+        self._conn.executemany("DELETE FROM chunks WHERE chunk_id = ?", gone)
+        return len(gone)
+
+    def _drop_files_gone(self, root: Path, kept: set[str], workspace_id: str) -> int:
+        """Delete chunks of files that were under ``root`` and are not any more.
+
+        Only this directory's files: another source of the same workspace is
+        not this import's to judge.
+        """
+        prefix = str(root).rstrip("/") + "/"
+        stored = self._conn.execute(
+            "SELECT DISTINCT doc_path FROM chunks WHERE workspace_id = ?", (workspace_id,)
+        ).fetchall()
+        removed = 0
+        for row in stored:
+            doc_path = row["doc_path"]
+            if doc_path.startswith(prefix) and doc_path not in kept:
+                removed += self._conn.execute(
+                    "DELETE FROM chunks WHERE workspace_id = ? AND doc_path = ?",
+                    (workspace_id, doc_path),
+                ).rowcount
+        return removed
 
     def _upsert(
         self, chunks: tuple[Chunk, ...], document: Document, workspace_id: str
     ) -> None:
         self._conn.executemany(
-            "INSERT OR REPLACE INTO chunks VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            # The vector survives only while the text it was made from does.
+            "INSERT INTO chunks VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(chunk_id) DO UPDATE SET doc_id = excluded.doc_id, "
+            "doc_path = excluded.doc_path, doc_title = excluded.doc_title, "
+            "workspace_id = excluded.workspace_id, text = excluded.text, "
+            "section_path = excluded.section_path, start = excluded.start, "
+            '"end" = excluded."end", unit = excluded.unit, terms = excluded.terms, '
+            "vector = CASE WHEN chunks.content_hash = excluded.content_hash "
+            "THEN chunks.vector ELSE '' END, content_hash = excluded.content_hash",
             [
                 (
                     chunk.chunk_id,

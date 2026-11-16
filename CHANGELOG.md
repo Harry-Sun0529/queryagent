@@ -53,6 +53,39 @@ frozen from v0.1.1 (spec §四).
     now finds real traces there: 22/22 scripted and three DeepSeek runs of
     6/6, all gates 0.
 
+### Fixed
+
+Found by reading the whole codebase once the three 1.1 additions were in.
+
+- **A document deleted from a source directory stayed in the index.**
+  `kb import` only ever added: a withdrawn handbook went on supplying rules,
+  and citations of it went on checking out. An import now removes the chunks
+  of files and sections that are no longer under the directory and says how
+  many. A file that fails to parse keeps what it had and is reported as
+  skipped, as before.
+- **Every `kb import` cleared every vector**, so with `knowledge.embedding`
+  set each import sent every document to the embeddings endpoint again,
+  under a line saying existing vectors are not resent. A chunk whose text
+  did not change now keeps its vector.
+- **The same file under two workspaces moved between them.** Chunk ids come
+  from the path, so the second import took the first workspace's chunks. It
+  is now skipped and reported: one file belongs to one workspace.
+- **Flow traces were never pruned.** Pruning ran only when the `flows/`
+  folder was new, which is when it is empty. It now runs once per process,
+  before its first line.
+- **`QueryWorkflow.amend` accepted any citation on a caller's rule.** The
+  rule's source was checked; its `evidence_ref` was not. The three doors
+  cannot produce such a rule, a direct caller could. A caller's rule may now
+  cite only what the sheet already cites.
+- **A `TypeError` raised inside a draft builder was retried without the
+  identity**, hiding the defect and building from nobody's documents. Which
+  call a builder takes is now read from its signature.
+- **Extraction refused JSON wrapped in a code fence** while the judge read
+  it. Both now read it.
+- **The confirmation page**: a `Content-Length` that is not a number raised
+  instead of answering 400, and a connection that sent nothing held the
+  single-threaded server for good. Requests now time out after 30 seconds.
+
 ## [1.0.2] — 2026-11-13
 
 No frozen surface moved (ADR-014).

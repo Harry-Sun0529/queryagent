@@ -447,6 +447,60 @@ def test_amend_refuses_rules_that_claim_a_document_said_it(
     assert unchanged.definition_hash == draft.definition_hash
 
 
+def test_amend_refuses_a_citation_the_sheet_does_not_already_show(
+    parts: tuple[QueryWorkflow, CountingExecutor],
+) -> None:
+    """Found in the 1.1 read-through: the source was checked, the citation was not.
+
+    A rule marked as the caller's own could still carry any string as its
+    ``evidence_ref``, and the sheet would show a source retrieval never
+    returned and nothing re-checks. Adopting wording already on the sheet is
+    the only way a caller's rule comes to cite anything.
+    """
+    workflow, _ = parts
+    draft = workflow.prepare(ALICE, "上个月新增用户多少？", request_id="r1")
+    with pytest.raises(WorkflowStateError, match="已有的出处"):
+        workflow.amend(
+            ALICE,
+            draft.draft_id,
+            expected_version=draft.version,
+            rules=(Rule("variant", "registered", RuleSource.USER, evidence_ref="doc:fake#1"),),
+        )
+    unchanged = workflow.get_draft(ALICE, draft.draft_id)
+    assert unchanged.version == draft.version
+    assert unchanged.definition_hash == draft.definition_hash
+
+
+class _BrokenBuilder:
+    """Takes the identity, and fails inside with the error a wrong call would raise."""
+
+    def __init__(self) -> None:
+        self.calls: list[ActorContext | None] = []
+
+    def build(self, question: str, actor: ActorContext | None = None) -> object:
+        self.calls.append(actor)
+        raise TypeError("a defect inside the builder")
+
+
+def test_a_type_error_inside_a_builder_is_not_answered_by_building_without_the_actor(
+    tmp_path: Path,
+) -> None:
+    """Found in the 1.1 read-through: ``except TypeError`` retried with no identity.
+
+    That hid the defect and built a second draft from nobody's documents.
+    """
+    builder = _BrokenBuilder()
+    workflow = QueryWorkflow(
+        store=SqliteWorkflowStore(tmp_path / "wf.db"),
+        builder=builder,  # type: ignore[arg-type]
+        compiler=TemplateCompiler(TEMPLATES),
+        executor=CountingExecutor().run,
+    )
+    with pytest.raises(TypeError, match="a defect inside the builder"):
+        workflow.prepare(ALICE, "新增用户多少？", request_id="r1")
+    assert builder.calls == [ALICE]
+
+
 def test_amend_refuses_maintainer_sourced_rules_too(
     parts: tuple[QueryWorkflow, CountingExecutor],
 ) -> None:

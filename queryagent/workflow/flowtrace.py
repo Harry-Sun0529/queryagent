@@ -136,6 +136,7 @@ class FlowTraceWriter:
         self.directory = Path(directory) / FLOW_DIR_NAME
         self._warn = warn or (lambda text: print(text, file=sys.stderr))
         self._failed = False
+        self._pruned = False
 
     def path_of(self, draft_id: str, workspace: str) -> Path:
         return self.directory / f"{_safe(draft_id)}-{_safe(workspace)}.jsonl"
@@ -144,12 +145,18 @@ class FlowTraceWriter:
         """Append one event. Never raises: a trace must not be why a flow failed."""
         try:
             line = json.dumps(event.to_dict(), ensure_ascii=False, default=str) + "\n"
-            first = not self.directory.exists()
             self.directory.mkdir(parents=True, exist_ok=True)
-            if first:
-                prune_flow_traces(self.directory, reserve=1)
+            target = self.path_of(event.draft_id, event.workspace)
+            if not self._pruned:
+                # Once per writer, before its first line. Found in the 1.1
+                # read-through: this ran only when the folder was new, which
+                # is when there is nothing to prune, so traces only ever grew.
+                self._pruned = True
+                prune_flow_traces(
+                    self.directory, KEEP_FLOW_TRACES, reserve=0 if target.exists() else 1
+                )
             descriptor = os.open(
-                self.path_of(event.draft_id, event.workspace),
+                target,
                 os.O_WRONLY | os.O_APPEND | os.O_CREAT,
                 0o600,
             )

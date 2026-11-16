@@ -101,3 +101,18 @@ def tokens(text: str) -> set[str]:
             found.add(run)
         found.update(run[index : index + 2] for index in range(len(run) - 1))
     return found
+
+
+def unfenced(raw: str) -> str:
+    """A model's JSON reply without the Markdown code fence around it, if any.
+
+    Asked for "JSON only", some models still answer inside ```json … ```.
+    That is the answer in a wrapper, not an unreadable answer, and every
+    place that parses a model's JSON reads it the same way.
+    """
+    text = raw.strip()
+    if not text.startswith("```"):
+        return text
+    text = text.strip("`").strip()
+    brace = text.find("{")
+    return text[brace:] if brace >= 0 else text

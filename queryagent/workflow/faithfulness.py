@@ -33,6 +33,7 @@ from enum import Enum
 from typing import Any, Protocol
 
 from queryagent.llm.base import Message, ModelResponse, ToolSpec
+from queryagent.text import unfenced
 
 _OPEN = "<<<ITEM {index}>>>"
 _CLOSE = "<<<END ITEM {index}>>>"
@@ -140,12 +141,8 @@ def parse_judgements(raw: str, count: int) -> tuple[Judgement, ...]:
 
 
 def _entries(raw: str) -> list[dict[str, Any]]:
-    text = raw.strip()
-    if text.startswith("```"):
-        text = text.strip("`")
-        text = text[text.find("{") :] if "{" in text else text
     try:
-        payload = json.loads(text)
+        payload = json.loads(unfenced(raw))
     except json.JSONDecodeError:
         return []
     verdicts = payload.get("verdicts") if isinstance(payload, dict) else None

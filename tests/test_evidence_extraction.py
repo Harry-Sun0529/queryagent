@@ -216,3 +216,15 @@ def test_every_drop_is_reported_as_a_diagnostic() -> None:
     assert result.diagnostics
     assert result.diagnostics[0].reason
     assert result.diagnostics[0].key == "counting_basis"
+
+
+def test_a_reply_wrapped_in_a_code_fence_is_read_not_refused() -> None:
+    """Found in the 1.1 read-through: the judge read fenced JSON, extraction did not.
+
+    A fence is a wrapper around the answer. Refusing it would fail the whole
+    draft over formatting.
+    """
+    bare = _raw()
+    fenced = f"```json\n{bare}\n```"
+    assert validate_extraction(CHUNKS, fenced) == validate_extraction(CHUNKS, bare)
+    assert len(validate_extraction(CHUNKS, fenced).rules) == 1

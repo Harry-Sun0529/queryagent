@@ -39,6 +39,10 @@ from queryagent.workflow.render import render_result, sheet_lines
 from queryagent.workflow.wiring import WorkflowWiring
 
 MAX_BODY_BYTES = 64 * 1024
+REQUEST_TIMEOUT_S = 30
+"""How long one connection may take to send its request. The server answers
+one request at a time, so a client that connects and says nothing would
+otherwise hold the page for everyone, for good."""
 
 SECURITY_HEADERS = (
     # No script runs on this page, whatever reaches it (H7's second wall).
@@ -227,6 +231,7 @@ class _Handler(BaseHTTPRequestHandler):
     server: ConfirmationServer
     server_version = "queryagent"
     sys_version = ""
+    timeout = REQUEST_TIMEOUT_S
 
     def do_GET(self) -> None:  # noqa: N802 - the standard library's naming
         self._dispatch()
@@ -235,7 +240,11 @@ class _Handler(BaseHTTPRequestHandler):
         self._dispatch()
 
     def _dispatch(self) -> None:
-        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            self._send(_refused(400, "请求的 Content-Length 不是数字。"))
+            return
         if length > MAX_BODY_BYTES:
             self._send(_refused(413, "提交的内容过大。"))
             return

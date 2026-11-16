@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import http.client
 import re
+import socket
 import sqlite3
 import threading
 from collections.abc import Iterator
@@ -22,11 +23,13 @@ import pytest
 from queryagent.cli import main
 from queryagent.web.server import (
     _TOKEN_IN_LOG,
+    REQUEST_TIMEOUT_S,
     SECURITY_HEADERS,
     ConfirmationPage,
     ConfirmationServer,
     Request,
     Response,
+    _Handler,
 )
 from queryagent.web.session import Gate
 from queryagent.workflow.models import (
@@ -442,6 +445,51 @@ def test_the_real_server_sends_its_headers_and_confirms_over_http(tmp_path: Path
         thread.join(10)
     with sqlite3.connect(tmp_path / "wf.db") as connection:
         assert list(connection.execute("SELECT channel FROM confirmations")) == [("web",)]
+
+
+def test_a_malformed_request_is_refused_and_the_server_keeps_answering(tmp_path: Path) -> None:
+    """Found in the 1.1 read-through: a Content-Length that is not a number raised.
+
+    The server answers one request at a time, so what one bad request does to
+    it, it does to the person waiting to confirm. Asserted as a pair: the bad
+    request is refused, and the next one is answered.
+    """
+    ready = threading.Event()
+    box: dict[str, Any] = {}
+
+    def serve() -> None:
+        parts = Parts(tmp_path)  # SQLite objects stay on the thread that made them
+        server = ConfirmationServer(parts.wiring, ALICE_WEB, 0)
+        box["server"] = server
+        ready.set()
+        server.serve_forever(poll_interval=0.05)
+        server.server_close()
+        parts.close()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    assert ready.wait(10)
+    server: ConfirmationServer = box["server"]
+    port = server.server_address[1]
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=10) as raw:
+            raw.sendall(
+                f"POST /drafts/x/confirm HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
+                "Content-Length: many\r\n\r\n".encode()
+            )
+            status_line = raw.recv(4096).split(b"\r\n", 1)[0]
+        assert b" 400 " in status_line
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        connection.request("GET", server.gate.login_path)
+        assert connection.getresponse().status == 303
+    finally:
+        server.shutdown()
+        thread.join(10)
+
+
+def test_a_connection_that_says_nothing_cannot_hold_the_page_for_good() -> None:
+    assert 0 < REQUEST_TIMEOUT_S <= 60
+    assert _Handler.timeout == REQUEST_TIMEOUT_S
 
 
 # ------------------------------------------------------ the terminal door
