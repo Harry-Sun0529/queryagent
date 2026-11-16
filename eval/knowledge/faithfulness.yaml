@@ -4,11 +4,15 @@
 # and whether the restatement is faithful to the quote. `kind` names how an
 # unfaithful one departs, or how a faithful one differs in wording.
 #
-# LABEL STATUS: drafted by an AI assistant on 2026-11-16 and NOT yet reviewed
-# by a person. Until the project owner has read every label, numbers measured
-# on this file are "a model graded against a model's labels" and must not be
-# quoted outside the repository. Change `reviewed_by` when that is done.
-reviewed_by: null
+# LABEL STATUS: drafted by an AI assistant on 2026-11-16. The project owner
+# read all 90 on 2026-11-17 and kept every label. A second AI pass the same
+# day agreed with 87 and marked three as judgement calls rather than errors:
+#   hard-05  leaving out an exception counts as unfaithful (it widens the rule)
+#   ord-03   「完成第二笔订单」 restated as 「下了第二单」 counts as faithful
+#   hard-15  「不计入」 restated as 「只算」 counts as faithful
+# The owner kept all three as labelled. Whoever changes a label clears
+# `reviewed_by` until the file has been read again.
+reviewed_by: "Harry-Sun, 2026-11-17"
 
 items:
   # ---------------------------------------------------------------- negation

@@ -193,8 +193,10 @@ What the code guarantees, and what it does not:
   - With `knowledge.faithfulness_check: true` a second model call compares
     each restatement with its quote and puts a warning under the ones it
     doubts (ADR-015). It is a reader's aid, not a boundary: it drops nothing
-    and blocks nothing, it is the same model as the extractor, and it was
-    measured on pairs whose labels no person has reviewed yet. **No warning
+    and blocks nothing, it is the same model as the extractor, and the 90
+    pairs it was measured on were written by an AI assistant before the
+    project owner read them: it missed none of them, which says the pairs
+    are not hard enough to find its limit. **No warning
     does not mean the restatement was verified.**
 
 Semantic retrieval, when enabled, sends document text to the configured

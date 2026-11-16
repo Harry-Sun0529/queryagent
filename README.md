@@ -429,6 +429,16 @@ issue in the report. Every run kept append-only checkpoints, signatures,
 input hashes and database snapshot hashes. These results are measurements,
 not a reason to tune the frozen system.
 
+**These numbers carry their date.** On 2026-11-16 the BIRD dev100 run was
+repeated three times on the v1.0.2 code: first-execution pass 53/100 each
+time, against 44/100 above. Nothing on the agent path changed between
+v1.0.0 and v1.0.2, the requested model was the same and the provider
+reported the same served model name. Why the number moved was not
+established; a hosted model can change under a name. So 44% is what this
+code measured in September 2026, not a property of the code, and anyone
+re-running it should expect a different figure. The sealed test200 was not
+run again and will not be (ADR-004), so it has no later figure to compare.
+
 ### Historical results (through v0.5.0, `deepseek-v4-flash`, temperature 0)
 
 These published numbers use the **legacy scorer**: any executed SQL matching

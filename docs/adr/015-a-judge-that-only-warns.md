@@ -50,9 +50,12 @@ every run, and every adversarial pair held. It is met.
 
 **What these numbers are not.** Read this before quoting them.
 
-- The pairs and their labels were written by an AI assistant and, at the
-  time of writing, have not been read by a person (`reviewed_by: null` in
-  the file). A model graded against a model's labels can agree with itself.
+- The pairs and their labels were written by an AI assistant. When the
+  judge was measured and wired in, no person had read them. The project
+  owner read all 90 on 2026-11-17 and kept every label (`reviewed_by` in the
+  file; three judgement calls are named in its header). That settles whether
+  the labels are right. It does not make the set independent: the pairs
+  were still composed by a model of the kind being judged.
 - A perfect score is a ceiling, not a measurement of how good the judge is.
   The first 72 pairs scored 72/72; a harder tier of 18 was added because a
   set nothing fails on measures nothing — and nothing failed on that either.
@@ -71,7 +74,7 @@ every run, and every adversarial pair held. It is met.
   key.
 - (−) One more model call per prepared draft (about a second here).
 - (−) A warning people learn to ignore is worse than none. The false-alarm
-  bound in the acceptance rule exists for that reason; it was measured on an
-  unreviewed set.
+  bound in the acceptance rule exists for that reason; it was measured on 38
+  faithful pairs, none of which the judge flagged.
 - No warning does not mean the restatement was verified. SECURITY.md keeps
   saying so.

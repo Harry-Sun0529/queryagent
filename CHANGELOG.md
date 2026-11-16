@@ -6,7 +6,7 @@ versioning: [SemVer](https://semver.org/). CLI arguments and config structure
 enter the semver contract at v0.2.0; `metrics.yaml` required fields are
 frozen from v0.1.1 (spec §四).
 
-## [Unreleased]
+## [1.1.0] — 2026-11-17
 
 契约摘要：91fb0479a7c6
 
@@ -26,12 +26,12 @@ frozen from v0.1.1 (spec §四).
     draft rather than passing it unchecked.
   - Measured before it was wired in (`eval/run_faithfulness_check.py`, 90
     labelled pairs, three DeepSeek runs): 52/52 unfaithful pairs caught, 0/38
-    false alarms, 5/5 adversarial pairs held, each run. **The labels were
-    drafted by an AI assistant and have not been reviewed by a person; a
-    perfect score on them is a ceiling, not a rating.** ADR-015 says what
-    the numbers are not.
+    false alarms, 5/5 adversarial pairs held, each run. **The pairs were
+    drafted by an AI assistant; the project owner read all 90 and kept every
+    label after the measurement. A perfect score on them is a ceiling, not a
+    rating.** ADR-015 says what the numbers are not.
   - New config key `knowledge.faithfulness_check` — an addition to a frozen
-    surface, so the next release is a minor one.
+    surface, which is why this release is a minor one.
 - **The confirmed flow leaves a trace** (ADR-016). `flow`, `mcp`, `web` and
   `confirm` wrote none; only `ask` and `chat` did.
   - Each draft's steps are appended to
@@ -55,7 +55,7 @@ frozen from v0.1.1 (spec §四).
 
 ### Fixed
 
-Found by reading the whole codebase once the three 1.1 additions were in.
+Found by reading the whole codebase once the 1.1 additions were in.
 
 - **A document deleted from a source directory stayed in the index.**
   `kb import` only ever added: a withdrawn handbook went on supplying rules,
