@@ -63,7 +63,8 @@ class ExtractionUnreadable(WorkflowError):
 
 @dataclass(frozen=True)
 class Diagnostic:
-    """Why one proposed rule was dropped. Goes to the trace, never to the user."""
+    """Why one proposed rule was dropped. Goes to the flow trace (ADR-016), never to
+    the user: on the sheet a dropped rule reads as "the documents did not say"."""
 
     key: str
     reason: str

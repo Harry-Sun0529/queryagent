@@ -13,6 +13,7 @@ import contextlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timezone, tzinfo
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from queryagent.budget import Budget, SqliteBudgetLedger, Unmetered
@@ -25,6 +26,8 @@ from queryagent.knowledge.provider import LocalKnowledgeProvider, scope_of
 from queryagent.llm import make_backend
 from queryagent.llm.base import LLMBackend
 from queryagent.metrics.yaml_store import YamlMetricStore
+from queryagent.trace import TRACE_DIR_NAME
+from queryagent.workflow import flowtrace
 from queryagent.workflow.builder import MetricDraftBuilder
 from queryagent.workflow.compiler import TemplateCompiler
 from queryagent.workflow.enforcement import enforcement_table
@@ -176,6 +179,7 @@ def build_workflow(
         budget=make_budget(config, stack),
         freshness=freshness_policy(config, connector, resolve_today),
         run_deadline_s=run_deadline_s(config),
+        emit=flow_tracer(config),
     )
     known = {source.workspace for source in config.knowledge.sources}
     if provider is not None and actor.workspace_id not in known:
@@ -195,6 +199,19 @@ def build_workflow(
         notices=tuple(notices),
         zone=ZoneInfo(config.workflow.timezone),
     )
+
+
+def flow_tracer(config: AppConfig) -> flowtrace.Emit | None:
+    """Where each draft's steps are written, or None when ``trace`` is off (ADR-016).
+
+    The same switch and directory as the agent's traces (ADR-005), in a
+    ``flows/`` folder of its own: one file per draft, appended to by every
+    process that touches it.
+    """
+    if not config.trace:
+        return None
+    directory = Path(config.trace_dir) if config.trace_dir else Path(TRACE_DIR_NAME)
+    return flowtrace.FlowTraceWriter(directory).write
 
 
 RUN_DEADLINE_MARGIN_S = 60

@@ -19,15 +19,17 @@ The three properties this class is built to hold:
 from __future__ import annotations
 
 import dataclasses
+import functools
 import uuid
 from collections.abc import Callable
 from datetime import date, datetime, timedelta, timezone
-from typing import Protocol
+from typing import Any, Protocol, TypeVar, cast
 
-from queryagent.budget import Budget, Lease, Unmetered, metered
+from queryagent.budget import Budget, BudgetExceeded, Lease, Unmetered, metered
 from queryagent.connectors.base import QueryResult
 from queryagent.knowledge.models import EvidenceRef, RefStatus
 from queryagent.knowledge.provider import RetrievalScope, scope_of
+from queryagent.workflow import flowtrace
 from queryagent.workflow.compiler import CompiledQuery, FreshnessTarget, TemplateCompiler
 from queryagent.workflow.coverage import confirmed_period, latest_date
 from queryagent.workflow.errors import (
@@ -35,6 +37,7 @@ from queryagent.workflow.errors import (
     NotFound,
     PermissionDenied,
     StaleVersion,
+    WorkflowError,
     WorkflowStateError,
 )
 from queryagent.workflow.freshness import (
@@ -97,6 +100,34 @@ def _uuid() -> str:
     return uuid.uuid4().hex
 
 
+_Method = TypeVar("_Method", bound=Callable[..., Any])
+
+
+def _watched(step: str) -> Callable[[_Method], _Method]:
+    """Trace a refusal from the method, then let it through unchanged (ADR-016).
+
+    The method's second argument names what it acts on: a draft id, or for
+    ``execute`` a confirmation id. Every door calls these methods, so every
+    door's refusals are traced the same way — and a refusal traced by an
+    inner call is not traced again by the one that made it.
+    """
+
+    def wrap(method: _Method) -> _Method:
+        @functools.wraps(method)
+        def inner(
+            self: QueryWorkflow, actor: ActorContext, target: str, *args: Any, **kwargs: Any
+        ) -> Any:
+            try:
+                return method(self, actor, target, *args, **kwargs)
+            except (WorkflowError, BudgetExceeded) as exc:
+                self._trace_refusal(actor, target, step, exc)
+                raise
+
+        return cast(_Method, inner)
+
+    return wrap
+
+
 class QueryWorkflow:
     """Application service owning request state and the confirmation gate."""
 
@@ -113,6 +144,7 @@ class QueryWorkflow:
         budget: Budget | None = None,
         freshness: FreshnessPolicy | None = None,
         run_deadline_s: float | None = None,
+        emit: flowtrace.Emit | None = None,
     ) -> None:
         self._store = store
         self._builder = builder
@@ -128,6 +160,10 @@ class QueryWorkflow:
         # How long a run may stay 'executing' before no process can still be
         # running it. None: never presumed dead (the behaviour before 1.0.2).
         self._run_deadline_s = run_deadline_s
+        # Where the steps of each draft are reported (ADR-016). Decisions are
+        # made in this class, so they are traced from this class: no door
+        # writes a trace of its own, and so none can tell it differently.
+        self._emit_event = emit if emit is not None else flowtrace.silent
 
     # ------------------------------------------------------------- prepare
 
@@ -138,10 +174,25 @@ class QueryWorkflow:
         confirmation screen is the trust boundary, not a fallback for hard
         questions (D05, T01).
         """
-        definition = self._build_definition(actor, question)
+        draft_id = self._new_id()
+        # A builder does not know which draft it builds for; what it reports
+        # is collected here and traced under this draft, in the order it
+        # happened, whether or not a draft comes of it.
+        notes: list[tuple[str, dict[str, Any]]] = []
+        try:
+            with flowtrace.binding(lambda kind, detail: notes.append((kind, dict(detail)))):
+                definition = self._build_definition(actor, question)
+        except Exception as exc:
+            for kind, detail in notes:
+                self._trace(actor, draft_id, kind, **detail)
+            if isinstance(exc, WorkflowError):
+                self._trace_refusal(actor, draft_id, "prepare", exc)
+            raise
+        for kind, detail in notes:
+            self._trace(actor, draft_id, kind, **detail)
         now = self._clock()
         draft = DefinitionDraft(
-            draft_id=self._new_id(),
+            draft_id=draft_id,
             request_id=request_id,
             subject_id=actor.subject_id,
             workspace_id=actor.workspace_id,
@@ -162,7 +213,50 @@ class QueryWorkflow:
             # Recorded here, once, rather than by each adapter: a door that
             # forgot to would produce drafts whose citations nobody re-checks.
             self._store.set_evidence(actor.subject_id, draft.draft_id, cited)
+        self._trace(
+            actor,
+            draft.draft_id,
+            flowtrace.PREPARED,
+            question=question,
+            metric=definition.metric,
+            version=draft.version,
+            rules=[f"{rule.key}（{rule.source.value}）" for rule in definition.rules],
+            missing=list(definition.missing),
+        )
         return draft
+
+    def _trace(self, actor: ActorContext, draft_id: str, kind: str, **detail: Any) -> None:
+        self._emit_event(
+            flowtrace.FlowEvent(
+                kind=kind,
+                draft_id=draft_id,
+                at=self._clock().isoformat(),
+                subject=actor.subject_id,
+                workspace=actor.workspace_id,
+                channel=actor.channel.value,
+                detail=detail,
+            )
+        )
+
+    def _trace_refusal(
+        self, actor: ActorContext, target: str, step: str, exc: BaseException
+    ) -> None:
+        """One ``refused`` event per refusal, saying no more than the refusal itself says.
+
+        Filed under the acting identity's own workspace, so a refused reach
+        into another workspace's draft leaves nothing in that draft's trace.
+        """
+        if getattr(exc, "_flow_traced", False):
+            return
+        exc._flow_traced = True  # type: ignore[attr-defined]
+        self._trace(
+            actor,
+            target,
+            flowtrace.REFUSED,
+            step=step,
+            refusal=type(exc).__name__,
+            message=str(exc),
+        )
 
     def _build_definition(self, actor: ActorContext, question: str) -> BusinessDefinition:
         """Ask the builder for a draft, passing the identity when it wants one.
@@ -355,6 +449,7 @@ class QueryWorkflow:
 
     # --------------------------------------------------------------- amend
 
+    @_watched("amend")
     def amend(
         self,
         actor: ActorContext,
@@ -429,10 +524,19 @@ class QueryWorkflow:
             updated_at=self._clock(),
         )
         self._store.update_draft(actor.subject_id, updated, expected_version=expected_version)
+        self._trace(
+            actor,
+            draft_id,
+            flowtrace.AMENDED,
+            version=updated.version,
+            rules=[f"{rule.key}={rule.value}（{rule.source.value}）" for rule in rules],
+            missing=list(definition.missing),
+        )
         return updated
 
     # ------------------------------------------------------------- confirm
 
+    @_watched("confirm")
     def confirm(
         self, actor: ActorContext, draft_id: str, *, version: int, definition_hash: str
     ) -> Confirmation:
@@ -472,6 +576,13 @@ class QueryWorkflow:
             channel=actor.channel,
         )
         self._store.save_confirmation(confirmation)
+        self._trace(
+            actor,
+            draft_id,
+            flowtrace.CONFIRMED,
+            version=draft.version,
+            definition_hash=draft.definition_hash[:16],
+        )
         return confirmation
 
     def human_confirmation(self, actor: ActorContext, draft_id: str) -> Confirmation | None:
@@ -505,6 +616,7 @@ class QueryWorkflow:
             return DraftProgress.FAILED
         return DraftProgress.CONFIRMED
 
+    @_watched("execute")
     def execute_confirmed(self, actor: ActorContext, draft_id: str) -> QueryRun:
         """Run the draft's current version once a person has confirmed it (T44, H3).
 
@@ -536,6 +648,27 @@ class QueryWorkflow:
     # ------------------------------------------------------------- execute
 
     def execute(
+        self, actor: ActorContext, confirmation_id: str, *, idempotency_key: str
+    ) -> QueryRun:
+        """Run the confirmed 口径 once; see ``_execute`` for the order of checks.
+
+        A refusal is traced under the draft the confirmation names, when
+        there is one this caller may see.
+        """
+        try:
+            return self._execute(actor, confirmation_id, idempotency_key=idempotency_key)
+        except (WorkflowError, BudgetExceeded) as exc:
+            self._trace_refusal(actor, self._draft_behind(actor, confirmation_id), "execute", exc)
+            raise
+
+    def _draft_behind(self, actor: ActorContext, confirmation_id: str) -> str:
+        """The draft a confirmation names, for filing a trace; '' if not this caller's."""
+        try:
+            return self._store.get_confirmation(actor.subject_id, confirmation_id).draft_id
+        except WorkflowError:
+            return "unconfirmed"
+
+    def _execute(
         self, actor: ActorContext, confirmation_id: str, *, idempotency_key: str
     ) -> QueryRun:
         """Run the confirmed 口径 once.
@@ -596,12 +729,14 @@ class QueryWorkflow:
         # admitting first refused replays once the allowance ran low.
         earlier = self._store.get_run_by_key(actor.subject_id, idempotency_key)
         if earlier is not None:
+            self._trace_replay(actor, earlier, "同一个幂等键已有运行")
             return earlier
         # One confirmation authorises one run, whichever door asks and under
         # whatever key (ADR-013). Found in review: a run made under one key
         # could be made again through ``execute_confirmed``, which uses another.
         spent = self._store.latest_run_of(actor.subject_id, confirmation.confirmation_id)
         if spent is not None:
+            self._trace_replay(actor, spent, "这次确认已经有过一次运行")
             return spent
         # Admitted after every check that needs no database and before the
         # idempotency claim. The probe is reserved with the query: it is a
@@ -614,8 +749,49 @@ class QueryWorkflow:
                 raise
             if existing is not None:
                 lease.refund()  # a replay runs nothing, so it costs nothing
+                self._trace_replay(actor, existing, "另一个请求先占了位")
                 return existing  # T13: the same request, not a second query
-            return self._run(run, query, probe, lease)
+            self._trace(
+                actor,
+                run.draft_id,
+                flowtrace.ADMITTED,
+                statements=2 if probe else 1,
+                idempotency_key=idempotency_key,
+            )
+            try:
+                finished = self._run(run, query, probe, lease)
+            except Exception as exc:
+                self._trace(
+                    actor,
+                    run.draft_id,
+                    flowtrace.EXECUTED,
+                    status=RunStatus.FAILED.value,
+                    error=f"{type(exc).__name__}: {exc}",
+                    sql=run.sql,
+                    params=list(run.params),
+                )
+                raise
+            self._trace(
+                actor,
+                run.draft_id,
+                flowtrace.EXECUTED,
+                status=finished.status.value,
+                sql=finished.sql,
+                params=list(finished.params),
+                row_count=len(finished.rows),
+                columns=list(finished.columns),
+                data_through=finished.data_through,
+            )
+            return finished
+
+    def _trace_replay(self, actor: ActorContext, run: QueryRun, why: str) -> None:
+        self._trace(
+            actor,
+            run.draft_id,
+            flowtrace.ADMITTED,
+            replay=why,
+            answered_with=f"运行 {run.run_id[:8]}（{run.status.value}），没有执行新的语句",
+        )
 
     def _run(
         self, run: QueryRun, query: CompiledQuery, probe: CompiledQuery | None, lease: Lease

@@ -29,6 +29,7 @@ from queryagent.knowledge.models import EvidenceHit, EvidenceRef, IndexedChunk
 from queryagent.knowledge.provider import RetrievalScope, scope_of
 from queryagent.llm.base import Message, ModelResponse
 from queryagent.tools import ToolSpec
+from queryagent.workflow import flowtrace
 from queryagent.workflow.enforcement import Terms, implied_variants, preselect_variant
 from queryagent.workflow.extraction import ALLOWED_RULE_KEYS, validate_extraction
 from queryagent.workflow.faithfulness import Verdict, judge
@@ -160,11 +161,28 @@ class EvidenceDraftBuilder:
         """
         hits = self._provider.search(scope_of(actor), question, limit=self._limit)
         chunks = tuple(hit.chunk for hit in hits)
+        flowtrace.note(
+            flowtrace.RETRIEVED,
+            hits=[{"ref": hit.ref.render(), "score": round(hit.score, 3)} for hit in hits],
+        )
         messages = build_extraction_messages(question, chunks)
         # No tools, deliberately: there is nothing on this path to execute.
         response = self._backend.complete(messages, None)
         result = validate_extraction(chunks, response.text)
         rules = result.rules
+        # Dropped rules are why a sheet says "the documents did not specify":
+        # the maintainer needs to tell silence from a rule that failed a check.
+        flowtrace.note(
+            flowtrace.EXTRACTED,
+            adopted=[
+                {"key": rule.key, "value": rule.value, "ref": rule.evidence_ref}
+                for rule in rules
+            ],
+            dropped=[
+                {"key": d.key, "reason": d.reason, "citation": d.citation}
+                for d in result.diagnostics
+            ],
+        )
         if self._check_faithfulness:
             rules = self._doubted(rules, chunks)
         if correspond is not None:
@@ -186,6 +204,14 @@ class EvidenceDraftBuilder:
         quoted = [(rule, _quote_of(rule, chunks)) for rule in rules]
         asked = [(rule, quote) for rule, quote in quoted if quote]
         verdicts = judge(self._backend, [(quote, rule.value) for rule, quote in asked])
+        flowtrace.note(
+            flowtrace.JUDGED,
+            verdicts=[
+                f"{rule.key}：{verdict.verdict.value}"
+                + (f"（{verdict.reason}）" if verdict.reason else "")
+                for (rule, _), verdict in zip(asked, verdicts, strict=True)
+            ],
+        )
         doubts = {
             id(rule): verdict.reason or "评审认为转述与引文不一致"
             for (rule, _), verdict in zip(asked, verdicts, strict=True)

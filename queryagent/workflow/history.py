@@ -27,6 +27,7 @@ from datetime import datetime, timedelta, timezone, tzinfo
 
 from queryagent.knowledge.models import EvidenceRef, RefStatus
 from queryagent.knowledge.provider import scope_of
+from queryagent.workflow import flowtrace
 from queryagent.workflow.models import (
     FILTER_RULE_KEY,
     GROUP_RULE_KEY,
@@ -97,6 +98,7 @@ class HistoryDraftBuilder:
         if not ran_fingerprint or ran_fingerprint != self._fingerprint(found.definition):
             # The mapping behind that choice changed — or the run predates
             # fingerprints, and nobody can tell whether it did.
+            flowtrace.note(flowtrace.HISTORY, offered=[], reason="上次确认所用的映射已变更")
             return current
         day = f"{found.confirmed_at.astimezone(self._zone):%Y-%m-%d}"
         remembered = [
@@ -106,7 +108,15 @@ class HistoryDraftBuilder:
             and rule.key not in NOT_REMEMBERED
             and self._still_stands(actor, rule)
         ]
-        return _offer(current, remembered, day)
+        offered = _offer(current, remembered, day)
+        flowtrace.note(
+            flowtrace.HISTORY,
+            confirmed_on=day,
+            offered=[
+                rule.key for rule in offered.rules if rule.source is RuleSource.HISTORY
+            ],
+        )
+        return offered
 
     def _still_stands(self, actor: ActorContext, rule: Rule) -> bool:
         """A choice resting on a document is offered only while that document checks out.

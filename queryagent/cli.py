@@ -94,6 +94,7 @@ from queryagent.workflow.errors import (
     WorkflowError,
     WorkflowStateError,
 )
+from queryagent.workflow.flowtrace import is_flow_trace, read_flow_trace, render_flow
 from queryagent.workflow.grouping import (
     Dimension,
     FilterError,
@@ -527,18 +528,28 @@ def _finish_trace(writer: TraceWriter | None) -> None:
 
 def _cmd_replay(args: argparse.Namespace) -> int:
     """Re-render a recorded trace (always full detail — that is the point)."""
+    if is_flow_trace(args.path):
+        # A draft's way to its number (ADR-016), not an agent's event stream.
+        steps = read_flow_trace(args.path)
+        for line in render_flow(steps):
+            print(line)
+        _warn_skipped(count_trace_lines(args.path) - len(steps))
+        return 0
     events = read_trace(args.path)
     for event in events:
         _render_event(event, verbose=True)
-    skipped = count_trace_lines(args.path) - len(events)
+    _warn_skipped(count_trace_lines(args.path) - len(events))
+    return 0
+
+
+def _warn_skipped(skipped: int) -> None:
+    """Never hide corruption: a partial tail usually means the run was killed,
+    which is itself part of what the replay should tell you."""
     if skipped > 0:
-        # Never hide corruption: a partial tail usually means the run was
-        # killed, which is itself part of what the replay should tell you.
         print(
             f"[warn] {skipped} 行无法解析（通常是进程中断留下的残缺尾行），已跳过",
             file=sys.stderr,
         )
-    return 0
 
 
 class SessionRunQuestion(Protocol):

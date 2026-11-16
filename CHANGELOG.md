@@ -32,6 +32,26 @@ frozen from v0.1.1 (spec §四).
     the numbers are not.
   - New config key `knowledge.faithfulness_check` — an addition to a frozen
     surface, so the next release is a minor one.
+- **The confirmed flow leaves a trace** (ADR-016). `flow`, `mcp`, `web` and
+  `confirm` wrote none; only `ask` and `chat` did.
+  - Each draft's steps are appended to
+    `<trace_dir>/flows/<draft>-<workspace>.jsonl`: what retrieval returned,
+    the rules the extractor proposed and **the ones dropped, with the
+    reason**, the judge's verdicts, an offered earlier choice, amendments,
+    the confirmation, every refusal with its step, the admission, and what
+    ran. `queryagent replay <file>` renders it.
+  - Events come from the service and the builders, so the three doors leave
+    the same trace. An MCP server, a terminal and the server again write one
+    file between them; an acceptance check drives that with real processes
+    (fourteen checks now).
+  - A trace holds what the acting identity could already see — no document
+    text beyond the rules on its own sheet, no result rows — and a refused
+    reach into another workspace's draft is filed under the caller's own.
+  - Writing it can fail without failing the flow. `trace: false` writes
+    nothing. It is an aid, not an audit log.
+  - The scenario leak gate, which has read the trace directory since 1.0.1,
+    now finds real traces there: 22/22 scripted and three DeepSeek runs of
+    6/6, all gates 0.
 
 ## [1.0.2] — 2026-11-13
 

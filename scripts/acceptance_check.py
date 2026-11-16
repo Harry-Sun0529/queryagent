@@ -540,6 +540,49 @@ def _() -> None:
             proc.kill()
 
 
+@check("trace-three-processes-write-one-drafts-story")
+def _() -> None:
+    """An MCP server prepares, a terminal confirms, the server runs: one trace, in order."""
+    with _temp_env() as root:
+        config = root / "config.yaml"
+        traces = root / "traces"
+        config.write_text(
+            config.read_text(encoding="utf-8").replace(
+                "trace: false\n", f"trace: true\ntrace_dir: {traces}\n"
+            ),
+            encoding="utf-8",
+        )
+        proc = _mcp(root)
+        try:
+            draft_id = _agent_prepares(proc)  # every reply parsed as a frame: stdout stays clean
+            refused = _tool(proc, "execute_query", {"draft_id": draft_id})
+            assert refused["isError"] is True, refused
+            code, out = _person(root, "confirm", draft_id[:8], stdin="y\n")
+            assert code == 0, out
+            done = _tool(proc, "execute_query", {"draft_id": draft_id})
+            assert done["isError"] is False, done
+        finally:
+            proc.kill()
+        (written,) = list((traces / "flows").glob("*.jsonl"))
+        events = [json.loads(line) for line in written.read_text(encoding="utf-8").splitlines()]
+        story = [(event["channel"], event["kind"]) for event in events]
+        assert story == [
+            ("mcp", "prepared"),
+            ("mcp", "amended"),
+            ("mcp", "refused"),
+            ("cli", "confirmed"),
+            ("mcp", "admitted"),
+            ("mcp", "executed"),
+        ], story
+        assert all("rows" not in event["detail"] for event in events)
+        replay = subprocess.run(
+            [sys.executable, "-m", "queryagent.cli", "replay", str(written)],
+            capture_output=True, text=True, cwd=ROOT,
+            env={**os.environ, "PYTHONPATH": str(ROOT)}, timeout=60,
+        )
+        assert replay.returncode == 0 and "✗ 拒绝" in replay.stdout, replay.stdout
+
+
 # --------------------------------------------------------------- Web checks
 
 

@@ -470,9 +470,8 @@ class Bench:
                 "mappings_path": str(self._mappings),
                 "state_path": str(self._state),
             },
-            # The confirmed flow writes no trace today. It is switched on and
-            # pointed inside the bench so that, the day a door starts writing
-            # one, what it wrote is read by the leak gate (P10).
+            # Switched on and pointed inside the bench: every step the flow
+            # traces (ADR-016) is read back by the leak gate (P10).
             "trace": True,
             "trace_dir": str(self.root / "traces"),
         }
@@ -561,8 +560,7 @@ class Bench:
         traces = self.root / "traces"
         if traces.exists():
             for path in sorted(p for p in traces.rglob("*") if p.is_file()):
-                # A trace names no workspace; it counts against every one but finance.
-                kept.append(("", path.read_text(encoding="utf-8", errors="replace")))
+                kept.extend(_trace_lines(path))
         return kept
 
     def show(self, actor: ActorContext, text: str) -> None:
@@ -611,6 +609,23 @@ class Bench:
             return index.chunks_in("ops")
         finally:
             index.close()
+
+
+def _trace_lines(path: Path) -> list[tuple[str, str]]:
+    """(workspace, line) for each line of a trace file.
+
+    A flow event says which workspace it was written for. Anything else — an
+    agent trace, a line that cannot be read — names none, and so counts
+    against every workspace but finance.
+    """
+    lines = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            workspace = str(json.loads(line).get("workspace", ""))
+        except (json.JSONDecodeError, AttributeError):
+            workspace = ""
+        lines.append((workspace, line))
+    return lines
 
 
 # -------------------------------------------------------------- outcomes

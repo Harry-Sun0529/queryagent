@@ -160,3 +160,24 @@ def test_the_leak_gate_reads_what_a_scenario_left_on_disk(tmp_path: Path, where:
         assert outcome.leaks == 1
     finally:
         bench.close()
+
+
+def test_the_leak_gate_now_reads_traces_the_flow_really_wrote(tmp_path: Path) -> None:
+    """ADR-016: the trace half of the gate is no longer reading an empty folder.
+
+    The canary scenario runs as ops and then prepares as finance. Both leave
+    a trace; ops's holds no canary, and the gate still reads zero with those
+    files in front of it.
+    """
+    if not demo_db().exists():
+        pytest.skip(f"demo database not built: {demo_db()}")
+    scenario = next(s for s in LOADED if s.kind == "canary")
+    (outcome,) = run_suite([scenario], root=tmp_path)
+    assert outcome.passed, outcome.failures
+    files = sorted((tmp_path / scenario.id / "traces" / "flows").glob("*.jsonl"))
+    by_workspace = {path.stem.rsplit("-", 1)[1]: path.read_text(encoding="utf-8") for path in files}
+    assert set(by_workspace) == {"ops", "finance"}
+    assert '"kind": "executed"' in by_workspace["ops"]
+    assert '"kind": "retrieved"' in by_workspace["finance"]
+    assert FINANCE_CANARY not in by_workspace["ops"]
+    assert outcome.leaks == 0
