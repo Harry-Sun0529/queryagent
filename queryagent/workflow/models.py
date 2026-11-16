@@ -48,6 +48,10 @@ class Rule:
     implies: tuple[str, ...] = ()
     """Variant keys whose maintainer-declared wording the cited quote contains
     (T39). Empty when the rule cites nothing, or corresponds to no reading."""
+    doubt: str = ""
+    """Why a second model thinks this restatement may not say what its quote
+    says (ADR-015); '' when it was not asked or raised nothing. A warning on
+    the sheet, hashed with it. It drops nothing and blocks nothing."""
 
     def __post_init__(self) -> None:
         """Structural checks only.
@@ -132,6 +136,8 @@ class Candidate:
     implies: tuple[str, ...] = ()
     """For one side of a document disagreement: the readings its quote
     corresponds to, so adopting it can settle which one runs (T39)."""
+    doubt: str = ""
+    """As ``Rule.doubt``: carried from the extracted rule this side came from."""
 
     @property
     def rule_key(self) -> str:
@@ -208,6 +214,7 @@ class BusinessDefinition:
                     rule.source.value,
                     rule.evidence_ref,
                     *_implied(rule.implies),
+                    *_doubted(rule.doubt),
                 ]
                 for rule in self.rules
             ),
@@ -216,12 +223,28 @@ class BusinessDefinition:
             # part of what they approved. Silently rewording an option they
             # chose between must invalidate the confirmation.
             "candidates": sorted(
-                [c.key, c.label, c.summary, c.evidence_ref, *_implied(c.implies)]
+                [
+                    c.key,
+                    c.label,
+                    c.summary,
+                    c.evidence_ref,
+                    *_implied(c.implies),
+                    *_doubted(c.doubt),
+                ]
                 for c in self.candidates
             ),
         }
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _doubted(doubt: str) -> list[str]:
+    """A warning is on the sheet the person approves, so it is hashed.
+
+    Only when present, like ``_implied``: a draft nobody doubted hashes
+    exactly as it did before 1.1, so every earlier confirmation still matches.
+    """
+    return ["doubt=" + doubt] if doubt else []
 
 
 def _implied(implies: tuple[str, ...]) -> list[str]:

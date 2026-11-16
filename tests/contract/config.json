@@ -21,6 +21,7 @@
       "min_similarity": null,
       "model": null
     },
+    "faithfulness_check": null,
     "index_path": null,
     "root": null,
     "sources": {

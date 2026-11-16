@@ -117,6 +117,15 @@ def rule_label(key: str) -> str:
     return _RULE_LABELS.get(key, key)
 
 
+def _doubt_line(doubt: str) -> str:
+    """The warning under a rule a second model doubts (ADR-015).
+
+    "可能" on purpose: it is a model's opinion about another model's wording.
+    The quote is one line up; the person reading decides.
+    """
+    return f"      ⚠ 这句转述可能与引文不一致（评审理由：{doubt}）。请对照出处原文。"
+
+
 def _candidate_lines(
     candidates: list[Candidate],
     citations: dict[str, str] | None,
@@ -129,6 +138,8 @@ def _candidate_lines(
         where = _location(citations, candidate.evidence_ref)
         if where:
             lines.append(f"      出处：{where}")
+        if candidate.doubt:
+            lines.append(_doubt_line(candidate.doubt))
         if definition is not None and candidate.implies:
             names = _variant_names(definition, candidate.implies)
             lines.append(f"      → 对应可执行口径：{names}")
@@ -252,6 +263,8 @@ def sheet_lines(
         where = _location(citations, rule.evidence_ref)
         if where:
             sheet.append(SheetLine(f"      出处：{where}"))
+        if rule.doubt:
+            sheet.append(SheetLine(_doubt_line(rule.doubt)))
         correspondence = _correspondence(definition, rule)
         if correspondence:
             sheet.append(SheetLine(f"      {correspondence}"))
@@ -460,6 +473,21 @@ def render_agent_filled(definition: BusinessDefinition) -> str:
     return f"{'、'.join(labels)} 由 Agent 代填、经你确认。"
 
 
+def render_doubted(definition: BusinessDefinition) -> str:
+    """Name the confirmed rules a second model doubted, or '' (ADR-015).
+
+    The warning was on the sheet; whoever reads only the result has not seen
+    it, and the number rests on that wording all the same.
+    """
+    labels = [rule_label(rule.key) for rule in definition.rules if rule.doubt]
+    if not labels:
+        return ""
+    return (
+        f"{'、'.join(dict.fromkeys(labels))} 的转述曾被评审标为可能与引文不一致；"
+        "确认时已显示这条提醒。"
+    )
+
+
 def render_result(
     definition: BusinessDefinition, run: QueryRun, labels: Mapping[str, str] | None = None
 ) -> list[str]:
@@ -482,7 +510,11 @@ def render_result(
     conflicts = render_conflicts(definition)
     if conflicts:
         lines.append(f"  （注意：{conflicts}）")
-    for note in (render_unenforced(definition), render_agent_filled(definition)):
+    for note in (
+        render_unenforced(definition),
+        render_agent_filled(definition),
+        render_doubted(definition),
+    ):
         if note:
             lines.append(f"  （{note}）")
     lines.extend(["", f"执行的 SQL（维护者映射 {definition.metric}）：", f"  {run.sql}"])

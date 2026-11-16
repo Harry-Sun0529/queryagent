@@ -81,6 +81,9 @@ def adopted_rule(definition: BusinessDefinition, key: str, source: RuleSource) -
         evidence_ref=candidate.evidence_ref,
         note="采用文档写法",
         implies=candidate.implies,
+        # Adopting a wording does not clear a doubt about it: the person
+        # chose between documents, not between the judge and the extractor.
+        doubt=candidate.doubt,
     )
 
 

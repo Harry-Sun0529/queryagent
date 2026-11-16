@@ -528,6 +528,7 @@ def _encode_definition(definition: BusinessDefinition) -> str:
                     "evidence_ref": r.evidence_ref,
                     "note": r.note,
                     **_implies_field(r.implies),
+                    **_doubt_field(r.doubt),
                 }
                 for r in definition.rules
             ],
@@ -539,12 +540,18 @@ def _encode_definition(definition: BusinessDefinition) -> str:
                     "summary": c.summary,
                     "evidence_ref": c.evidence_ref,
                     **_implies_field(c.implies),
+                    **_doubt_field(c.doubt),
                 }
                 for c in definition.candidates
             ],
         },
         ensure_ascii=False,
     )
+
+
+def _doubt_field(doubt: str) -> dict[str, str]:
+    """Written only when present, for the same reason as ``implies``."""
+    return {"doubt": doubt} if doubt else {}
 
 
 def _implies_field(implies: tuple[str, ...]) -> dict[str, list[str]]:
@@ -567,6 +574,7 @@ def _decode_definition(text: str) -> BusinessDefinition:
                 evidence_ref=r["evidence_ref"],
                 note=r["note"],
                 implies=tuple(r.get("implies", ())),
+                doubt=r.get("doubt", ""),
             )
             for r in raw["rules"]
         ),
@@ -579,6 +587,7 @@ def _decode_definition(text: str) -> BusinessDefinition:
                 summary=c["summary"],
                 evidence_ref=c["evidence_ref"],
                 implies=tuple(c.get("implies", ())),
+                doubt=c.get("doubt", ""),
             )
             for c in raw["candidates"]
         ),

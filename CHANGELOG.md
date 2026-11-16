@@ -8,6 +8,31 @@ frozen from v0.1.1 (spec §四).
 
 ## [Unreleased]
 
+契约摘要：91fb0479a7c6
+
+### Added
+
+- **A second model may doubt a restatement; it may only warn**
+  (`knowledge.faithfulness_check`, ADR-015). Off by default.
+  - Extraction checks that a quote is verbatim and that a rule's numbers are
+    in it. It does not check meaning: 「不含测试账号」 restated as
+    「含测试账号」 passed. With the key on, one more model call compares
+    each restatement with its quote, and a rule it doubts gets a line under
+    it on the sheet — in the terminal, on the page and over MCP — and is
+    named again on the result.
+  - The rule stays, stays confirmable, and nothing that runs changes. The
+    warning is hashed with the rule. "Unsure" and unreadable output warn
+    about nothing and are never read as "faithful"; a failed call fails the
+    draft rather than passing it unchecked.
+  - Measured before it was wired in (`eval/run_faithfulness_check.py`, 90
+    labelled pairs, three DeepSeek runs): 52/52 unfaithful pairs caught, 0/38
+    false alarms, 5/5 adversarial pairs held, each run. **The labels were
+    drafted by an AI assistant and have not been reviewed by a person; a
+    perfect score on them is a ceiling, not a rating.** ADR-015 says what
+    the numbers are not.
+  - New config key `knowledge.faithfulness_check` — an addition to a frozen
+    surface, so the next release is a minor one.
+
 ## [1.0.2] — 2026-11-13
 
 No frozen surface moved (ADR-014).

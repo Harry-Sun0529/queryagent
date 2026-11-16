@@ -146,6 +146,7 @@ def build_workflow(
             provider,
             extraction_backend if extraction_backend is not None else make_backend(config.llm),
             required_keys=(),  # gaps come from the maintainer metric, not extraction
+            check_faithfulness=config.knowledge.faithfulness_check,
         )
     compiler = TemplateCompiler(mappings, dialect=connector.dialect, dimensions=dimensions)
     builder: DraftBuilder = CompositeDraftBuilder(

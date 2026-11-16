@@ -31,6 +31,7 @@ from queryagent.llm.base import Message, ModelResponse
 from queryagent.tools import ToolSpec
 from queryagent.workflow.enforcement import Terms, implied_variants, preselect_variant
 from queryagent.workflow.extraction import ALLOWED_RULE_KEYS, validate_extraction
+from queryagent.workflow.faithfulness import Verdict, judge
 from queryagent.workflow.models import (
     CONFLICT_SEPARATOR,
     ActorContext,
@@ -138,6 +139,7 @@ class EvidenceDraftBuilder:
         metric: str = "",
         display_name: str = "",
         limit: int = MAX_EVIDENCE,
+        check_faithfulness: bool = False,
     ) -> None:
         self._provider = provider
         self._backend = backend
@@ -145,6 +147,7 @@ class EvidenceDraftBuilder:
         self._metric = metric
         self._display_name = display_name
         self._limit = limit
+        self._check_faithfulness = check_faithfulness
 
     def build(
         self, actor: ActorContext, question: str, *, correspond: Correspond | None = None
@@ -162,9 +165,36 @@ class EvidenceDraftBuilder:
         response = self._backend.complete(messages, None)
         result = validate_extraction(chunks, response.text)
         rules = result.rules
+        if self._check_faithfulness:
+            rules = self._doubted(rules, chunks)
         if correspond is not None:
             rules = tuple(_with_correspondence(rule, chunks, correspond) for rule in rules)
         return self._assemble(rules)
+
+    def _doubted(
+        self, rules: tuple[Rule, ...], chunks: tuple[IndexedChunk, ...]
+    ) -> tuple[Rule, ...]:
+        """Mark each rule a second model finds unfaithful to its own quote (ADR-015).
+
+        One more model call, no tools, nothing run. The quote is read back
+        out of the chunk the citation names, as everywhere else. A verdict
+        only ever adds a warning: the rule stays, and stays confirmable. A
+        judge that declines, or cannot be read, marks nothing — and an
+        error from the call is not swallowed, because a sheet that says the
+        check is on must not be one the check never ran on.
+        """
+        quoted = [(rule, _quote_of(rule, chunks)) for rule in rules]
+        asked = [(rule, quote) for rule, quote in quoted if quote]
+        verdicts = judge(self._backend, [(quote, rule.value) for rule, quote in asked])
+        doubts = {
+            id(rule): verdict.reason or "评审认为转述与引文不一致"
+            for (rule, _), verdict in zip(asked, verdicts, strict=True)
+            if verdict.verdict is Verdict.UNFAITHFUL
+        }
+        return tuple(
+            dataclasses.replace(rule, doubt=doubts[id(rule)]) if id(rule) in doubts else rule
+            for rule in rules
+        )
 
     def _assemble(self, extracted: tuple[Rule, ...]) -> BusinessDefinition:
         by_key: dict[str, list[Rule]] = {}
@@ -198,6 +228,7 @@ class EvidenceDraftBuilder:
                         summary=rule.value,
                         evidence_ref=rule.evidence_ref,
                         implies=rule.implies,
+                        doubt=rule.doubt,
                     )
                     for index, rule in enumerate(distinct.values())
                 )
@@ -214,16 +245,22 @@ class EvidenceDraftBuilder:
         )
 
 
-def _with_correspondence(
-    rule: Rule, chunks: tuple[IndexedChunk, ...], correspond: Correspond
-) -> Rule:
+def _quote_of(rule: Rule, chunks: tuple[IndexedChunk, ...]) -> str:
+    """The cited words, from the chunk itself; '' if the citation names none shown."""
     ref = EvidenceRef.parse(rule.evidence_ref)
     chunk = next(
         (c for c in chunks if (c.doc_id, c.chunk_id) == (ref.doc_id, ref.chunk_id)), None
     )
-    if chunk is None:
+    return chunk.text[ref.quote_start : ref.quote_end] if chunk is not None else ""
+
+
+def _with_correspondence(
+    rule: Rule, chunks: tuple[IndexedChunk, ...], correspond: Correspond
+) -> Rule:
+    quote = _quote_of(rule, chunks)
+    if not quote:
         return rule
-    implies = correspond(rule.key, chunk.text[ref.quote_start : ref.quote_end])
+    implies = correspond(rule.key, quote)
     return dataclasses.replace(rule, implies=implies) if implies else rule
 
 

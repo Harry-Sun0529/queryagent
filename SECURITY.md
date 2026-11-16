@@ -190,6 +190,12 @@ What the code guarantees, and what it does not:
   meaning was verified. A maintainer who declares broad words (「日期」)
   makes unrelated sentences correspond; the words are reviewed with the
   mapping file, and a quote containing two readings' words claims neither.
+  - With `knowledge.faithfulness_check: true` a second model call compares
+    each restatement with its quote and puts a warning under the ones it
+    doubts (ADR-015). It is a reader's aid, not a boundary: it drops nothing
+    and blocks nothing, it is the same model as the extractor, and it was
+    measured on pairs whose labels no person has reviewed yet. **No warning
+    does not mean the restatement was verified.**
 
 Semantic retrieval, when enabled, sends document text to the configured
 embeddings endpoint. It is off unless configured.

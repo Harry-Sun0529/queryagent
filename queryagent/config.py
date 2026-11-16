@@ -159,6 +159,10 @@ class KnowledgeConfig:
     index_path: str = ".queryagent/knowledge.db"
     sources: tuple[KnowledgeSource, ...] = ()
     embedding: EmbeddingConfig | None = None
+    faithfulness_check: bool = False
+    """Ask a second model call whether each restatement says what its quote
+    says, and warn on the sheet where it thinks not (ADR-015). Off by
+    default: it costs one more model call per prepared draft."""
 
     @property
     def enabled(self) -> bool:
@@ -275,6 +279,7 @@ def _load_knowledge(section: dict[str, Any]) -> KnowledgeConfig:
         index_path=_opt_str(section, "index_path") or ".queryagent/knowledge.db",
         sources=tuple(sources),
         embedding=_load_embedding(section.get("embedding")),
+        faithfulness_check=_opt_bool(section, "faithfulness_check", default=False),
     )
 
 
