@@ -86,6 +86,25 @@ Found by reading the whole codebase once the three 1.1 additions were in.
   instead of answering 400, and a connection that sent nothing held the
   single-threaded server for good. Requests now time out after 30 seconds.
 
+- **A rule saying 「忽略测试账号」 was dropped as an instruction.** Any value
+  containing 「忽略」 was, so the sheet said the documents were silent about
+  test accounts. It is now dropped only when what it says to ignore is this
+  system's own process or whatever came before it.
+- **An answer a door could not read left no trace.** The page and MCP read
+  answers before calling the service, so that refusal was the one kind the
+  flow trace never saw. They now go through `QueryWorkflow.amend_from`.
+- `flow` refuses a split nobody declared before preparing a draft, rather
+  than after: no model call, no unusable draft left behind.
+
+### Changed
+
+- `queryagent/cli.py` (1780 lines) is now the package `queryagent/cli/`:
+  `parser`, `errors`, `chat`, `flow`, `prompts`, `evaluate`. Commands, flags,
+  exit codes and `python -m queryagent.cli` are unchanged; the contract
+  snapshots did not move.
+- Keyword retrieval reads every chunk's terms in one query instead of one
+  per chunk.
+
 ## [1.0.2] — 2026-11-13
 
 No frozen surface moved (ADR-014).

@@ -249,7 +249,7 @@ def test_ask_releases_the_llm_client(
     # database, so never closing them leaks a connection pool per data source.
     backend = RecordingBackend()
     monkeypatch.setenv("OPENAI_API_KEY", "x")
-    monkeypatch.setattr("queryagent.cli.make_backend", lambda _config: backend)
+    monkeypatch.setattr("queryagent.cli.chat.make_backend", lambda _config: backend)
     config = write_config(tmp_path, db=real_db(tmp_path))
 
     assert main(["ask", "q", "--config", str(config)]) == 0
@@ -266,7 +266,7 @@ def test_client_is_released_even_when_the_run_fails(
 
     backend.complete = explode  # type: ignore[method-assign]
     monkeypatch.setenv("OPENAI_API_KEY", "x")
-    monkeypatch.setattr("queryagent.cli.make_backend", lambda _config: backend)
+    monkeypatch.setattr("queryagent.cli.chat.make_backend", lambda _config: backend)
     config = write_config(tmp_path, db=real_db(tmp_path))
 
     main(["ask", "q", "--config", str(config)])
@@ -284,7 +284,7 @@ def test_interrupt_exits_cleanly(
 
     backend.complete = interrupted  # type: ignore[method-assign]
     monkeypatch.setenv("OPENAI_API_KEY", "x")
-    monkeypatch.setattr("queryagent.cli.make_backend", lambda _config: backend)
+    monkeypatch.setattr("queryagent.cli.chat.make_backend", lambda _config: backend)
     config = write_config(tmp_path, db=real_db(tmp_path))
 
     code = main(["ask", "q", "--config", str(config)])
@@ -387,7 +387,7 @@ def test_programming_defect_is_not_disguised_as_user_error(
         TypeError("unsupported operand")
     )
     monkeypatch.setenv("OPENAI_API_KEY", "x")
-    monkeypatch.setattr("queryagent.cli.make_backend", lambda _config: backend)
+    monkeypatch.setattr("queryagent.cli.chat.make_backend", lambda _config: backend)
     code = main(["ask", "q", "--config", str(write_config(tmp_path, db=real_db(tmp_path)))])
     err = capsys.readouterr().err
     assert code == 70  # EX_SOFTWARE
@@ -405,7 +405,7 @@ def test_upstream_outage_is_marked_retryable(
         RuntimeError("LLM request failed with HTTP 503: upstream unavailable")
     )
     monkeypatch.setenv("OPENAI_API_KEY", "x")
-    monkeypatch.setattr("queryagent.cli.make_backend", lambda _config: backend)
+    monkeypatch.setattr("queryagent.cli.chat.make_backend", lambda _config: backend)
     code = main(["ask", "q", "--config", str(write_config(tmp_path, db=real_db(tmp_path)))])
     err = capsys.readouterr().err
     assert code == 75  # EX_TEMPFAIL
@@ -422,7 +422,7 @@ def test_network_unreachable_is_retryable(
         httpx.ConnectError("connection refused")
     )
     monkeypatch.setenv("OPENAI_API_KEY", "x")
-    monkeypatch.setattr("queryagent.cli.make_backend", lambda _config: backend)
+    monkeypatch.setattr("queryagent.cli.chat.make_backend", lambda _config: backend)
     code = main(["ask", "q", "--config", str(write_config(tmp_path, db=real_db(tmp_path)))])
     assert code == 75
     assert backend.closed
@@ -437,7 +437,7 @@ def test_bad_key_stays_a_user_error(
         RuntimeError("LLM request failed with HTTP 401: invalid api key")
     )
     monkeypatch.setenv("OPENAI_API_KEY", "x")
-    monkeypatch.setattr("queryagent.cli.make_backend", lambda _config: backend)
+    monkeypatch.setattr("queryagent.cli.chat.make_backend", lambda _config: backend)
     code = main(["ask", "q", "--config", str(write_config(tmp_path, db=real_db(tmp_path)))])
     assert code == 2
 
@@ -466,7 +466,7 @@ def test_followup_turn_carries_the_previous_exchange(
     # The whole point of session memory: turn 2 must see turn 1's Q and A.
     backend = ScriptedBackend(["上个月是 8,377 人", "按渠道拆分如下"])
     monkeypatch.setenv("OPENAI_API_KEY", "x")
-    monkeypatch.setattr("queryagent.cli.make_backend", lambda _config: backend)
+    monkeypatch.setattr("queryagent.cli.chat.make_backend", lambda _config: backend)
     asked = iter(["上个月新增用户有多少？", "那按渠道拆分呢？", "exit"])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(asked))
 
@@ -483,7 +483,7 @@ def test_first_turn_carries_no_conversation(
 ) -> None:
     backend = ScriptedBackend(["答案"])
     monkeypatch.setenv("OPENAI_API_KEY", "x")
-    monkeypatch.setattr("queryagent.cli.make_backend", lambda _config: backend)
+    monkeypatch.setattr("queryagent.cli.chat.make_backend", lambda _config: backend)
     asked = iter(["第一个问题", "exit"])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(asked))
 
@@ -594,7 +594,7 @@ def test_an_outage_aborts_instead_of_scoring_the_whole_suite_zero(
     # looks like a measurement of 0%. Stop early and say why.
     backend = OutageBackend()
     monkeypatch.setenv("OPENAI_API_KEY", "x")
-    monkeypatch.setattr("queryagent.cli.make_backend", lambda _config: backend)
+    monkeypatch.setattr("queryagent.cli.chat.make_backend", lambda _config: backend)
     args, _report = outage_args(tmp_path, [f"c{i}" for i in range(20)])
 
     code = main(args)
@@ -612,7 +612,7 @@ def test_unmeasured_cases_are_not_recorded_as_done(
     # actually answered, baking the outage into the published number.
     backend = OutageBackend()
     monkeypatch.setenv("OPENAI_API_KEY", "x")
-    monkeypatch.setattr("queryagent.cli.make_backend", lambda _config: backend)
+    monkeypatch.setattr("queryagent.cli.chat.make_backend", lambda _config: backend)
     args, report = outage_args(tmp_path, ["c0", "c1"])
 
     main(args)
@@ -643,7 +643,7 @@ def test_trace_directory_can_be_pinned_in_config(
     # running from two places scatters traces and cannot find them again.
     backend = RecordingBackend()
     monkeypatch.setenv("OPENAI_API_KEY", "x")
-    monkeypatch.setattr("queryagent.cli.make_backend", lambda _config: backend)
+    monkeypatch.setattr("queryagent.cli.chat.make_backend", lambda _config: backend)
     traces = tmp_path / "chosen-traces"
     config = tmp_path / "config.yaml"
     config.write_text(
@@ -664,7 +664,7 @@ def test_chat_keeps_only_recent_turns_in_memory(
 
     backend = ScriptedBackend([f"答案{i}" for i in range(MAX_REMEMBERED_TURNS + 3)])
     monkeypatch.setenv("OPENAI_API_KEY", "x")
-    monkeypatch.setattr("queryagent.cli.make_backend", lambda _config: backend)
+    monkeypatch.setattr("queryagent.cli.chat.make_backend", lambda _config: backend)
     questions = [f"问题{i}" for i in range(MAX_REMEMBERED_TURNS + 3)] + ["exit"]
     asked = iter(questions)
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(asked))
@@ -721,7 +721,7 @@ def test_parallel_and_serial_agree(
 ) -> None:
     # Concurrency is a speed change, never a result change.
     monkeypatch.setenv("OPENAI_API_KEY", "x")
-    monkeypatch.setattr("queryagent.cli.make_backend", lambda _config: CountingBackend())
+    monkeypatch.setattr("queryagent.cli.chat.make_backend", lambda _config: CountingBackend())
 
     main(selfbuilt_args(tmp_path, "serial.md"))
     main([*selfbuilt_args(tmp_path, "parallel.md"), "--concurrency", "4"])
@@ -737,7 +737,7 @@ def test_every_case_is_recorded_exactly_once_under_concurrency(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "x")
-    monkeypatch.setattr("queryagent.cli.make_backend", lambda _config: CountingBackend())
+    monkeypatch.setattr("queryagent.cli.chat.make_backend", lambda _config: CountingBackend())
 
     args = [*selfbuilt_args(tmp_path, "p.md"), "--concurrency", "4"]
     main(args)
@@ -813,7 +813,7 @@ def test_exhausted_balance_does_not_tell_a_script_to_retry(
     # its own, so a retry loop would spin forever.
     monkeypatch.setenv("OPENAI_API_KEY", "x")
     monkeypatch.setattr(
-        "queryagent.cli.make_backend",
+        "queryagent.cli.chat.make_backend",
         lambda _config: RefusingBackend(
             "LLM request failed with HTTP 402: Insufficient Balance"
         ),
@@ -829,7 +829,7 @@ def test_an_outage_still_tells_a_script_to_retry(
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "x")
     monkeypatch.setattr(
-        "queryagent.cli.make_backend",
+        "queryagent.cli.chat.make_backend",
         lambda _config: RefusingBackend("LLM request failed with HTTP 503: down"),
     )
     assert main(selfbuilt_args(tmp_path, "out2.md")) == 75
@@ -875,7 +875,7 @@ def test_parallel_finished_case_is_durable_while_first_waits(
             return ModelResponse(text='42', stop_reason='stop')
 
     monkeypatch.setattr(ResultLog, 'append', append)
-    monkeypatch.setattr('queryagent.cli.make_backend', lambda _: Backend())
+    monkeypatch.setattr('queryagent.cli.chat.make_backend', lambda _: Backend())
     args = [*selfbuilt_args(tmp_path, 'ordered.md'), '--concurrency', '2']
     thread = Thread(target=main, args=(args,))
     thread.start()
@@ -920,7 +920,7 @@ def test_parallel_outage_stops_submitting_and_keeps_inflight_results(
             raise RuntimeError('LLM request failed with HTTP 503: unavailable')
 
     monkeypatch.setattr(_OutageGuard, 'record', observe_stop)
-    monkeypatch.setattr('queryagent.cli.make_backend', lambda _: Backend())
+    monkeypatch.setattr('queryagent.cli.chat.make_backend', lambda _: Backend())
     code = main([*selfbuilt_args(tmp_path, 'stop.md'), '--concurrency', '2'])
     assert code == 75
     assert set(started) == {'q0', 'q1', 'q2', 'q3', 'q4', 'q5'}
@@ -941,8 +941,8 @@ def test_interrupt_preserves_completed_parallel_cases(tmp_path: Path, monkeypatc
             raise KeyboardInterrupt
         return real_wait(futures, **kwargs)
 
-    monkeypatch.setattr('queryagent.cli.wait', interrupt_once)
-    monkeypatch.setattr('queryagent.cli.make_backend', lambda _: CountingBackend())
+    monkeypatch.setattr('queryagent.cli.evaluate.wait', interrupt_once)
+    monkeypatch.setattr('queryagent.cli.chat.make_backend', lambda _: CountingBackend())
     code = main([*selfbuilt_args(tmp_path, 'interrupt.md'), '--concurrency', '2'])
     assert code == 130
     recovered = ResultLog(tmp_path / 'interrupt.partial.jsonl', resume=True).completed()
@@ -956,5 +956,5 @@ def test_eval_network_outage_preserves_retryability(tmp_path: Path, monkeypatch)
         def complete(self, messages, tools=None, **kwargs):
             raise httpx.ConnectError('[Errno 61] Connection refused')
 
-    monkeypatch.setattr('queryagent.cli.make_backend', lambda _: NetworkFailure())
+    monkeypatch.setattr('queryagent.cli.chat.make_backend', lambda _: NetworkFailure())
     assert main(selfbuilt_args(tmp_path, 'network.md')) == 75

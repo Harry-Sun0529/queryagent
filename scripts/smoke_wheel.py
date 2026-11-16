@@ -26,7 +26,7 @@ from pathlib import Path
 
 REQUIRED = (
     "queryagent/py.typed",
-    "queryagent/cli.py",
+    "queryagent/cli/__init__.py",
     "queryagent/mcp/server.py",
     "queryagent/web/server.py",
     "queryagent/workflow/wiring.py",

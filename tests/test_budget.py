@@ -482,7 +482,7 @@ def test_ask_stops_the_model_at_the_statement_cap_through_the_real_wiring(
     review that only a hand-built one was tested."""
     backend = TwoStatements()
     monkeypatch.setenv("OPENAI_API_KEY", "x")
-    monkeypatch.setattr("queryagent.cli.make_backend", lambda _config: backend)
+    monkeypatch.setattr("queryagent.cli.chat.make_backend", lambda _config: backend)
     assert main(["ask", "成交额是多少", "--config", str(_ask_config(tmp_path))]) == 0
     first, second = backend.tool_replies()
     assert "9.5" in first
@@ -497,7 +497,7 @@ def test_eval_is_not_metered_even_with_a_budget_configured(
 ) -> None:
     """E02: the eval's wiring passes no subject, so nothing is admitted or counted."""
     backend = TwoStatements()
-    monkeypatch.setattr("queryagent.cli.make_backend", lambda _config: backend)
+    monkeypatch.setattr("queryagent.cli.chat.make_backend", lambda _config: backend)
     config = load_config(_ask_config(tmp_path))
     connector = SQLiteConnector(path=str(tmp_path / "shop.db"))
     with contextlib.ExitStack() as stack:
